@@ -147,6 +147,240 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error('File > New Folder did not update the virtual filesystem.');
   }
 
+  const applicationsOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const applications = document.querySelector('[data-vfs-item="applications"]');
+      if (!(applications instanceof HTMLElement)) return false;
+      applications.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!applicationsOpened) throw new Error('Smoke test could not open Applications.');
+  await pause(80);
+
+  const windowDragStart = (await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-applications"]');
+      const handle = finder?.querySelector('[data-window-drag-handle="true"]');
+      const releaseWindow = document.querySelector(
+        '[data-finder-window="window-system-disk"]'
+      );
+      if (
+        !(finder instanceof HTMLElement) ||
+        !(handle instanceof HTMLElement) ||
+        !(releaseWindow instanceof HTMLElement)
+      ) return null;
+      const windowRect = finder.getBoundingClientRect();
+      const handleRect = handle.getBoundingClientRect();
+      const releaseRect = releaseWindow.getBoundingClientRect();
+      handle.addEventListener(
+        'pointerdown',
+        (event) => { window.__macintoshSmokePointerId = event.pointerId; },
+        { once: true }
+      );
+      return {
+        window: { left: windowRect.left, top: windowRect.top },
+        pointer: {
+          x: Math.round(handleRect.left + handleRect.width / 2),
+          y: Math.round(handleRect.top + handleRect.height / 2)
+        },
+        release: {
+          x: Math.round(releaseRect.left + releaseRect.width * 0.72),
+          y: Math.round(releaseRect.top + handleRect.height / 2)
+        }
+      };
+    })()`,
+    true,
+  )) as {
+    window: { left: number; top: number };
+    pointer: { x: number; y: number };
+    release: { x: number; y: number };
+  } | null;
+  if (!windowDragStart) throw new Error('Smoke test could not locate the Finder title bar.');
+
+  const windowDragEnd = windowDragStart.release;
+  const windowDragDelta = {
+    x: windowDragEnd.x - windowDragStart.pointer.x,
+    y: windowDragEnd.y - windowDragStart.pointer.y,
+  };
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...windowDragStart.pointer });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...windowDragStart.pointer,
+  });
+  for (let step = 1; step <= 8; step += 1) {
+    const progress = step / 8;
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: Math.round(
+        windowDragStart.pointer.x + (windowDragEnd.x - windowDragStart.pointer.x) * progress,
+      ),
+      y: Math.round(
+        windowDragStart.pointer.y + (windowDragEnd.y - windowDragStart.pointer.y) * progress,
+      ),
+    });
+    await pause(18);
+  }
+  await pause(60);
+
+  const windowDragPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-applications"]');
+      const shadow = finder?.querySelector('.window-drag-shadow');
+      const releaseWindow = document.querySelector(
+        '[data-finder-window="window-system-disk"]'
+      );
+      if (
+        !(finder instanceof HTMLElement) ||
+        !(shadow instanceof HTMLElement) ||
+        !(releaseWindow instanceof HTMLElement)
+      ) return null;
+      const windowRect = finder.getBoundingClientRect();
+      const shadowRect = shadow.getBoundingClientRect();
+      const releaseRect = releaseWindow.getBoundingClientRect();
+      return {
+        windowLeft: windowRect.left,
+        windowTop: windowRect.top,
+        shadowLeft: shadowRect.left,
+        shadowTop: shadowRect.top,
+        shadowVisible: getComputedStyle(shadow).display !== 'none',
+        dragging: finder.dataset.windowDragging === 'true',
+        overlapsReleaseWindow:
+          shadowRect.left < releaseRect.right &&
+          shadowRect.right > releaseRect.left &&
+          shadowRect.top < releaseRect.bottom &&
+          shadowRect.bottom > releaseRect.top
+      };
+    })()`,
+    true,
+  )) as {
+    windowLeft: number;
+    windowTop: number;
+    shadowLeft: number;
+    shadowTop: number;
+    shadowVisible: boolean;
+    dragging: boolean;
+    overlapsReleaseWindow: boolean;
+  } | null;
+  if (!windowDragPreview) throw new Error('Finder drag preview could not be inspected.');
+  if (
+    Math.abs(windowDragPreview.windowLeft - windowDragStart.window.left) > 1 ||
+    Math.abs(windowDragPreview.windowTop - windowDragStart.window.top) > 1
+  ) {
+    throw new Error('The full Finder window moved before the title-bar drag was released.');
+  }
+  if (
+    !windowDragPreview.shadowVisible ||
+    !windowDragPreview.dragging ||
+    !windowDragPreview.overlapsReleaseWindow
+  ) {
+    throw new Error('The 1-bit Finder drag shadow did not overlap the rendered release window.');
+  }
+  if (
+    Math.abs(windowDragPreview.shadowLeft - (windowDragStart.window.left + windowDragDelta.x - 1)) >
+      2 ||
+    Math.abs(windowDragPreview.shadowTop - (windowDragStart.window.top + windowDragDelta.y - 1)) > 2
+  ) {
+    throw new Error(
+      `The Finder drag shadow did not follow the pointer: ${JSON.stringify({ windowDragStart, windowDragPreview })}`,
+    );
+  }
+
+  const dragCaptureDestination = process.env.MACINTOSH_SMOKE_DRAG_CAPTURE_PATH;
+  if (dragCaptureDestination) {
+    const image = await window.webContents.capturePage();
+    await mkdir(path.dirname(dragCaptureDestination), { recursive: true });
+    await writeFile(dragCaptureDestination, image.toPNG());
+  }
+
+  const releasedCapture = (await window.webContents.executeJavaScript(
+    `(() => {
+      const handle = document.querySelector(
+        '[data-finder-window="window-applications"] [data-window-drag-handle="true"]'
+      );
+      const pointerId = window.__macintoshSmokePointerId;
+      const releaseElement = document.elementFromPoint(${windowDragEnd.x}, ${windowDragEnd.y});
+      const releaseTarget = releaseElement
+        ?.closest('[data-finder-window]')
+        ?.getAttribute('data-finder-window');
+      if (!(handle instanceof HTMLElement) || typeof pointerId !== 'number') return null;
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      return {
+        captureReleased: !handle.hasPointerCapture(pointerId),
+        releaseTarget,
+        releaseOnDragHandle:
+          releaseElement?.closest('[data-window-drag-handle="true"]') !== null
+      };
+    })()`,
+    true,
+  )) as {
+    captureReleased: boolean;
+    releaseTarget: string | null;
+    releaseOnDragHandle: boolean;
+  } | null;
+  if (
+    !releasedCapture?.captureReleased ||
+    releasedCapture.releaseOnDragHandle ||
+    releasedCapture.releaseTarget === null
+  ) {
+    throw new Error(
+      `Smoke test could not reproduce lost capture over a Finder window: ${JSON.stringify(releasedCapture)}`,
+    );
+  }
+
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...windowDragEnd,
+  });
+  await pause(80);
+
+  const windowDragCommitted = (await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-applications"]');
+      const shadow = finder?.querySelector('.window-drag-shadow');
+      if (!(finder instanceof HTMLElement) || !(shadow instanceof HTMLElement)) return null;
+      const rect = finder.getBoundingClientRect();
+      return {
+        left: rect.left,
+        top: rect.top,
+        shadowHidden: getComputedStyle(shadow).display === 'none',
+        draggingCleared: finder.dataset.windowDragging === undefined
+      };
+    })()`,
+    true,
+  )) as {
+    left: number;
+    top: number;
+    shadowHidden: boolean;
+    draggingCleared: boolean;
+  } | null;
+  if (!windowDragCommitted) throw new Error('Committed Finder geometry could not be inspected.');
+  if (
+    Math.abs(windowDragCommitted.left - (windowDragStart.window.left + windowDragDelta.x)) > 1 ||
+    Math.abs(windowDragCommitted.top - (windowDragStart.window.top + windowDragDelta.y)) > 1
+  ) {
+    throw new Error(
+      'The full Finder window did not redraw after capture was lost over another window.',
+    );
+  }
+  if (!windowDragCommitted.shadowHidden || !windowDragCommitted.draggingCleared) {
+    throw new Error('The Finder drag shadow did not clear after release.');
+  }
+
+  const dragAfterCaptureDestination = process.env.MACINTOSH_SMOKE_DRAG_AFTER_CAPTURE_PATH;
+  if (dragAfterCaptureDestination) {
+    const image = await window.webContents.capturePage();
+    await mkdir(path.dirname(dragAfterCaptureDestination), { recursive: true });
+    await writeFile(dragAfterCaptureDestination, image.toPNG());
+  }
+
   const coordinates = (await window.webContents.executeJavaScript(
     `(() => {
     const disk = document.querySelector('[data-desktop-icon="system-disk"]');
@@ -285,13 +519,16 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
     `(() => {
     const disk = document.querySelector('[data-desktop-icon="system-disk"]');
     const root = document.querySelector('[data-vfs-count]');
-    if (!(disk instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+    const finder = document.querySelector('[data-finder-window="window-applications"]');
+    if (!(disk instanceof HTMLElement) || !(root instanceof HTMLElement) || !(finder instanceof HTMLElement)) return null;
     const rect = disk.getBoundingClientRect();
     return {
       loaded: document.body.dataset.stateLoaded === 'true',
       diskLabel: disk.getAttribute('aria-label'),
       diskVisible: rect.width > 0 && rect.height > 0,
-      vfsCount: Number(root.dataset.vfsCount || 0)
+      vfsCount: Number(root.dataset.vfsCount || 0),
+      windowLeft: Number.parseFloat(finder.style.left),
+      windowTop: Number.parseFloat(finder.style.top)
     };
   })()`,
     true,

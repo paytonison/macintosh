@@ -58,6 +58,12 @@ try {
   if (state.desktop.diskPosition.x < 0 || state.desktop.diskPosition.y < 0) {
     throw new Error('The disk did not return to a valid persisted desktop position.');
   }
+  const savedWindow = state.desktop.windows.find((item) => item.id === 'window-applications');
+  if (!savedWindow || savedWindow.x !== 405 || savedWindow.y !== 105) {
+    throw new Error(
+      `The Finder window release position was not persisted: ${JSON.stringify(savedWindow)}`,
+    );
+  }
 
   await runElectron('--persistence-probe');
   const proof = JSON.parse(await readFile(path.join(userData, 'persistence-proof.json'), 'utf8'));
@@ -67,11 +73,16 @@ try {
   if (!Number.isFinite(proof.vfsCount) || proof.vfsCount !== state.nodes.length) {
     throw new Error('The persisted virtual filesystem was not loaded by the renderer.');
   }
+  if (proof.windowLeft !== savedWindow.x || proof.windowTop !== savedWindow.y) {
+    throw new Error('The persisted Finder window position was not restored on relaunch.');
+  }
 
   console.log(
-    'Electron smoke passed: menus, pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
+    'Electron smoke passed: menus, Finder drag overlap/release redraw, disk pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
   );
-  console.log('Persistence relaunch passed: System Disk and virtual filesystem reloaded.');
+  console.log(
+    'Persistence relaunch passed: Finder geometry, System Disk, and virtual filesystem reloaded.',
+  );
 } finally {
   await rm(userData, { recursive: true, force: true });
 }

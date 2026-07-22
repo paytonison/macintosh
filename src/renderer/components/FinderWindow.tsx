@@ -1,4 +1,9 @@
-import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
 import type {
   FinderViewMode,
@@ -28,7 +33,10 @@ interface GeometrySession {
   pointerId: number;
   pointerX: number;
   pointerY: number;
+  captureTarget: HTMLElement;
   original: WindowGeometry;
+  current: WindowGeometry;
+  hasMoved: boolean;
 }
 
 const iconForNode = (node: VfsNode): PixelIconName => {
@@ -55,6 +63,56 @@ export function FinderWindow({
   const drag = useRef<GeometrySession | null>(null);
   const resize = useRef<GeometrySession | null>(null);
   const content = useRef<HTMLDivElement>(null);
+  const windowElement = useRef<HTMLElement>(null);
+  const dragShadow = useRef<HTMLDivElement>(null);
+  const dragReleaseCleanup = useRef<(() => void) | null>(null);
+
+  const clearDragShadow = (): void => {
+    windowElement.current?.classList.remove('is-shadow-dragging');
+    if (windowElement.current) delete windowElement.current.dataset.windowDragging;
+    if (dragShadow.current) dragShadow.current.style.transform = 'translate3d(0, 0, 0)';
+  };
+
+  const removeDragReleaseListeners = (): void => {
+    dragReleaseCleanup.current?.();
+    dragReleaseCleanup.current = null;
+  };
+
+  const finishWindowMove = (pointerId: number, commit: boolean): void => {
+    const session = drag.current;
+    if (!session || session.pointerId !== pointerId) return;
+    removeDragReleaseListeners();
+    if (session.captureTarget.hasPointerCapture(pointerId)) {
+      session.captureTarget.releasePointerCapture(pointerId);
+    }
+    drag.current = null;
+    clearDragShadow();
+    if (commit && session.hasMoved) onGeometry(windowState.id, session.current);
+  };
+
+  const watchWindowMoveRelease = (pointerId: number): void => {
+    removeDragReleaseListeners();
+    const pointerUp = (event: PointerEvent): void => {
+      if (event.pointerId === pointerId) finishWindowMove(pointerId, true);
+    };
+    const pointerCancel = (event: PointerEvent): void => {
+      if (event.pointerId === pointerId) finishWindowMove(pointerId, false);
+    };
+    window.addEventListener('pointerup', pointerUp, true);
+    window.addEventListener('pointercancel', pointerCancel, true);
+    dragReleaseCleanup.current = () => {
+      window.removeEventListener('pointerup', pointerUp, true);
+      window.removeEventListener('pointercancel', pointerCancel, true);
+    };
+  };
+
+  useEffect(
+    () => () => {
+      dragReleaseCleanup.current?.();
+      dragReleaseCleanup.current = null;
+    },
+    [],
+  );
 
   const beginGeometry = (
     event: ReactPointerEvent<HTMLElement>,
@@ -68,20 +126,51 @@ export function FinderWindow({
       pointerId: event.pointerId,
       pointerX: event.clientX,
       pointerY: event.clientY,
+      captureTarget: event.currentTarget,
       original: windowState,
+      current: windowState,
+      hasMoved: false,
     };
-    if (target === 'drag') drag.current = session;
-    else resize.current = session;
+    if (target === 'drag') {
+      drag.current = session;
+      watchWindowMoveRelease(session.pointerId);
+    } else {
+      resize.current = session;
+    }
   };
 
   const moveWindow = (event: ReactPointerEvent<HTMLElement>): void => {
     const session = drag.current;
     if (!session || session.pointerId !== event.pointerId) return;
-    onGeometry(windowState.id, {
+    const surface = windowElement.current?.closest<HTMLElement>('.desktop-surface');
+    const maximumWidth = surface?.clientWidth ?? window.innerWidth;
+    const maximumHeight = surface?.clientHeight ?? window.innerHeight - 22;
+    const next = {
       ...session.original,
-      x: Math.round(session.original.x + event.clientX - session.pointerX),
-      y: Math.round(session.original.y + event.clientY - session.pointerY),
-    });
+      x: Math.max(
+        0,
+        Math.min(
+          maximumWidth - 96,
+          Math.round(session.original.x + event.clientX - session.pointerX),
+        ),
+      ),
+      y: Math.max(
+        0,
+        Math.min(
+          maximumHeight - 28,
+          Math.round(session.original.y + event.clientY - session.pointerY),
+        ),
+      ),
+    };
+    session.current = next;
+    session.hasMoved = next.x !== session.original.x || next.y !== session.original.y;
+    if (session.hasMoved && windowElement.current) {
+      windowElement.current.classList.add('is-shadow-dragging');
+      windowElement.current.dataset.windowDragging = 'true';
+    }
+    if (dragShadow.current) {
+      dragShadow.current.style.transform = `translate3d(${next.x - session.original.x}px, ${next.y - session.original.y}px, 0)`;
+    }
   };
 
   const resizeWindow = (event: ReactPointerEvent<HTMLElement>): void => {
@@ -94,11 +183,22 @@ export function FinderWindow({
     });
   };
 
-  const endGeometry = (event: ReactPointerEvent<HTMLElement>): void => {
+  const releasePointer = (event: ReactPointerEvent<HTMLElement>): void => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    drag.current = null;
+  };
+
+  const commitWindowMove = (event: ReactPointerEvent<HTMLElement>): void => {
+    finishWindowMove(event.pointerId, true);
+  };
+
+  const cancelWindowMove = (event: ReactPointerEvent<HTMLElement>): void => {
+    finishWindowMove(event.pointerId, false);
+  };
+
+  const endResize = (event: ReactPointerEvent<HTMLElement>): void => {
+    releasePointer(event);
     resize.current = null;
   };
 
@@ -118,15 +218,20 @@ export function FinderWindow({
       className={`finder-window ${active ? 'is-active' : 'is-inactive'}`}
       data-finder-window={windowState.id}
       onPointerDown={() => onActivate(windowState.id)}
+      ref={windowElement}
       style={style}
     >
+      <div aria-hidden="true" className="window-drag-shadow" ref={dragShadow}>
+        <span />
+      </div>
       <div
         className="window-titlebar"
+        data-window-drag-handle="true"
         onDoubleClick={() => onZoom(windowState.id)}
-        onPointerCancel={endGeometry}
+        onPointerCancel={cancelWindowMove}
         onPointerDown={(event) => beginGeometry(event, 'drag')}
         onPointerMove={moveWindow}
-        onPointerUp={endGeometry}
+        onPointerUp={commitWindowMove}
       >
         <button
           aria-label={`Close ${node.name}`}
@@ -154,8 +259,8 @@ export function FinderWindow({
         <span>
           {isDocument ? '1 page' : `${items.length} item${items.length === 1 ? '' : 's'}`}
         </span>
-        <span>{node.kind === 'disk' ? '512K in disk' : 'System Disk'}</span>
-        <span>{node.kind === 'disk' ? '184K available' : ''}</span>
+        <span>{node.kind === 'disk' ? '232K in disk' : 'System Disk'}</span>
+        <span>{node.kind === 'disk' ? '168K available' : ''}</span>
       </div>
       <div className="window-scroll-frame">
         <div className="window-content" ref={content}>
@@ -172,7 +277,7 @@ export function FinderWindow({
                   onDoubleClick={() => onItemOpen(item.id)}
                   type="button"
                 >
-                  <PixelIcon name={iconForNode(item)} size={48} />
+                  <PixelIcon name={iconForNode(item)} size={40} />
                   <span>{item.name}</span>
                 </button>
               ))}
@@ -238,10 +343,10 @@ export function FinderWindow({
         <button
           aria-label={`Resize ${node.name}`}
           className="window-grow-box"
-          onPointerCancel={endGeometry}
+          onPointerCancel={endResize}
           onPointerDown={(event) => beginGeometry(event, 'resize')}
           onPointerMove={resizeWindow}
-          onPointerUp={endGeometry}
+          onPointerUp={endResize}
           type="button"
         >
           <span />

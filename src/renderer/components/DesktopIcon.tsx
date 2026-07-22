@@ -116,7 +116,7 @@ export function DesktopIcon({
       type="button"
     >
       <span className="desktop-icon-glyph">
-        <PixelIcon name={icon} size={56} />
+        <PixelIcon name={icon} size={48} />
       </span>
       <span className="desktop-icon-label">{label}</span>
     </button>

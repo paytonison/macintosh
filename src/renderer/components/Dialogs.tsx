@@ -83,7 +83,7 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
   return (
     <ClassicDialog onClose={onClose} title="About This Macintosh" width={456}>
       <div className="about-content">
-        <PixelIcon name="computer" size={78} />
+        <PixelIcon name="computer" size={64} />
         <div className="about-copy">
           <h3>Macintosh Workbench</h3>
           <p>System Software 1.0</p>
@@ -94,15 +94,15 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
       <dl className="memory-table">
         <div>
           <dt>Built-in Memory:</dt>
-          <dd>4,096K</dd>
+          <dd>128K</dd>
         </div>
         <div>
           <dt>System Software:</dt>
-          <dd>1,280K</dd>
+          <dd>42K</dd>
         </div>
         <div>
           <dt>Largest Unused Block:</dt>
-          <dd>2,816K</dd>
+          <dd>86K</dd>
         </div>
       </dl>
       <div className="dialog-actions">
@@ -120,7 +120,7 @@ export function InfoDialog({ node, onClose }: { node: VfsNode; onClose: () => vo
       <div className="info-content">
         <PixelIcon
           name={node.kind === 'document' ? 'document' : node.kind === 'disk' ? 'disk' : 'folder'}
-          size={64}
+          size={48}
         />
         <dl>
           <div>
@@ -150,7 +150,7 @@ export function EjectTipDialog({ onClose }: { onClose: () => void }) {
   return (
     <ClassicDialog onClose={onClose} title="Eject System Disk" width={420}>
       <div className="message-content">
-        <PixelIcon name="disk" size={58} />
+        <PixelIcon name="disk" size={48} />
         <p>Drag System Disk onto Trash to eject it and shut down Macintosh Workbench.</p>
       </div>
       <div className="dialog-actions">

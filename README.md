@@ -20,7 +20,7 @@ npm run dev
 - Click, Shift-click, or drag a marquee to select desktop icons.
 - Drag System Disk or Trash to reposition it.
 - Double-click System Disk, Trash, folders, or documents to open Finder windows.
-- Drag a window title bar, use its close and zoom boxes, or resize it from the lower-right grow box.
+- Drag a window title bar to move its 1-bit outline; the full window redraws at the new position when released. Use its close and zoom boxes, or resize it from the lower-right grow box.
 - Use the System, File, Edit, View, and Special menus for About, New Folder, Open, Close, Get Info, selection, view, cleanup, and Trash commands.
 - To quit, drag **System Disk onto Trash**. Trash opens and highlights, the disk ejects with a sound and stepped animation, the current desktop and virtual disk are saved, and the Electron main process quits the application. An invalid drop snaps the disk back without changing the saved position.
 
