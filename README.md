@@ -2,7 +2,7 @@
 
 Macintosh Workbench is a clean-room Electron recreation of the tactile black-and-white desktop language associated with classic Macintosh System 6 and System 7. It is a desktop shell, not an emulator: it contains no Apple ROMs, copied system files, extracted icons, or proprietary startup artwork.
 
-The first version includes an original monochrome startup sequence, fixed Finder-style menu bar, draggable desktop icons, marquee and multi-selection, active/inactive draggable and resizable Finder windows, custom scrollbars, working Finder commands, an About dialog, original code-drawn bitmap icons, synthesized system sounds, and a persistent virtual disk.
+The first version includes an original monochrome startup sequence, fixed Finder-style menu bar, draggable desktop icons, marquee and multi-selection, active/inactive draggable and resizable Finder windows, custom scrollbars, working Finder commands, a functional Calculator desk accessory, an About dialog, original code-drawn 1-bit bitmap icons, synthesized system sounds, and a persistent virtual disk.
 
 ## Run it
 
@@ -22,6 +22,7 @@ npm run dev
 - Double-click System Disk, Trash, folders, or documents to open Finder windows.
 - Drag a window title bar to move its 1-bit outline; the full window redraws at the new position when released. Use its close and zoom boxes, or resize it from the lower-right grow box.
 - Use the System, File, Edit, View, and Special menus for About, New Folder, Open, Close, Get Info, selection, view, cleanup, and Trash commands.
+- Open **Calculator** from the System menu. It supports mouse or keyboard input for digits, decimal points, the four basic operators, Return/Enter for equals, C/Delete to clear, and Escape to close.
 - To quit, drag **System Disk onto Trash**. Trash opens and highlights, the disk ejects with a sound and stepped animation, the current desktop and virtual disk are saved, and the Electron main process quits the application. An invalid drop snaps the disk back without changing the saved position.
 
 ## Validation
@@ -33,7 +34,7 @@ npm run smoke
 
 `npm run check` runs formatting verification, ESLint, strict TypeScript checks for both renderer and Electron, Vitest, and the production build.
 
-`npm run smoke` launches the real Electron application with isolated temporary user data. It exercises a working menu command and About dialog, verifies that the disk follows native pointer input, verifies invalid-drop snapback, confirms the live Trash drop-target state and eject animation, observes the renderer-to-main quit request, checks the atomically written state file, and relaunches Electron to prove the disk and virtual filesystem reload.
+`npm run smoke` launches the real Electron application with isolated temporary user data. It exercises Calculator button and keyboard input, a working Finder menu command, and the About dialog; verifies that the disk follows native pointer input; verifies invalid-drop snapback; confirms the live Trash drop-target state and eject animation; observes the renderer-to-main quit request; checks the atomically written state file; and relaunches Electron to prove the disk and virtual filesystem reload.
 
 ## Architecture and security
 

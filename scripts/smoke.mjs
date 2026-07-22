@@ -78,7 +78,7 @@ try {
   }
 
   console.log(
-    'Electron smoke passed: menus, Finder drag overlap/release redraw, disk pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
+    'Electron smoke passed: menus, Calculator buttons/keyboard/outline drag, Finder drag overlap/release redraw, disk pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
   );
   console.log(
     'Persistence relaunch passed: Finder geometry, System Disk, and virtual filesystem reloaded.',

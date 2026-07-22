@@ -10,6 +10,7 @@ const PROBE_FILE_NAME = 'persistence-proof.json';
 const smokeMode = process.argv.includes('--smoke-test');
 const persistenceProbeMode = process.argv.includes('--persistence-probe');
 const captureAboutMode = process.argv.includes('--capture-about');
+const captureCalculatorMode = process.argv.includes('--capture-calculator');
 const captureStartupArgument = process.argv.find((value) => value.startsWith('--capture-startup='));
 const automationMode =
   smokeMode ||
@@ -130,6 +131,173 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     "document.querySelector('.classic-dialog .classic-default-button')?.click()",
     true,
   );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu="system"]\')?.click()',
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu-action="calculator"]\')?.click()',
+    true,
+  );
+  await pause(40);
+  const calculatorOpened = await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-calculator-window="true"]\') !== null',
+    true,
+  );
+  if (!calculatorOpened) throw new Error('Calculator did not open from the System menu.');
+
+  const calculatorDragStart = (await window.webContents.executeJavaScript(
+    `(() => {
+      const calculator = document.querySelector('[data-calculator-window="true"]');
+      const handle = calculator?.querySelector('[data-calculator-drag-handle="true"]');
+      if (!(calculator instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
+      const windowRect = calculator.getBoundingClientRect();
+      const handleRect = handle.getBoundingClientRect();
+      return {
+        window: { left: windowRect.left, top: windowRect.top },
+        pointer: {
+          x: Math.round(handleRect.left + handleRect.width * 0.72),
+          y: Math.round(handleRect.top + handleRect.height / 2)
+        }
+      };
+    })()`,
+    true,
+  )) as {
+    window: { left: number; top: number };
+    pointer: { x: number; y: number };
+  } | null;
+  if (!calculatorDragStart) throw new Error('Calculator title bar could not be located.');
+  const calculatorDragEnd = {
+    x: calculatorDragStart.pointer.x + 48,
+    y: calculatorDragStart.pointer.y + 32,
+  };
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...calculatorDragStart.pointer });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...calculatorDragStart.pointer,
+  });
+  for (let step = 1; step <= 4; step += 1) {
+    const progress = step / 4;
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: Math.round(
+        calculatorDragStart.pointer.x +
+          (calculatorDragEnd.x - calculatorDragStart.pointer.x) * progress,
+      ),
+      y: Math.round(
+        calculatorDragStart.pointer.y +
+          (calculatorDragEnd.y - calculatorDragStart.pointer.y) * progress,
+      ),
+    });
+    await pause(16);
+  }
+  const calculatorDragPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const calculator = document.querySelector('[data-calculator-window="true"]');
+      const outline = calculator?.querySelector('.calculator-drag-outline');
+      if (!(calculator instanceof HTMLElement) || !(outline instanceof HTMLElement)) return null;
+      const windowRect = calculator.getBoundingClientRect();
+      const outlineRect = outline.getBoundingClientRect();
+      return {
+        windowLeft: windowRect.left,
+        windowTop: windowRect.top,
+        outlineLeft: outlineRect.left,
+        outlineTop: outlineRect.top
+      };
+    })()`,
+    true,
+  )) as {
+    windowLeft: number;
+    windowTop: number;
+    outlineLeft: number;
+    outlineTop: number;
+  } | null;
+  if (
+    !calculatorDragPreview ||
+    Math.abs(calculatorDragPreview.windowLeft - calculatorDragStart.window.left) > 1 ||
+    Math.abs(calculatorDragPreview.windowTop - calculatorDragStart.window.top) > 1 ||
+    Math.abs(calculatorDragPreview.outlineLeft - (calculatorDragStart.window.left + 47)) > 2 ||
+    Math.abs(calculatorDragPreview.outlineTop - (calculatorDragStart.window.top + 31)) > 2
+  ) {
+    throw new Error(
+      `Calculator drag outline did not track correctly: ${JSON.stringify(calculatorDragPreview)}.`,
+    );
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...calculatorDragEnd,
+  });
+  await pause(40);
+  const calculatorDragCommitted = (await window.webContents.executeJavaScript(
+    `(() => {
+      const calculator = document.querySelector('[data-calculator-window="true"]');
+      if (!(calculator instanceof HTMLElement)) return null;
+      const rect = calculator.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, outlineGone: !calculator.querySelector('.calculator-drag-outline') };
+    })()`,
+    true,
+  )) as { left: number; top: number; outlineGone: boolean } | null;
+  if (
+    !calculatorDragCommitted ||
+    Math.abs(calculatorDragCommitted.left - (calculatorDragStart.window.left + 48)) > 1 ||
+    Math.abs(calculatorDragCommitted.top - (calculatorDragStart.window.top + 32)) > 1 ||
+    !calculatorDragCommitted.outlineGone
+  ) {
+    throw new Error(
+      `Calculator did not redraw at its release position: ${JSON.stringify(calculatorDragCommitted)}.`,
+    );
+  }
+
+  await window.webContents.executeJavaScript(
+    `(() => {
+      for (const key of ['7', '*', '6', '=']) {
+        document.querySelector('[data-calculator-key="' + key + '"]')?.click();
+      }
+    })()`,
+    true,
+  );
+  await pause(40);
+  const clickedCalculatorResult = await window.webContents.executeJavaScript(
+    "document.querySelector('[data-calculator-display]')?.textContent?.trim()",
+    true,
+  );
+  if (clickedCalculatorResult !== '42') {
+    throw new Error(`Calculator button input returned ${String(clickedCalculatorResult)}.`);
+  }
+
+  await window.webContents.executeJavaScript(
+    `(() => {
+      for (const key of ['c', '1', '2', '+', '3', 'Enter']) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key }));
+      }
+    })()`,
+    true,
+  );
+  await pause(40);
+  const keyboardCalculatorResult = await window.webContents.executeJavaScript(
+    "document.querySelector('[data-calculator-display]')?.textContent?.trim()",
+    true,
+  );
+  if (keyboardCalculatorResult !== '15') {
+    throw new Error(`Calculator keyboard input returned ${String(keyboardCalculatorResult)}.`);
+  }
+  await window.webContents.executeJavaScript(
+    "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))",
+    true,
+  );
+  await pause(40);
+  const calculatorClosed = await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-calculator-window="true"]\') === null',
+    true,
+  );
+  if (!calculatorClosed) throw new Error('Calculator did not close with Escape.');
+
   await window.webContents.executeJavaScript(
     'document.querySelector(\'[data-menu="file"]\')?.click()',
     true,
@@ -549,6 +717,26 @@ const captureScreen = async (window: BrowserWindow, destination: string): Promis
     await pause(60);
     await window.webContents.executeJavaScript(
       'document.querySelector(\'[data-menu-action="about"]\')?.click()',
+      true,
+    );
+  }
+  if (captureCalculatorMode) {
+    await window.webContents.executeJavaScript(
+      'document.querySelector(\'[data-menu="system"]\')?.click()',
+      true,
+    );
+    await pause(60);
+    await window.webContents.executeJavaScript(
+      'document.querySelector(\'[data-menu-action="calculator"]\')?.click()',
+      true,
+    );
+    await pause(60);
+    await window.webContents.executeJavaScript(
+      `(() => {
+        for (const key of ['7', '*', '6', '=']) {
+          document.querySelector('[data-calculator-key="' + key + '"]')?.click();
+        }
+      })()`,
       true,
     );
   }

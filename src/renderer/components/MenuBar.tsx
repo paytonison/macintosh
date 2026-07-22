@@ -68,7 +68,7 @@ export function MenuBar({ menus, clock }: MenuBarProps) {
                 }}
                 type="button"
               >
-                {menu.system ? <PixelIcon name="computer" size={18} /> : menu.label}
+                {menu.system ? <PixelIcon name="computer" size={16} /> : menu.label}
               </button>
               {open && (
                 <div

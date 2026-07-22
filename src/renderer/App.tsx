@@ -9,6 +9,7 @@ import {
   type WindowGeometry,
 } from '../shared/state';
 import { playEjectSound } from './audio/sounds';
+import { CalculatorWindow } from './components/CalculatorWindow';
 import { AboutDialog, EjectTipDialog, InfoDialog } from './components/Dialogs';
 import { DesktopIcon } from './components/DesktopIcon';
 import { DesktopSurface } from './components/DesktopSurface';
@@ -54,6 +55,7 @@ export default function App() {
   const [trashHover, setTrashHover] = useState(false);
   const [ejecting, setEjecting] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
+  const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const dragOrigins = useRef<Partial<Record<DesktopIconId, Point>>>({});
   const zoomRestore = useRef<Map<string, WindowGeometry>>(new Map());
@@ -367,6 +369,8 @@ export default function App() {
     }
   }, [activeNode, state]);
 
+  const closeCalculator = useCallback((): void => setCalculatorOpen(false), []);
+
   const menus = useMemo<MenuDefinition[]>(() => {
     if (!state) return [];
     const trashHasItems = state.nodes.some((node) => node.parentId === 'trash');
@@ -380,7 +384,13 @@ export default function App() {
             label: 'About This Macintosh…',
             action: () => setDialog({ type: 'about' }),
           },
-          { id: 'system-separator', separator: true },
+          { id: 'system-separator-about', separator: true },
+          {
+            id: 'calculator',
+            label: 'Calculator',
+            action: () => setCalculatorOpen(true),
+          },
+          { id: 'system-separator-info', separator: true },
           {
             id: 'system-info',
             label: 'System Disk Info',
@@ -529,7 +539,7 @@ export default function App() {
           const items = listChildren(state.nodes, node.id, state.desktop.viewMode);
           return (
             <FinderWindow
-              active={activeWindowId === windowState.id}
+              active={!calculatorOpen && activeWindowId === windowState.id}
               items={items}
               key={windowState.id}
               node={node}
@@ -546,6 +556,7 @@ export default function App() {
             />
           );
         })}
+        {calculatorOpen ? <CalculatorWindow onClose={closeCalculator} /> : null}
         <DesktopIcon
           dragging={draggingIcon === 'system-disk'}
           ejecting={ejecting}
@@ -563,7 +574,11 @@ export default function App() {
         />
         <DesktopIcon
           dragging={draggingIcon === 'trash'}
-          icon={trashHover ? 'trash-open' : 'trash'}
+          icon={
+            trashHover || state.nodes.some((node) => node.parentId === 'trash')
+              ? 'trash-full'
+              : 'trash'
+          }
           id="trash"
           label="Trash"
           onDrag={previewIconDrag}

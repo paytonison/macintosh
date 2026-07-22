@@ -277,7 +277,7 @@ export function FinderWindow({
                   onDoubleClick={() => onItemOpen(item.id)}
                   type="button"
                 >
-                  <PixelIcon name={iconForNode(item)} size={40} />
+                  <PixelIcon name={iconForNode(item)} size={32} />
                   <span>{item.name}</span>
                 </button>
               ))}
@@ -294,7 +294,7 @@ export function FinderWindow({
                   role="listitem"
                   type="button"
                 >
-                  <PixelIcon name={iconForNode(item)} size={24} />
+                  <PixelIcon name={iconForNode(item)} size={16} />
                   <span>{item.name}</span>
                   <span className="finder-kind">{item.kind}</span>
                 </button>
