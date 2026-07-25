@@ -41,12 +41,13 @@ describe('menu shortcut matching', () => {
     expect(findMenuShortcutEntry(menus, shortcutEvent('c'))?.id).toBe('copy');
   });
 
-  it('preserves Control as an alternate modifier and ignores unavailable shortcuts', () => {
+  it('requires Command and ignores unavailable or additionally modified shortcuts', () => {
     expect(
-      findMenuShortcutEntry(menus, shortcutEvent('c', { metaKey: false, ctrlKey: true }))?.id,
-    ).toBe('copy');
+      findMenuShortcutEntry(menus, shortcutEvent('c', { metaKey: false, ctrlKey: true })),
+    ).toBeNull();
     expect(findMenuShortcutEntry(menus, shortcutEvent('o'))).toBeNull();
     expect(findMenuShortcutEntry(menus, shortcutEvent('n', { metaKey: false }))).toBeNull();
+    expect(findMenuShortcutEntry(menus, shortcutEvent('n', { ctrlKey: true }))).toBeNull();
     expect(findMenuShortcutEntry(menus, shortcutEvent('n', { altKey: true }))).toBeNull();
     expect(findMenuShortcutEntry(menus, shortcutEvent('n', { shiftKey: true }))).toBeNull();
   });

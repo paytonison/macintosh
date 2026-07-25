@@ -77,6 +77,7 @@ export default function App() {
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [pointerSessionActive, setPointerSessionActive] = useState(false);
+  const [interactionCancelToken, setInteractionCancelToken] = useState(0);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
   const dragOrigins = useRef<Partial<Record<DesktopIconId, Point>>>({});
@@ -118,6 +119,8 @@ export default function App() {
 
   const reportPersistenceError = useCallback((message: string): void => {
     setOpenMenu(null);
+    setPointerSessionActive(false);
+    setInteractionCancelToken((current) => current + 1);
     setPersistenceError(message);
   }, []);
 
@@ -893,6 +896,7 @@ export default function App() {
         openMenu={openMenu}
       />
       <DesktopSurface
+        interactionCancelToken={interactionCancelToken}
         onBackgroundClick={() => {
           setDesktopSelection(new Set());
           setFinderSelection(new Set());
@@ -912,6 +916,7 @@ export default function App() {
           return (
             <FinderWindow
               active={!calculatorOpen && activeWindowId === windowState.id}
+              interactionCancelToken={interactionCancelToken}
               items={items}
               key={windowState.id}
               node={node}
@@ -933,6 +938,7 @@ export default function App() {
         })}
         {calculatorOpen ? (
           <CalculatorWindow
+            interactionCancelToken={interactionCancelToken}
             keyboardEnabled={keyboardOwner === 'calculator'}
             onClose={closeCalculator}
             onInteractionChange={setPointerSessionActive}
@@ -943,6 +949,7 @@ export default function App() {
           ejecting={ejecting}
           icon="disk"
           id="system-disk"
+          interactionCancelToken={interactionCancelToken}
           label="System Disk"
           onDrag={previewIconDrag}
           onDragCancel={cancelIconDrag}
@@ -963,6 +970,7 @@ export default function App() {
               : 'trash'
           }
           id="trash"
+          interactionCancelToken={interactionCancelToken}
           label="Trash"
           onDrag={previewIconDrag}
           onDragCancel={cancelIconDrag}

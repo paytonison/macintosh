@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   type CSSProperties,
   type DragEvent as ReactDragEvent,
@@ -16,6 +17,7 @@ import { PixelIcon, type PixelIconName } from './PixelIcon';
 
 interface FinderWindowProps {
   windowState: FinderWindowState;
+  interactionCancelToken: number;
   node: VfsNode;
   items: VfsNode[];
   active: boolean;
@@ -51,6 +53,7 @@ const iconForNode = (node: VfsNode): PixelIconName => {
 
 export function FinderWindow({
   windowState,
+  interactionCancelToken,
   node,
   items,
   active,
@@ -73,6 +76,25 @@ export function FinderWindow({
   const windowElement = useRef<HTMLElement>(null);
   const dragShadow = useRef<HTMLDivElement>(null);
   const dragReleaseCleanup = useRef<(() => void) | null>(null);
+
+  useLayoutEffect(() => {
+    const moveSession = drag.current;
+    const resizeSession = resize.current;
+    if (!moveSession && !resizeSession) return;
+    dragReleaseCleanup.current?.();
+    dragReleaseCleanup.current = null;
+    for (const session of [moveSession, resizeSession]) {
+      if (session?.captureTarget.hasPointerCapture(session.pointerId)) {
+        session.captureTarget.releasePointerCapture(session.pointerId);
+      }
+    }
+    drag.current = null;
+    resize.current = null;
+    windowElement.current?.classList.remove('is-shadow-dragging');
+    if (windowElement.current) delete windowElement.current.dataset.windowDragging;
+    if (dragShadow.current) dragShadow.current.style.transform = 'translate3d(0, 0, 0)';
+    onInteractionChange(false);
+  }, [interactionCancelToken, onInteractionChange]);
 
   const clearDragShadow = (): void => {
     windowElement.current?.classList.remove('is-shadow-dragging');

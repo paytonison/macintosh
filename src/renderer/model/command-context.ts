@@ -26,7 +26,7 @@ export const findMenuShortcutEntry = <TMenu extends ShortcutMenu>(
   menus: readonly TMenu[],
   event: ShortcutEvent,
 ): TMenu['entries'][number] | null => {
-  if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey) return null;
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
   const key = event.key.toLowerCase();
   for (const menu of menus) {
     const entry = menu.entries.find(

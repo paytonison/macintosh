@@ -41,6 +41,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 let mainWindow: BrowserWindow | null = null;
 let applicationIcon: NativeImage | null = null;
 let quitRequested = false;
+let smokeSaveFailuresRemaining = 0;
 
 const getApplicationIcon = (): NativeImage => {
   if (applicationIcon) return applicationIcon;
@@ -122,6 +123,10 @@ const registerIpc = (): void => {
 
   ipcMain.handle(IPC_CHANNELS.saveState, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    if (smokeMode && smokeSaveFailuresRemaining > 0) {
+      smokeSaveFailuresRemaining -= 1;
+      throw new Error('Injected smoke-test save failure.');
+    }
     await saveState(sanitizeState(value));
     return { ok: true as const };
   });
@@ -200,6 +205,13 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
     true,
   )) as number;
+  const importFixtureRoot = path.join(app.getPath('userData'), 'smoke-import-fixtures');
+  const importFolder = path.join(importFixtureRoot, 'Drop Folder');
+  const importDocument = path.join(importFixtureRoot, 'Dropped Note.txt');
+  await mkdir(importFolder, { recursive: true });
+  await writeFile(importDocument, 'This document arrived through an external Electron drop.\n');
+  await writeFile(path.join(importFolder, 'Nested Note.txt'), 'Nested folder import passed.\n');
+
   await window.webContents.executeJavaScript(
     'document.querySelector(\'[data-menu="system"]\')?.click()',
     true,
@@ -279,8 +291,9 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
           (calculatorDragEnd.y - calculatorDragStart.pointer.y) * progress,
       ),
     });
-    await pause(16);
+    await pause(28);
   }
+  await pause(60);
   const calculatorDragPreview = (await window.webContents.executeJavaScript(
     `(() => {
       const calculator = document.querySelector('[data-calculator-window="true"]');
@@ -390,19 +403,31 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   await pause(40);
-  const modalMenuPoint = (await window.webContents.executeJavaScript(
+  const modalCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const menu = document.querySelector('[data-menu="system"]');
-      if (!(menu instanceof HTMLElement)) return null;
-      const bounds = menu.getBoundingClientRect();
+      const content = document.querySelector(
+        '[data-finder-window="window-system-disk"] .window-content'
+      );
+      if (!(menu instanceof HTMLElement) || !(content instanceof HTMLElement)) return null;
+      const menuBounds = menu.getBoundingClientRect();
+      const contentBounds = content.getBoundingClientRect();
       return {
-        x: Math.round(bounds.left + bounds.width / 2),
-        y: Math.round(bounds.top + bounds.height / 2)
+        menu: {
+          x: Math.round(menuBounds.left + menuBounds.width / 2),
+          y: Math.round(menuBounds.top + menuBounds.height / 2)
+        },
+        drop: {
+          x: Math.round(contentBounds.left + contentBounds.width * 0.88),
+          y: Math.round(contentBounds.top + contentBounds.height * 0.82)
+        }
       };
     })()`,
     true,
-  )) as { x: number; y: number } | null;
-  if (!modalMenuPoint) throw new Error('The System menu could not be located beneath the dialog.');
+  )) as { menu: { x: number; y: number }; drop: { x: number; y: number } } | null;
+  if (!modalCoordinates) {
+    throw new Error('The menu and Finder drop surface could not be located beneath the dialog.');
+  }
 
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: '7' });
   window.webContents.sendInputEvent({ type: 'keyUp', keyCode: '7' });
@@ -410,45 +435,55 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'N', modifiers: ['meta'] });
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Tab' });
   window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Tab' });
-  window.webContents.sendInputEvent({ type: 'mouseMove', ...modalMenuPoint });
+  window.webContents.sendInputEvent({
+    type: 'keyDown',
+    keyCode: 'Tab',
+    modifiers: ['shift'],
+  });
+  window.webContents.sendInputEvent({
+    type: 'keyUp',
+    keyCode: 'Tab',
+    modifiers: ['shift'],
+  });
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...modalCoordinates.menu });
   window.webContents.sendInputEvent({
     type: 'mouseDown',
     button: 'left',
     clickCount: 1,
-    ...modalMenuPoint,
+    ...modalCoordinates.menu,
   });
   window.webContents.sendInputEvent({
     type: 'mouseUp',
     button: 'left',
     clickCount: 1,
-    ...modalMenuPoint,
+    ...modalCoordinates.menu,
   });
-  await window.webContents.executeJavaScript(
-    `(() => {
-      const layer = document.querySelector('[data-modal-layer="dialog"]');
-      if (!(layer instanceof HTMLElement)) return false;
-      const transfer = new DataTransfer();
-      transfer.setData('application/x-macintosh-vfs-node-ids', JSON.stringify(['finder-notes']));
-      layer.dispatchEvent(new DragEvent('dragover', {
-        bubbles: true, cancelable: true, dataTransfer: transfer
-      }));
-      return layer.dispatchEvent(new DragEvent('drop', {
-        bubbles: true, cancelable: true, dataTransfer: transfer
-      }));
-    })()`,
-    true,
-  );
-  await pause(100);
+  window.webContents.debugger.attach('1.3');
+  try {
+    const dragData = { items: [], files: [importDocument], dragOperationsMask: 1 };
+    for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      await window.webContents.debugger.sendCommand('Input.dispatchDragEvent', {
+        type,
+        ...modalCoordinates.drop,
+        data: dragData,
+      });
+    }
+  } finally {
+    window.webContents.debugger.detach();
+  }
+  await pause(280);
   const modalPrecedence = (await window.webContents.executeJavaScript(
     `(() => {
       const layer = document.querySelector('[data-modal-layer="dialog"]');
       return {
         aboutOpen: document.querySelector('[aria-label="About This Macintosh"]') !== null,
         calculatorDisplay: document.querySelector('[data-calculator-display]')?.textContent?.trim(),
-        dropBlocked: layer?.getAttribute('data-drop-blocked') === 'true',
+        dropBlocked:
+          document.querySelector('[data-vfs-item="welcome"]') !== null &&
+          [...document.querySelectorAll('[data-vfs-item]')].every(
+            (item) => !item.textContent?.includes('Dropped Note.txt')
+          ),
         focusContained: layer instanceof HTMLElement && layer.contains(document.activeElement),
-        finderNotesStayedNested:
-          document.querySelector('[data-vfs-item="finder-notes"]') === null,
         menuBlocked:
           document.querySelector('[data-menu="system"]')?.getAttribute('aria-expanded') === 'false',
         vfsCount: Number(
@@ -462,7 +497,6 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     calculatorDisplay: string | undefined;
     dropBlocked: boolean;
     focusContained: boolean;
-    finderNotesStayedNested: boolean;
     menuBlocked: boolean;
     vfsCount: number;
   } | null;
@@ -471,7 +505,6 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     modalPrecedence.calculatorDisplay !== '15' ||
     !modalPrecedence.dropBlocked ||
     !modalPrecedence.focusContained ||
-    !modalPrecedence.finderNotesStayedNested ||
     !modalPrecedence.menuBlocked ||
     modalPrecedence.vfsCount !== initialVfsCount
   ) {
@@ -536,13 +569,6 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error('Command-N did not use the New Folder menu action.');
   }
 
-  const importFixtureRoot = path.join(app.getPath('userData'), 'smoke-import-fixtures');
-  const importFolder = path.join(importFixtureRoot, 'Drop Folder');
-  const importDocument = path.join(importFixtureRoot, 'Dropped Note.txt');
-  await mkdir(importFolder, { recursive: true });
-  await writeFile(importDocument, 'This document arrived through an external Electron drop.\n');
-  await writeFile(path.join(importFolder, 'Nested Note.txt'), 'Nested folder import passed.\n');
-
   const importDropPoint = (await window.webContents.executeJavaScript(
     `(() => {
       const content = document.querySelector(
@@ -576,6 +602,17 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       ...importDropPoint,
       data: dragData,
     });
+    await pause(40);
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'N', modifiers: ['meta'] });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'N', modifiers: ['meta'] });
+    await pause(60);
+    const dragOwnedVfsCount = (await window.webContents.executeJavaScript(
+      "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
+      true,
+    )) as number;
+    if (dragOwnedVfsCount !== shortcutVfsCount) {
+      throw new Error('Command-N escaped an active external file drag.');
+    }
     await window.webContents.debugger.sendCommand('Input.dispatchDragEvent', {
       type: 'drop',
       ...importDropPoint,
@@ -709,6 +746,22 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!movedFolderHidden) throw new Error('Internal folder drop did not move the folder.');
+
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['meta'] });
+  await pause(60);
+  const commandAfterInternalDrop = (await window.webContents.executeJavaScript(
+    `(() => {
+      const items = [...document.querySelectorAll(
+        '[data-finder-window="window-system-disk"] [data-vfs-item]'
+      )];
+      return items.length > 0 && items.every((item) => item.classList.contains('is-selected'));
+    })()`,
+    true,
+  )) as boolean;
+  if (!commandAfterInternalDrop) {
+    throw new Error('Finder command ownership did not resume after an internal drop.');
+  }
 
   const applicationsOpened = await window.webContents.executeJavaScript(
     `(() => {
@@ -1103,6 +1156,85 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!trashCancelRestored) throw new Error('Cancelled Trash drag committed its preview.');
+
+  await pause(260);
+  smokeSaveFailuresRemaining = 1;
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu="special"]\')?.click()',
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu-action="clean-desktop"]\')?.click()',
+    true,
+  );
+  await pause(20);
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...coordinates.disk });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...coordinates.disk,
+  });
+  for (let step = 1; step <= 8; step += 1) {
+    const progress = step / 8;
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: Math.round(coordinates.disk.x + (coordinates.trash.x - coordinates.disk.x) * progress),
+      y: Math.round(coordinates.disk.y + (coordinates.trash.y - coordinates.disk.y) * progress),
+    });
+    await pause(16);
+  }
+  let saveFailureAlertOpened = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    saveFailureAlertOpened = (await window.webContents.executeJavaScript(
+      'document.querySelector(\'[aria-label="Persistence error"]\') !== null',
+      true,
+    )) as boolean;
+    if (saveFailureAlertOpened) break;
+    await pause(30);
+  }
+  if (!saveFailureAlertOpened) {
+    throw new Error('Injected save failure did not present its persistence alert.');
+  }
+  const failedSaveCancelledCapture = await window.webContents.executeJavaScript(
+    `(() => {
+      const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+      if (!(disk instanceof HTMLElement)) return false;
+      const bounds = disk.getBoundingClientRect();
+      return !disk.classList.contains('is-dragging') &&
+        Math.hypot(
+          bounds.left + bounds.width / 2 - ${coordinates.disk.x},
+          bounds.top + bounds.height / 2 - ${coordinates.disk.y}
+        ) <= 2;
+    })()`,
+    true,
+  );
+  if (!failedSaveCancelledCapture) {
+    throw new Error('Persistence alert did not cancel the captured System Disk drag.');
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...coordinates.trash,
+  });
+  await pause(100);
+  const failedSaveStayedModal = await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Persistence error"]') !== null &&
+      document.querySelector('[data-desktop-icon="system-disk"]')
+        ?.classList.contains('is-ejecting') === false`,
+    true,
+  );
+  if (!failedSaveStayedModal || quitRequested) {
+    throw new Error('Release beneath the persistence alert started an ejection.');
+  }
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[aria-label="Persistence error"] button\')?.click()',
+    true,
+  );
+  await pause(40);
 
   const invalidTarget = {
     x: Math.max(140, coordinates.disk.x - 240),

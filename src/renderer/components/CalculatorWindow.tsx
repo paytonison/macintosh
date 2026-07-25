@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useReducer,
   useRef,
   useState,
@@ -16,6 +17,7 @@ import {
 } from '../model/calculator';
 
 interface CalculatorWindowProps {
+  interactionCancelToken: number;
   keyboardEnabled: boolean;
   onClose: () => void;
   onInteractionChange: (active: boolean) => void;
@@ -23,6 +25,7 @@ interface CalculatorWindowProps {
 
 interface DragSession {
   pointerId: number;
+  captureTarget: HTMLDivElement;
   pointerOrigin: Point;
   windowOrigin: Point;
   current: Point;
@@ -72,6 +75,7 @@ const inputForKeyboardKey = (key: string): CalculatorInput | null => {
 };
 
 export function CalculatorWindow({
+  interactionCancelToken,
   keyboardEnabled,
   onClose,
   onInteractionChange,
@@ -81,6 +85,17 @@ export function CalculatorWindow({
   const [previewPosition, setPreviewPosition] = useState<Point | null>(null);
   const drag = useRef<DragSession | null>(null);
   const windowElement = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const active = drag.current;
+    if (!active) return;
+    if (active.captureTarget.hasPointerCapture(active.pointerId)) {
+      active.captureTarget.releasePointerCapture(active.pointerId);
+    }
+    drag.current = null;
+    setPreviewPosition(null);
+    onInteractionChange(false);
+  }, [interactionCancelToken, onInteractionChange]);
 
   useEffect(() => {
     if (!keyboardEnabled) return;
@@ -116,6 +131,7 @@ export function CalculatorWindow({
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = {
       pointerId: event.pointerId,
+      captureTarget: event.currentTarget,
       pointerOrigin: { x: event.clientX, y: event.clientY },
       windowOrigin: position,
       current: position,

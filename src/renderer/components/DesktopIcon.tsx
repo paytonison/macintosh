@@ -1,10 +1,16 @@
-import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useLayoutEffect,
+  useRef,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
 import type { Point } from '../../shared/state';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
 
 interface DesktopIconProps {
   id: 'system-disk' | 'trash';
+  interactionCancelToken: number;
   label: string;
   icon: PixelIconName;
   position: Point;
@@ -24,6 +30,7 @@ interface DesktopIconProps {
 
 interface DragSession {
   pointerId: number;
+  captureTarget: HTMLButtonElement;
   origin: Point;
   pointerOrigin: Point;
   hasMoved: boolean;
@@ -31,6 +38,7 @@ interface DragSession {
 
 export function DesktopIcon({
   id,
+  interactionCancelToken,
   label,
   icon,
   position,
@@ -48,6 +56,22 @@ export function DesktopIcon({
   onInteractionChange,
 }: DesktopIconProps) {
   const session = useRef<DragSession | null>(null);
+  const cancellationHandlers = useRef({ onDragCancel, onInteractionChange });
+
+  useLayoutEffect(() => {
+    cancellationHandlers.current = { onDragCancel, onInteractionChange };
+  }, [onDragCancel, onInteractionChange]);
+
+  useLayoutEffect(() => {
+    const active = session.current;
+    if (!active) return;
+    if (active.captureTarget.hasPointerCapture(active.pointerId)) {
+      active.captureTarget.releasePointerCapture(active.pointerId);
+    }
+    session.current = null;
+    cancellationHandlers.current.onInteractionChange(false);
+    if (active.hasMoved) cancellationHandlers.current.onDragCancel(id);
+  }, [id, interactionCancelToken]);
 
   const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     if (event.button !== 0 || ejecting) return;
@@ -56,6 +80,7 @@ export function DesktopIcon({
     event.currentTarget.setPointerCapture(event.pointerId);
     session.current = {
       pointerId: event.pointerId,
+      captureTarget: event.currentTarget,
       origin: position,
       pointerOrigin: { x: event.clientX, y: event.clientY },
       hasMoved: false,

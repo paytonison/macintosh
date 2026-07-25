@@ -1,4 +1,5 @@
 import {
+  useLayoutEffect,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
@@ -10,6 +11,7 @@ import { rectanglesOverlap, type Rectangle } from '../model/vfs';
 
 interface DesktopSurfaceProps {
   children: ReactNode;
+  interactionCancelToken: number;
   vfsCount: number;
   onBackgroundClick: () => void;
   onMarquee: (ids: Array<'system-disk' | 'trash'>) => void;
@@ -29,6 +31,7 @@ interface MarqueeState {
 
 export function DesktopSurface({
   children,
+  interactionCancelToken,
   vfsCount,
   onBackgroundClick,
   onMarquee,
@@ -37,7 +40,22 @@ export function DesktopSurface({
 }: DesktopSurfaceProps) {
   const surface = useRef<HTMLDivElement>(null);
   const highlightedDropTarget = useRef<HTMLElement | null>(null);
+  const marqueeSession = useRef<MarqueeState | null>(null);
   const [marquee, setMarquee] = useState<MarqueeState | null>(null);
+
+  useLayoutEffect(() => {
+    const active = marqueeSession.current;
+    if (active) {
+      if (surface.current?.hasPointerCapture(active.pointerId)) {
+        surface.current.releasePointerCapture(active.pointerId);
+      }
+      marqueeSession.current = null;
+      setMarquee(null);
+      onInteractionChange(false);
+    }
+    highlightedDropTarget.current?.classList.remove('is-file-drop-target');
+    highlightedDropTarget.current = null;
+  }, [interactionCancelToken, onInteractionChange]);
 
   const clearDropTarget = (): void => {
     highlightedDropTarget.current?.classList.remove('is-file-drop-target');
@@ -76,6 +94,7 @@ export function DesktopSurface({
     const internal = event.dataTransfer.types.includes(VFS_DRAG_TYPE);
     const external = !internal && event.dataTransfer.types.includes('Files');
     if (!external && !internal) return;
+    onInteractionChange(true);
     const target = resolveDropTarget(event.target, external);
     if (!target) {
       clearDropTarget();
@@ -91,6 +110,7 @@ export function DesktopSurface({
   };
 
   const drop = (event: ReactDragEvent<HTMLDivElement>): void => {
+    onInteractionChange(false);
     const nodeIds = parseNodeIds(event.dataTransfer);
     const files = Array.from(event.dataTransfer.files);
     const target = resolveDropTarget(event.target, nodeIds.length === 0 && files.length > 0);
@@ -105,18 +125,21 @@ export function DesktopSurface({
     if (event.button !== 0 || event.target !== event.currentTarget) return;
     onInteractionChange(true);
     event.currentTarget.setPointerCapture(event.pointerId);
-    setMarquee({
+    const next = {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       currentX: event.clientX,
       currentY: event.clientY,
-    });
+    };
+    marqueeSession.current = next;
+    setMarquee(next);
   };
 
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (!marquee || marquee.pointerId !== event.pointerId) return;
     const next = { ...marquee, currentX: event.clientX, currentY: event.clientY };
+    marqueeSession.current = next;
     setMarquee(next);
     const selection: Rectangle = {
       left: Math.min(next.startX, next.currentX),
@@ -151,6 +174,7 @@ export function DesktopSurface({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    marqueeSession.current = null;
     setMarquee(null);
     onInteractionChange(false);
     if (distance < 4) onBackgroundClick();
@@ -161,6 +185,7 @@ export function DesktopSurface({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    marqueeSession.current = null;
     setMarquee(null);
     onInteractionChange(false);
   };
@@ -179,13 +204,17 @@ export function DesktopSurface({
       className="desktop-surface"
       data-drop-destination="system-disk"
       data-vfs-count={vfsCount}
-      onDragEnd={clearDropTarget}
+      onDragEnd={() => {
+        clearDropTarget();
+        onInteractionChange(false);
+      }}
       onDragLeave={(event) => {
         if (
           !(event.relatedTarget instanceof HTMLElement) ||
           !event.currentTarget.contains(event.relatedTarget)
         ) {
           clearDropTarget();
+          onInteractionChange(false);
         }
       }}
       onDragOver={dragOver}
