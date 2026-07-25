@@ -16,7 +16,9 @@ import {
 } from '../model/calculator';
 
 interface CalculatorWindowProps {
+  keyboardEnabled: boolean;
   onClose: () => void;
+  onInteractionChange: (active: boolean) => void;
 }
 
 interface DragSession {
@@ -69,7 +71,11 @@ const inputForKeyboardKey = (key: string): CalculatorInput | null => {
   return null;
 };
 
-export function CalculatorWindow({ onClose }: CalculatorWindowProps) {
+export function CalculatorWindow({
+  keyboardEnabled,
+  onClose,
+  onInteractionChange,
+}: CalculatorWindowProps) {
   const [calculator, pressKey] = useReducer(pressCalculatorKey, INITIAL_CALCULATOR_STATE);
   const [position, setPosition] = useState<Point>({ x: 82, y: 82 });
   const [previewPosition, setPreviewPosition] = useState<Point | null>(null);
@@ -77,6 +83,7 @@ export function CalculatorWindow({ onClose }: CalculatorWindowProps) {
   const windowElement = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    if (!keyboardEnabled) return;
     windowElement.current?.focus();
     const keyDown = (event: KeyboardEvent): void => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -93,11 +100,19 @@ export function CalculatorWindow({ onClose }: CalculatorWindowProps) {
     };
     window.addEventListener('keydown', keyDown);
     return () => window.removeEventListener('keydown', keyDown);
-  }, [onClose]);
+  }, [keyboardEnabled, onClose]);
+
+  useEffect(
+    () => () => {
+      if (drag.current) onInteractionChange(false);
+    },
+    [onInteractionChange],
+  );
 
   const beginDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return;
     event.stopPropagation();
+    onInteractionChange(true);
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = {
       pointerId: event.pointerId,
@@ -144,6 +159,7 @@ export function CalculatorWindow({ onClose }: CalculatorWindowProps) {
     if (commit) setPosition(session.current);
     drag.current = null;
     setPreviewPosition(null);
+    onInteractionChange(false);
   };
 
   const outlineStyle = previewPosition

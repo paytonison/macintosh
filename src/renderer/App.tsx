@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   createDefaultState,
+  sanitizeState,
   type FinderWindowState,
   type MacintoshState,
   type Point,
@@ -9,14 +10,16 @@ import {
   type WindowGeometry,
 } from '../shared/state';
 import type { ImportedEntry } from '../shared/contracts';
-import { playEjectSound } from './audio/sounds';
+import { playEjectSound, playMenuTick } from './audio/sounds';
 import { CalculatorWindow } from './components/CalculatorWindow';
-import { AboutDialog, EjectTipDialog, InfoDialog } from './components/Dialogs';
+import { AboutDialog, EjectTipDialog, InfoDialog, PersistenceAlert } from './components/Dialogs';
 import { DesktopIcon } from './components/DesktopIcon';
 import { DesktopSurface, VFS_DRAG_TYPE } from './components/DesktopSurface';
 import { FinderWindow } from './components/FinderWindow';
-import { MenuBar, type MenuDefinition } from './components/MenuBar';
+import { MenuBar, type MenuDefinition, type MenuEntry } from './components/MenuBar';
 import { StartupScreen } from './components/StartupScreen';
+import { deriveFinderCommandContext, findMenuShortcutEntry } from './model/command-context';
+import { resolveKeyboardOwner } from './model/input-owner';
 import {
   addFolder,
   duplicateNodes,
@@ -72,6 +75,8 @@ export default function App() {
   const [ejecting, setEjecting] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [pointerSessionActive, setPointerSessionActive] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
   const dragOrigins = useRef<Partial<Record<DesktopIconId, Point>>>({});
@@ -97,6 +102,23 @@ export default function App() {
     if (transferNoticeTimer.current) clearTimeout(transferNoticeTimer.current);
     setTransferNotice({ message, error });
     transferNoticeTimer.current = setTimeout(() => setTransferNotice(null), error ? 5_000 : 3_200);
+  }, []);
+
+  const invokeMenuEntry = useCallback((entry: MenuEntry): void => {
+    if (entry.disabled || entry.separator) return;
+    setOpenMenu(null);
+    playMenuTick();
+    entry.action?.();
+  }, []);
+
+  const persistState = useCallback(
+    (nextState: MacintoshState) => window.macintosh.saveState(sanitizeState(nextState)),
+    [],
+  );
+
+  const reportPersistenceError = useCallback((message: string): void => {
+    setOpenMenu(null);
+    setPersistenceError(message);
   }, []);
 
   const pasteDestinationId = useCallback((current: MacintoshState): string => {
@@ -162,34 +184,56 @@ export default function App() {
         console.error(error);
         hydrated.current = true;
         setState(createDefaultState());
-        setPersistenceError('The saved desktop could not be read. A fresh desktop was opened.');
+        reportPersistenceError('The saved desktop could not be read. A fresh desktop was opened.');
         document.body.dataset.stateLoaded = 'false';
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reportPersistenceError]);
 
   useEffect(() => {
     if (!state || !hydrated.current || ejecting) return;
     const timer = setTimeout(() => {
-      void window.macintosh.saveState(state).catch((error: unknown) => {
+      void persistState(state).catch((error: unknown) => {
         console.error(error);
-        setPersistenceError('The desktop could not be saved.');
+        reportPersistenceError('The desktop could not be saved.');
       });
     }, 220);
     return () => clearTimeout(timer);
-  }, [state, ejecting]);
+  }, [state, ejecting, persistState, reportPersistenceError]);
 
   const ready = Boolean(state && startupComplete);
   useEffect(() => {
     document.body.dataset.macReady = ready ? 'true' : 'false';
   }, [ready]);
 
-  const activeWindow = state?.desktop.windows.at(-1) ?? null;
-  const activeNode = activeWindow
-    ? (state?.nodes.find((node) => node.id === activeWindow.nodeId) ?? null)
-    : null;
+  const finderCommandContext = useMemo(
+    () => deriveFinderCommandContext(state, finderSelection),
+    [finderSelection, state],
+  );
+  const { activeWindow, activeNode, visibleSelection, visibleSelectionIds } = finderCommandContext;
+  const copyableFinderSelectionIds = useMemo(
+    () =>
+      visibleSelection
+        .filter((node) => node.id !== 'system-disk' && node.id !== 'trash')
+        .map((node) => node.id),
+    [visibleSelection],
+  );
+  const keyboardOwner = resolveKeyboardOwner({
+    persistenceAlertOpen: persistenceError !== null,
+    dialogOpen: dialog !== null,
+    ejectionInProgress: ejecting,
+    pointerSessionActive,
+    menuOpen: openMenu !== null,
+    calculatorOpen,
+    finderWindowOpen: activeWindow !== null,
+  });
+  const systemInputBlocked =
+    keyboardOwner === 'persistence-alert' ||
+    keyboardOwner === 'dialog' ||
+    keyboardOwner === 'ejection' ||
+    keyboardOwner === 'pointer-session';
 
   const activateWindow = useCallback((windowId: string): void => {
     setState((current) => {
@@ -235,6 +279,7 @@ export default function App() {
   }, []);
 
   const closeWindow = useCallback((windowId: string): void => {
+    zoomRestore.current.delete(windowId);
     setState((current) =>
       current
         ? {
@@ -323,8 +368,9 @@ export default function App() {
 
   const startFinderItemDrag = (id: string, dataTransfer: DataTransfer): void => {
     if (!state) return;
-    const nodeIds = finderSelection.has(id) ? [...finderSelection] : [id];
-    if (!finderSelection.has(id)) {
+    setPointerSessionActive(true);
+    const nodeIds = visibleSelectionIds.includes(id) ? visibleSelectionIds : [id];
+    if (!visibleSelectionIds.includes(id)) {
       setFinderSelection(new Set([id]));
       setDesktopSelection(new Set());
     }
@@ -386,6 +432,18 @@ export default function App() {
     selectDesktopIcon(id, false);
   };
 
+  const isTrashDropPoint = (pointer: Point): boolean => {
+    const trash = document.querySelector<HTMLElement>('[data-desktop-icon="trash"]');
+    if (!trash) return false;
+    const bounds = trash.getBoundingClientRect();
+    return (
+      pointer.x >= bounds.left - 8 &&
+      pointer.x <= bounds.right + 8 &&
+      pointer.y >= bounds.top - 8 &&
+      pointer.y <= bounds.bottom + 8
+    );
+  };
+
   const previewIconDrag = (id: DesktopIconId, position: Point, pointer: Point): void => {
     const surface = document.querySelector<HTMLElement>('.desktop-surface');
     const maxX = Math.max(0, (surface?.clientWidth ?? window.innerWidth) - 90);
@@ -394,15 +452,19 @@ export default function App() {
     setPreviewPositions((current) => ({ ...current, [id]: next }));
 
     if (id !== 'system-disk') return;
-    const trash = document.querySelector<HTMLElement>('[data-desktop-icon="trash"]');
-    if (!trash) return;
-    const bounds = trash.getBoundingClientRect();
-    setTrashHover(
-      pointer.x >= bounds.left - 8 &&
-        pointer.x <= bounds.right + 8 &&
-        pointer.y >= bounds.top - 8 &&
-        pointer.y <= bounds.bottom + 8,
-    );
+    setTrashHover(isTrashDropPoint(pointer));
+  };
+
+  const cancelIconDrag = (id: DesktopIconId): void => {
+    setPreviewPositions((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    delete dragOrigins.current[id];
+    setDraggingIcon(null);
+    setSnappingIcon(null);
+    setTrashHover(false);
   };
 
   const restoreIcon = (id: DesktopIconId): void => {
@@ -424,39 +486,50 @@ export default function App() {
   const ejectSystemDisk = async (): Promise<void> => {
     if (!state || ejecting) return;
     const diskOrigin = dragOrigins.current['system-disk'] ?? state.desktop.diskPosition;
+    setOpenMenu(null);
     setEjecting(true);
     setDraggingIcon(null);
     setTrashHover(true);
     playEjectSound();
     await pause(automation ? 280 : 920);
 
-    const nextState: MacintoshState = {
-      ...state,
+    const current = stateRef.current ?? state;
+    const nextState = sanitizeState({
+      ...current,
       desktop: {
-        ...state.desktop,
+        ...current.desktop,
         diskPosition: diskOrigin,
         lastEjectAt: new Date().toISOString(),
       },
-    };
+    });
 
     try {
-      await window.macintosh.saveState(nextState);
+      await persistState(nextState);
       setState(nextState);
+    } catch (error) {
+      console.error(error);
+      reportPersistenceError(
+        'The disk could not be safely ejected because the desktop was not saved.',
+      );
+      setEjecting(false);
+      restoreIcon('system-disk');
+      return;
+    }
+
+    try {
       await window.macintosh.quitAfterEject();
     } catch (error) {
       console.error(error);
-      setPersistenceError(
-        'The disk could not be safely ejected because the desktop was not saved.',
-      );
+      reportPersistenceError('The disk was saved, but The Macintosh could not shut down.');
       setEjecting(false);
       restoreIcon('system-disk');
     }
   };
 
-  const finishIconDrag = (id: DesktopIconId): void => {
+  const finishIconDrag = (id: DesktopIconId, pointer: Point): void => {
     if (!state) return;
     if (id === 'system-disk') {
-      if (trashHover) void ejectSystemDisk();
+      if (isTrashDropPoint(pointer)) void ejectSystemDisk();
       else restoreIcon(id);
       return;
     }
@@ -482,31 +555,31 @@ export default function App() {
     const next = addFolder(state, parentId);
     const added = next.nodes.at(-1);
     setState(next);
+    setDesktopSelection(new Set());
     if (added) setFinderSelection(new Set([added.id]));
   }, [activeNode, state]);
 
   const selectedNode = useMemo(() => {
     if (!state) return null;
-    const finderId = finderSelection.values().next().value as string | undefined;
-    if (finderId) return state.nodes.find((node) => node.id === finderId) ?? null;
+    const finderNode = visibleSelection[0];
+    if (finderNode) return finderNode;
     const desktopId = desktopSelection.values().next().value as DesktopIconId | undefined;
     return desktopId ? (state.nodes.find((node) => node.id === desktopId) ?? null) : null;
-  }, [desktopSelection, finderSelection, state]);
+  }, [desktopSelection, state, visibleSelection]);
 
   const copyFinderSelection = useCallback((): boolean => {
     const current = stateRef.current;
     if (!current) return false;
-    const nodeIds = [...finderSelection].filter((id) => {
-      const node = current.nodes.find((item) => item.id === id);
-      return Boolean(node && node.id !== 'system-disk' && node.id !== 'trash');
-    });
+    const nodeIds = copyableFinderSelectionIds.filter((id) =>
+      current.nodes.some((node) => node.id === id),
+    );
     if (nodeIds.length === 0) return false;
     clipboardNodeIds.current = nodeIds;
     showTransferNotice(
       `Copied ${nodeIds.length} ${plural(nodeIds.length, 'item')} to the Clipboard.`,
     );
     return true;
-  }, [finderSelection, showTransferNotice]);
+  }, [copyableFinderSelectionIds, showTransferNotice]);
 
   const pasteCopiedItems = useCallback((): boolean => {
     const current = stateRef.current;
@@ -564,6 +637,7 @@ export default function App() {
 
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent): void => {
+      if (systemInputBlocked) return;
       const clipboard = event.clipboardData;
       if (!clipboard) return;
       const files = Array.from(clipboard.files);
@@ -583,24 +657,7 @@ export default function App() {
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [importHostFiles, pasteDestinationId, pasteText]);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent): void => {
-      if ((!event.metaKey && !event.ctrlKey) || event.altKey) return;
-      if (event.key.toLocaleLowerCase() === 'c') {
-        if (copyFinderSelection()) event.preventDefault();
-        else clipboardNodeIds.current = [];
-        return;
-      }
-      if (event.key.toLocaleLowerCase() === 'v') {
-        event.preventDefault();
-        pasteFromClipboard();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [copyFinderSelection, pasteFromClipboard]);
+  }, [importHostFiles, pasteDestinationId, pasteText, systemInputBlocked]);
 
   useEffect(() => {
     const clearInternalClipboard = (): void => {
@@ -643,6 +700,11 @@ export default function App() {
 
   const closeCalculator = useCallback((): void => setCalculatorOpen(false), []);
 
+  const emptyTrashAndClearSelection = useCallback((): void => {
+    setState((current) => (current ? emptyTrash(current) : current));
+    setFinderSelection(new Set());
+  }, []);
+
   const menus = useMemo<MenuDefinition[]>(() => {
     if (!state) return [];
     const trashHasItems = state.nodes.some((node) => node.parentId === 'trash');
@@ -677,18 +739,18 @@ export default function App() {
         id: 'file',
         label: 'File',
         entries: [
-          { id: 'new-folder', label: 'New Folder', shortcut: '⌘N', action: createFolder },
+          { id: 'new-folder', label: 'New Folder', shortcut: 'n', action: createFolder },
           {
             id: 'open',
             label: 'Open',
-            shortcut: '⌘O',
+            shortcut: 'o',
             disabled: !selectedNode,
             action: openSelected,
           },
           {
             id: 'close',
             label: 'Close Window',
-            shortcut: '⌘W',
+            shortcut: 'w',
             disabled: !activeWindow,
             action: () => activeWindow && closeWindow(activeWindow.id),
           },
@@ -696,7 +758,7 @@ export default function App() {
           {
             id: 'get-info',
             label: 'Get Info',
-            shortcut: '⌘I',
+            shortcut: 'i',
             disabled: !selectedNode,
             action: () => selectedNode && setDialog({ type: 'info', node: selectedNode }),
           },
@@ -706,19 +768,19 @@ export default function App() {
         id: 'edit',
         label: 'Edit',
         entries: [
-          { id: 'undo', label: 'Undo', shortcut: '⌘Z', disabled: true },
+          { id: 'undo', label: 'Undo', disabled: true },
           { id: 'edit-separator', separator: true },
-          { id: 'cut', label: 'Cut', shortcut: '⌘X', disabled: true },
+          { id: 'cut', label: 'Cut', disabled: true },
           {
             id: 'copy',
             label: 'Copy',
-            shortcut: '⌘C',
-            disabled: finderSelection.size === 0,
+            shortcut: 'c',
+            disabled: copyableFinderSelectionIds.length === 0,
             action: () => copyFinderSelection(),
           },
-          { id: 'paste', label: 'Paste', shortcut: '⌘V', action: pasteFromClipboard },
+          { id: 'paste', label: 'Paste', shortcut: 'v', action: pasteFromClipboard },
           { id: 'edit-separator-2', separator: true },
-          { id: 'select-all', label: 'Select All', shortcut: '⌘A', action: selectAll },
+          { id: 'select-all', label: 'Select All', shortcut: 'a', action: selectAll },
           {
             id: 'clear-selection',
             label: 'Clear Selection',
@@ -749,7 +811,7 @@ export default function App() {
           {
             id: 'clean-window',
             label: 'Clean Up Window',
-            action: () => setFinderSelection(new Set()),
+            disabled: true,
           },
         ],
       },
@@ -761,7 +823,7 @@ export default function App() {
             id: 'empty-trash',
             label: 'Empty Trash',
             disabled: !trashHasItems,
-            action: () => setState(emptyTrash(state)),
+            action: emptyTrashAndClearSelection,
           },
           {
             id: 'clean-desktop',
@@ -791,14 +853,27 @@ export default function App() {
     activeWindow,
     closeWindow,
     copyFinderSelection,
+    copyableFinderSelectionIds.length,
     createFolder,
-    finderSelection.size,
+    emptyTrashAndClearSelection,
     openSelected,
     pasteFromClipboard,
     selectAll,
     selectedNode,
     state,
   ]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (systemInputBlocked) return;
+      const entry = findMenuShortcutEntry(menus, event);
+      if (!entry) return;
+      event.preventDefault();
+      invokeMenuEntry(entry);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [invokeMenuEntry, menus, systemInputBlocked]);
 
   if (!startupComplete || !state) {
     return <StartupScreen automation={automation} onComplete={() => setStartupComplete(true)} />;
@@ -810,7 +885,13 @@ export default function App() {
 
   return (
     <main className="macintosh" aria-label="The Macintosh desktop">
-      <MenuBar clock={clock} menus={menus} />
+      <MenuBar
+        clock={clock}
+        menus={menus}
+        onInvoke={invokeMenuEntry}
+        onOpenMenuChange={setOpenMenu}
+        openMenu={openMenu}
+      />
       <DesktopSurface
         onBackgroundClick={() => {
           setDesktopSelection(new Set());
@@ -821,6 +902,7 @@ export default function App() {
           setFinderSelection(new Set());
         }}
         onDropItems={dropItems}
+        onInteractionChange={setPointerSessionActive}
         vfsCount={state.nodes.length}
       >
         {state.desktop.windows.map((windowState, index) => {
@@ -837,8 +919,10 @@ export default function App() {
               onClose={closeWindow}
               onGeometry={setWindowGeometry}
               onItemDragStart={startFinderItemDrag}
+              onItemDragEnd={() => setPointerSessionActive(false)}
               onItemOpen={openNode}
               onItemSelect={selectFinderItem}
+              onInteractionChange={setPointerSessionActive}
               onZoom={zoomWindow}
               selectedIds={finderSelection}
               stackIndex={index}
@@ -847,7 +931,13 @@ export default function App() {
             />
           );
         })}
-        {calculatorOpen ? <CalculatorWindow onClose={closeCalculator} /> : null}
+        {calculatorOpen ? (
+          <CalculatorWindow
+            keyboardEnabled={keyboardOwner === 'calculator'}
+            onClose={closeCalculator}
+            onInteractionChange={setPointerSessionActive}
+          />
+        ) : null}
         <DesktopIcon
           dragging={draggingIcon === 'system-disk'}
           ejecting={ejecting}
@@ -855,8 +945,10 @@ export default function App() {
           id="system-disk"
           label="System Disk"
           onDrag={previewIconDrag}
+          onDragCancel={cancelIconDrag}
           onDragEnd={finishIconDrag}
           onDragStart={startIconDrag}
+          onInteractionChange={setPointerSessionActive}
           onOpen={openNode}
           onSelect={selectDesktopIcon}
           position={diskPosition}
@@ -873,8 +965,10 @@ export default function App() {
           id="trash"
           label="Trash"
           onDrag={previewIconDrag}
+          onDragCancel={cancelIconDrag}
           onDragEnd={finishIconDrag}
           onDragStart={startIconDrag}
+          onInteractionChange={setPointerSessionActive}
           onOpen={openNode}
           onSelect={selectDesktopIcon}
           position={trashPosition}
@@ -882,18 +976,20 @@ export default function App() {
           snapping={snappingIcon === 'trash'}
           validDropTarget={trashHover}
         />
-        {dialog?.type === 'about' && <AboutDialog onClose={() => setDialog(null)} />}
-        {dialog?.type === 'info' && (
+        {!persistenceError && dialog?.type === 'about' && (
+          <AboutDialog onClose={() => setDialog(null)} />
+        )}
+        {!persistenceError && dialog?.type === 'info' && (
           <InfoDialog node={dialog.node} onClose={() => setDialog(null)} />
         )}
-        {dialog?.type === 'eject-tip' && <EjectTipDialog onClose={() => setDialog(null)} />}
+        {!persistenceError && dialog?.type === 'eject-tip' && (
+          <EjectTipDialog onClose={() => setDialog(null)} />
+        )}
         {persistenceError && (
-          <div className="save-error" role="alert">
-            <span>{persistenceError}</span>
-            <button onClick={() => setPersistenceError(null)} type="button">
-              OK
-            </button>
-          </div>
+          <PersistenceAlert message={persistenceError} onClose={() => setPersistenceError(null)} />
+        )}
+        {ejecting && (
+          <div aria-hidden="true" className="ejection-input-layer" data-drop-blocked="true" />
         )}
         {transferNotice && (
           <div

@@ -1,4 +1,11 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 
 import type { VfsNode } from '../../shared/state';
 import { PixelIcon } from './PixelIcon';
@@ -16,6 +23,79 @@ interface DragState {
   startY: number;
   originX: number;
   originY: number;
+}
+
+interface ModalLayerProps {
+  children: ReactNode;
+  kind: 'dialog' | 'persistence-alert';
+  onClose: () => void;
+  persistenceAlert?: boolean;
+}
+
+const focusableSelector = [
+  'button:not([disabled])',
+  '[href]',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function ModalLayer({ children, kind, onClose, persistenceAlert = false }: ModalLayerProps) {
+  const layer = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const current = layer.current;
+    if (!current?.contains(document.activeElement)) {
+      current?.querySelector<HTMLElement>(focusableSelector)?.focus();
+    }
+  }, []);
+
+  const keyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const focusable = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(focusableSelector),
+    ).filter((element) => !element.hidden && element.getClientRects().length > 0);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      event.currentTarget.focus();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || !event.currentTarget.contains(active))) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && (active === last || !event.currentTarget.contains(active))) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return (
+    <div
+      className={`modal-layer ${persistenceAlert ? 'persistence-alert-layer' : ''}`.trim()}
+      data-drop-blocked="true"
+      data-modal-layer={kind}
+      onKeyDown={keyDown}
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) event.preventDefault();
+      }}
+      ref={layer}
+      tabIndex={-1}
+    >
+      {children}
+    </div>
+  );
 }
 
 function ClassicDialog({ title, children, onClose, width = 430 }: ClassicDialogProps) {
@@ -51,31 +131,33 @@ function ClassicDialog({ title, children, onClose, width = 430 }: ClassicDialogP
   };
 
   return (
-    <section
-      aria-label={title}
-      aria-modal="true"
-      className="classic-dialog"
-      role="dialog"
-      style={{ marginLeft: offset.x, marginTop: offset.y, width }}
-    >
-      <div
-        className="dialog-titlebar"
-        onPointerCancel={pointerUp}
-        onPointerDown={pointerDown}
-        onPointerMove={pointerMove}
-        onPointerUp={pointerUp}
+    <ModalLayer kind="dialog" onClose={onClose}>
+      <section
+        aria-label={title}
+        aria-modal="true"
+        className="classic-dialog"
+        role="dialog"
+        style={{ marginLeft: offset.x, marginTop: offset.y, width }}
       >
-        <button
-          aria-label={`Close ${title}`}
-          className="dialog-close"
-          onClick={onClose}
-          onPointerDown={(event) => event.stopPropagation()}
-          type="button"
-        />
-        <h2>{title}</h2>
-      </div>
-      {children}
-    </section>
+        <div
+          className="dialog-titlebar"
+          onPointerCancel={pointerUp}
+          onPointerDown={pointerDown}
+          onPointerMove={pointerMove}
+          onPointerUp={pointerUp}
+        >
+          <button
+            aria-label={`Close ${title}`}
+            className="dialog-close"
+            onClick={onClose}
+            onPointerDown={(event) => event.stopPropagation()}
+            type="button"
+          />
+          <h2>{title}</h2>
+        </div>
+        {children}
+      </section>
+    </ModalLayer>
   );
 }
 
@@ -138,7 +220,7 @@ export function InfoDialog({ node, onClose }: { node: VfsNode; onClose: () => vo
         </dl>
       </div>
       <div className="dialog-actions">
-        <button className="classic-default-button" onClick={onClose} type="button">
+        <button autoFocus className="classic-default-button" onClick={onClose} type="button">
           OK
         </button>
       </div>
@@ -154,10 +236,28 @@ export function EjectTipDialog({ onClose }: { onClose: () => void }) {
         <p>Drag System Disk onto Trash to eject it and shut down The Macintosh.</p>
       </div>
       <div className="dialog-actions">
-        <button className="classic-default-button" onClick={onClose} type="button">
+        <button autoFocus className="classic-default-button" onClick={onClose} type="button">
           OK
         </button>
       </div>
     </ClassicDialog>
+  );
+}
+
+export function PersistenceAlert({ message, onClose }: { message: string; onClose: () => void }) {
+  return (
+    <ModalLayer kind="persistence-alert" onClose={onClose} persistenceAlert>
+      <section
+        aria-label="Persistence error"
+        aria-modal="true"
+        className="save-error"
+        role="alertdialog"
+      >
+        <span>{message}</span>
+        <button autoFocus onClick={onClose} type="button">
+          OK
+        </button>
+      </section>
+    </ModalLayer>
   );
 }

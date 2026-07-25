@@ -18,6 +18,8 @@ interface DesktopIconProps {
   onDragStart: (id: 'system-disk' | 'trash', origin: Point) => void;
   onDrag: (id: 'system-disk' | 'trash', position: Point, pointer: Point) => void;
   onDragEnd: (id: 'system-disk' | 'trash', pointer: Point) => void;
+  onDragCancel: (id: 'system-disk' | 'trash') => void;
+  onInteractionChange: (active: boolean) => void;
 }
 
 interface DragSession {
@@ -42,12 +44,15 @@ export function DesktopIcon({
   onDragStart,
   onDrag,
   onDragEnd,
+  onDragCancel,
+  onInteractionChange,
 }: DesktopIconProps) {
   const session = useRef<DragSession | null>(null);
 
   const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     if (event.button !== 0 || ejecting) return;
     event.stopPropagation();
+    onInteractionChange(true);
     event.currentTarget.setPointerCapture(event.pointerId);
     session.current = {
       pointerId: event.pointerId,
@@ -81,11 +86,23 @@ export function DesktopIcon({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     session.current = null;
+    onInteractionChange(false);
     if (active.hasMoved) {
       onDragEnd(id, { x: event.clientX, y: event.clientY });
     } else {
       onSelect(id, event.shiftKey);
     }
+  };
+
+  const pointerCancel = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = session.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    session.current = null;
+    onInteractionChange(false);
+    if (active.hasMoved) onDragCancel(id);
   };
 
   const style = {
@@ -110,7 +127,7 @@ export function DesktopIcon({
       data-drop-destination={id}
       data-drop-mode={id === 'trash' ? 'internal' : undefined}
       onDoubleClick={() => onOpen(id)}
-      onPointerCancel={pointerUp}
+      onPointerCancel={pointerCancel}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}
       onPointerUp={pointerUp}

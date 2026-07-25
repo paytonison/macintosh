@@ -821,10 +821,26 @@ button:focus-visible {
   content: '';
 }
 
+.modal-layer {
+  position: fixed;
+  z-index: 7100;
+  inset: 0;
+}
+
+.persistence-alert-layer {
+  z-index: 7200;
+}
+
+.ejection-input-layer {
+  position: fixed;
+  z-index: 7050;
+  inset: 0;
+}
+
 .classic-dialog {
   position: absolute;
-  z-index: 6200;
-  top: 44%;
+  z-index: 1;
+  top: calc(44% + 12px);
   left: 50%;
   border: 3px double #000;
   background: #fff;
@@ -928,7 +944,7 @@ button:focus-visible {
 
 .save-error {
   position: absolute;
-  z-index: 6300;
+  z-index: 1;
   right: 24px;
   bottom: 24px;
   display: flex;

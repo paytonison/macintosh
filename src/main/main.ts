@@ -13,6 +13,7 @@ import path from 'node:path';
 import { IPC_CHANNELS } from '../shared/contracts';
 import { createDefaultState, sanitizeState, type MacintoshState } from '../shared/state';
 import { inspectImportPaths } from './import-files';
+import { createSerializedStateWriter } from './state-save-queue';
 
 const STATE_FILE_NAME = 'macintosh-state.json';
 const PROBE_FILE_NAME = 'persistence-proof.json';
@@ -39,7 +40,6 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 let mainWindow: BrowserWindow | null = null;
 let applicationIcon: NativeImage | null = null;
-let saveQueue: Promise<void> = Promise.resolve();
 let quitRequested = false;
 
 const getApplicationIcon = (): NativeImage => {
@@ -102,10 +102,7 @@ const writeStateAtomically = async (state: MacintoshState): Promise<void> => {
   await rename(temporary, destination);
 };
 
-const saveState = async (state: MacintoshState): Promise<void> => {
-  saveQueue = saveQueue.then(() => writeStateAtomically(state));
-  await saveQueue;
-};
+const saveState = createSerializedStateWriter(writeStateAtomically);
 
 const assertTrustedRenderer = (event: IpcMainInvokeEvent): void => {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
@@ -376,10 +373,135 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   if (keyboardCalculatorResult !== '15') {
     throw new Error(`Calculator keyboard input returned ${String(keyboardCalculatorResult)}.`);
   }
-  await window.webContents.executeJavaScript(
-    "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))",
+
+  const finderInactiveWithCalculator = await window.webContents.executeJavaScript(
+    "document.querySelector('.finder-window.is-active') === null",
     true,
   );
+  if (!finderInactiveWithCalculator) {
+    throw new Error('A Finder window remained visually active beneath Calculator.');
+  }
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu="system"]\')?.click()',
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu-action="about"]\')?.click()',
+    true,
+  );
+  await pause(40);
+  const modalMenuPoint = (await window.webContents.executeJavaScript(
+    `(() => {
+      const menu = document.querySelector('[data-menu="system"]');
+      if (!(menu instanceof HTMLElement)) return null;
+      const bounds = menu.getBoundingClientRect();
+      return {
+        x: Math.round(bounds.left + bounds.width / 2),
+        y: Math.round(bounds.top + bounds.height / 2)
+      };
+    })()`,
+    true,
+  )) as { x: number; y: number } | null;
+  if (!modalMenuPoint) throw new Error('The System menu could not be located beneath the dialog.');
+
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: '7' });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: '7' });
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'N', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'N', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Tab' });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Tab' });
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...modalMenuPoint });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...modalMenuPoint,
+  });
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...modalMenuPoint,
+  });
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const layer = document.querySelector('[data-modal-layer="dialog"]');
+      if (!(layer instanceof HTMLElement)) return false;
+      const transfer = new DataTransfer();
+      transfer.setData('application/x-macintosh-vfs-node-ids', JSON.stringify(['finder-notes']));
+      layer.dispatchEvent(new DragEvent('dragover', {
+        bubbles: true, cancelable: true, dataTransfer: transfer
+      }));
+      return layer.dispatchEvent(new DragEvent('drop', {
+        bubbles: true, cancelable: true, dataTransfer: transfer
+      }));
+    })()`,
+    true,
+  );
+  await pause(100);
+  const modalPrecedence = (await window.webContents.executeJavaScript(
+    `(() => {
+      const layer = document.querySelector('[data-modal-layer="dialog"]');
+      return {
+        aboutOpen: document.querySelector('[aria-label="About This Macintosh"]') !== null,
+        calculatorDisplay: document.querySelector('[data-calculator-display]')?.textContent?.trim(),
+        dropBlocked: layer?.getAttribute('data-drop-blocked') === 'true',
+        focusContained: layer instanceof HTMLElement && layer.contains(document.activeElement),
+        finderNotesStayedNested:
+          document.querySelector('[data-vfs-item="finder-notes"]') === null,
+        menuBlocked:
+          document.querySelector('[data-menu="system"]')?.getAttribute('aria-expanded') === 'false',
+        vfsCount: Number(
+          document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0
+        )
+      };
+    })()`,
+    true,
+  )) as {
+    aboutOpen: boolean;
+    calculatorDisplay: string | undefined;
+    dropBlocked: boolean;
+    focusContained: boolean;
+    finderNotesStayedNested: boolean;
+    menuBlocked: boolean;
+    vfsCount: number;
+  } | null;
+  if (
+    !modalPrecedence?.aboutOpen ||
+    modalPrecedence.calculatorDisplay !== '15' ||
+    !modalPrecedence.dropBlocked ||
+    !modalPrecedence.focusContained ||
+    !modalPrecedence.finderNotesStayedNested ||
+    !modalPrecedence.menuBlocked ||
+    modalPrecedence.vfsCount !== initialVfsCount
+  ) {
+    throw new Error(`Dialog did not retain input precedence: ${JSON.stringify(modalPrecedence)}.`);
+  }
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+  await pause(40);
+  const dialogDismissedToCalculator = await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="About This Macintosh"]') === null &&
+      document.querySelector('[data-calculator-window="true"]') !== null`,
+    true,
+  );
+  if (!dialogDismissedToCalculator) {
+    throw new Error('Escape did not dismiss the dialog back to Calculator.');
+  }
+  for (const keyCode of ['C', '9']) {
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+  }
+  await pause(60);
+  const resumedCalculatorResult = await window.webContents.executeJavaScript(
+    "document.querySelector('[data-calculator-display]')?.textContent?.trim()",
+    true,
+  );
+  if (resumedCalculatorResult !== '9') {
+    throw new Error('Calculator keyboard ownership did not resume after the dialog closed.');
+  }
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
   await pause(40);
   const calculatorClosed = await window.webContents.executeJavaScript(
     'document.querySelector(\'[data-calculator-window="true"]\') === null',
@@ -402,6 +524,16 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   )) as number;
   if (menuVfsCount !== initialVfsCount + 1) {
     throw new Error('File > New Folder did not update the virtual filesystem.');
+  }
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'N', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'N', modifiers: ['meta'] });
+  await pause(80);
+  const shortcutVfsCount = (await window.webContents.executeJavaScript(
+    "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
+    true,
+  )) as number;
+  if (shortcutVfsCount !== initialVfsCount + 2) {
+    throw new Error('Command-N did not use the New Folder menu action.');
   }
 
   const importFixtureRoot = path.join(app.getPath('userData'), 'smoke-import-fixtures');
@@ -722,6 +854,18 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'W', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'W', modifiers: ['meta'] });
+  await pause(60);
+  const windowDragRetainedOwnership = await window.webContents.executeJavaScript(
+    `document.querySelector('[data-finder-window="window-applications"]')
+      ?.getAttribute('data-window-dragging') === 'true'`,
+    true,
+  );
+  if (!windowDragRetainedOwnership) {
+    throw new Error('Command-W escaped the active Finder window drag session.');
+  }
+
   const dragCaptureDestination = process.env.MACINTOSH_SMOKE_DRAG_CAPTURE_PATH;
   if (dragCaptureDestination) {
     const image = await window.webContents.capturePage();
@@ -876,6 +1020,89 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       ...to,
     });
   };
+
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return;
+      trash.addEventListener(
+        'pointerdown',
+        (event) => { window.__macintoshSmokeTrashPointerId = event.pointerId; },
+        { once: true }
+      );
+    })()`,
+    true,
+  );
+  const cancelledTrashTarget = {
+    x: coordinates.trash.x - 112,
+    y: coordinates.trash.y - 48,
+  };
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...coordinates.trash });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...coordinates.trash,
+  });
+  for (let step = 1; step <= 4; step += 1) {
+    const progress = step / 4;
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: Math.round(
+        coordinates.trash.x + (cancelledTrashTarget.x - coordinates.trash.x) * progress,
+      ),
+      y: Math.round(
+        coordinates.trash.y + (cancelledTrashTarget.y - coordinates.trash.y) * progress,
+      ),
+    });
+    await pause(16);
+  }
+  const trashPreviewMoved = await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return false;
+      const rect = trash.getBoundingClientRect();
+      return Math.hypot(
+        rect.left + rect.width / 2 - ${coordinates.trash.x},
+        rect.top + rect.height / 2 - ${coordinates.trash.y}
+      ) > 40 && trash.classList.contains('is-dragging');
+    })()`,
+    true,
+  );
+  if (!trashPreviewMoved) throw new Error('Trash did not enter a movable preview before cancel.');
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const pointerId = window.__macintoshSmokeTrashPointerId;
+      if (!(trash instanceof HTMLElement) || typeof pointerId !== 'number') return false;
+      return trash.dispatchEvent(new PointerEvent('pointercancel', {
+        pointerId, pointerType: 'mouse', bubbles: true
+      }));
+    })()`,
+    true,
+  );
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...cancelledTrashTarget,
+  });
+  await pause(40);
+  const trashCancelRestored = await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return false;
+      const rect = trash.getBoundingClientRect();
+      return Math.hypot(
+        rect.left + rect.width / 2 - ${coordinates.trash.x},
+        rect.top + rect.height / 2 - ${coordinates.trash.y}
+      ) <= 2 && !trash.classList.contains('is-dragging');
+    })()`,
+    true,
+  );
+  if (!trashCancelRestored) throw new Error('Cancelled Trash drag committed its preview.');
 
   const invalidTarget = {
     x: Math.max(140, coordinates.disk.x - 240),

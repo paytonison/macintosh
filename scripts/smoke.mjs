@@ -107,7 +107,7 @@ try {
   }
 
   console.log(
-    'Electron smoke passed: native The Macintosh identity/icon, external file/folder drop, document paste and duplication, internal folder move, menus, Calculator buttons/keyboard/outline drag, Finder drag overlap/release redraw, disk pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, external file/folder drop, document paste and duplication, internal folder move, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, Finder drag overlap/release redraw, cancelled Trash drag, disk pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
   );
   console.log(
     'Persistence relaunch passed: Finder geometry, System Disk, and virtual filesystem reloaded.',

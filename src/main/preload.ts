@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { ImportFilesResult, MacintoshAPI } from '../shared/contracts';
 import type { MacintoshState } from '../shared/state';
 
+// Electron's sandboxed preload cannot require compiled sibling modules at runtime.
+// Keep these values aligned with the typed main-process contract.
 const IPC_CHANNELS = {
   loadState: 'macintosh:state:load',
   saveState: 'macintosh:state:save',

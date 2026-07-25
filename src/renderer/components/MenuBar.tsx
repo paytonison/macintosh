@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 
 import { playMenuTick } from '../audio/sounds';
+import { menuShortcutLabel, type MenuShortcut } from '../model/command-context';
 import { PixelIcon } from './PixelIcon';
 
 export interface MenuEntry {
   id: string;
   label?: string;
-  shortcut?: string;
+  shortcut?: MenuShortcut;
   checked?: boolean;
   disabled?: boolean;
   separator?: boolean;
@@ -23,30 +24,25 @@ export interface MenuDefinition {
 interface MenuBarProps {
   menus: MenuDefinition[];
   clock: string;
+  openMenu: string | null;
+  onOpenMenuChange: (menuId: string | null) => void;
+  onInvoke: (entry: MenuEntry) => void;
 }
 
-export function MenuBar({ menus, clock }: MenuBarProps) {
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
+export function MenuBar({ menus, clock, openMenu, onOpenMenuChange, onInvoke }: MenuBarProps) {
   const bar = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const closeOutside = (event: PointerEvent): void => {
-      if (!bar.current?.contains(event.target as Node)) setOpenMenu(null);
+      if (!bar.current?.contains(event.target as Node)) onOpenMenuChange(null);
     };
     document.addEventListener('pointerdown', closeOutside);
     return () => document.removeEventListener('pointerdown', closeOutside);
-  }, []);
+  }, [onOpenMenuChange]);
 
   const activate = (menu: MenuDefinition): void => {
     playMenuTick();
-    setOpenMenu((current) => (current === menu.id ? null : menu.id));
-  };
-
-  const invoke = (entry: MenuEntry): void => {
-    if (entry.disabled || entry.separator) return;
-    setOpenMenu(null);
-    playMenuTick();
-    entry.action?.();
+    onOpenMenuChange(openMenu === menu.id ? null : menu.id);
   };
 
   return (
@@ -64,7 +60,7 @@ export function MenuBar({ menus, clock }: MenuBarProps) {
                 data-menu={menu.id}
                 onClick={() => activate(menu)}
                 onPointerEnter={() => {
-                  if (openMenu && openMenu !== menu.id) setOpenMenu(menu.id);
+                  if (openMenu && openMenu !== menu.id) onOpenMenuChange(menu.id);
                 }}
                 type="button"
               >
@@ -86,13 +82,15 @@ export function MenuBar({ menus, clock }: MenuBarProps) {
                         data-menu-action={entry.id}
                         disabled={entry.disabled}
                         key={entry.id}
-                        onClick={() => invoke(entry)}
+                        onClick={() => onInvoke(entry)}
                         role={entry.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
                         type="button"
                       >
                         <span className="menu-check">{entry.checked ? '✓' : ''}</span>
                         <span className="menu-label">{entry.label}</span>
-                        <span className="menu-shortcut">{entry.shortcut}</span>
+                        <span className="menu-shortcut">
+                          {entry.shortcut ? menuShortcutLabel(entry.shortcut) : ''}
+                        </span>
                       </button>
                     ),
                   )}

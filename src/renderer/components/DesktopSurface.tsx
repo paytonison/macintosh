@@ -14,6 +14,7 @@ interface DesktopSurfaceProps {
   onBackgroundClick: () => void;
   onMarquee: (ids: Array<'system-disk' | 'trash'>) => void;
   onDropItems: (destinationId: string, nodeIds: string[], files: File[]) => void;
+  onInteractionChange: (active: boolean) => void;
 }
 
 export const VFS_DRAG_TYPE = 'application/x-macintosh-vfs-node-ids';
@@ -32,6 +33,7 @@ export function DesktopSurface({
   onBackgroundClick,
   onMarquee,
   onDropItems,
+  onInteractionChange,
 }: DesktopSurfaceProps) {
   const surface = useRef<HTMLDivElement>(null);
   const highlightedDropTarget = useRef<HTMLElement | null>(null);
@@ -101,6 +103,7 @@ export function DesktopSurface({
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0 || event.target !== event.currentTarget) return;
+    onInteractionChange(true);
     event.currentTarget.setPointerCapture(event.pointerId);
     setMarquee({
       pointerId: event.pointerId,
@@ -149,7 +152,17 @@ export function DesktopSurface({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     setMarquee(null);
+    onInteractionChange(false);
     if (distance < 4) onBackgroundClick();
+  };
+
+  const pointerCancel = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (!marquee || marquee.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setMarquee(null);
+    onInteractionChange(false);
   };
 
   const bounds = marquee
@@ -177,7 +190,7 @@ export function DesktopSurface({
       }}
       onDragOver={dragOver}
       onDrop={drop}
-      onPointerCancel={pointerUp}
+      onPointerCancel={pointerCancel}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}
       onPointerUp={pointerUp}

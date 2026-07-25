@@ -29,6 +29,8 @@ interface FinderWindowProps {
   onItemSelect: (id: string, additive: boolean) => void;
   onItemOpen: (id: string) => void;
   onItemDragStart: (id: string, dataTransfer: DataTransfer) => void;
+  onItemDragEnd: () => void;
+  onInteractionChange: (active: boolean) => void;
 }
 
 interface GeometrySession {
@@ -62,6 +64,8 @@ export function FinderWindow({
   onItemSelect,
   onItemOpen,
   onItemDragStart,
+  onItemDragEnd,
+  onInteractionChange,
 }: FinderWindowProps) {
   const drag = useRef<GeometrySession | null>(null);
   const resize = useRef<GeometrySession | null>(null);
@@ -90,6 +94,7 @@ export function FinderWindow({
     }
     drag.current = null;
     clearDragShadow();
+    onInteractionChange(false);
     if (commit && session.hasMoved) onGeometry(windowState.id, session.current);
   };
 
@@ -113,8 +118,9 @@ export function FinderWindow({
     () => () => {
       dragReleaseCleanup.current?.();
       dragReleaseCleanup.current = null;
+      if (drag.current || resize.current) onInteractionChange(false);
     },
-    [],
+    [onInteractionChange],
   );
 
   const beginGeometry = (
@@ -124,6 +130,7 @@ export function FinderWindow({
     if (event.button !== 0) return;
     event.stopPropagation();
     onActivate(windowState.id);
+    onInteractionChange(true);
     event.currentTarget.setPointerCapture(event.pointerId);
     const session = {
       pointerId: event.pointerId,
@@ -203,6 +210,7 @@ export function FinderWindow({
   const endResize = (event: ReactPointerEvent<HTMLElement>): void => {
     releasePointer(event);
     resize.current = null;
+    onInteractionChange(false);
   };
 
   const style = {
@@ -210,7 +218,7 @@ export function FinderWindow({
     top: windowState.y,
     width: windowState.width,
     height: windowState.height,
-    zIndex: 20 + stackIndex,
+    zIndex: 300 + stackIndex,
   } as CSSProperties;
 
   const isDocument = node.kind === 'document';
@@ -244,7 +252,10 @@ export function FinderWindow({
             event.stopPropagation();
             onClose(windowState.id);
           }}
-          onPointerDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            onActivate(windowState.id);
+          }}
           type="button"
         />
         <h2>{node.name}</h2>
@@ -255,7 +266,10 @@ export function FinderWindow({
             event.stopPropagation();
             onZoom(windowState.id);
           }}
-          onPointerDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            onActivate(windowState.id);
+          }}
           type="button"
         />
       </div>
@@ -289,6 +303,7 @@ export function FinderWindow({
                   onDragStart={(event: ReactDragEvent<HTMLButtonElement>) =>
                     onItemDragStart(item.id, event.dataTransfer)
                   }
+                  onDragEnd={onItemDragEnd}
                   type="button"
                 >
                   <PixelIcon name={iconForNode(item)} size={32} />
@@ -310,6 +325,7 @@ export function FinderWindow({
                   onDragStart={(event: ReactDragEvent<HTMLButtonElement>) =>
                     onItemDragStart(item.id, event.dataTransfer)
                   }
+                  onDragEnd={onItemDragEnd}
                   role="listitem"
                   type="button"
                 >

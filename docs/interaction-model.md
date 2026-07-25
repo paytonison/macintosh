@@ -225,11 +225,16 @@ A persistence error is an alert state with higher priority than ordinary desktop
 
 ## Virtual filesystem behavior
 
-The virtual filesystem is local application state, not host filesystem access.
+The virtual filesystem is local application state. A user may copy host files or folders into
+that state through an explicit drop or paste, but the imported nodes are bounded virtual copies,
+not live references to host paths.
 
 Each node has a stable identifier, parent identifier, name, kind, and timestamps. Documents may contain bounded text content. System Disk and Trash are required roots.
 
-Finder commands operate on the virtual tree only. Adding host filesystem access, arbitrary path handling, or drag-in files is a separate product and security decision, not an incidental extension of the current model.
+Finder commands operate on the virtual tree only. Host import paths may come only from
+browser-granted `File` objects and must be inspected behind the existing narrow main-process
+boundary. Imported nodes do not retain arbitrary paths or ongoing host access. General host
+filesystem browsing or arbitrary path handling remains a separate product and security decision.
 
 Opening, selecting, changing view mode, moving a window, and moving Trash must not mutate virtual filesystem contents. Filesystem mutations occur only through explicit commands such as New Folder or Empty Trash.
 

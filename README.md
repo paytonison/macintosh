@@ -39,7 +39,7 @@ npm run smoke
 
 `npm run check` runs formatting verification, ESLint, strict TypeScript checks for both renderer and Electron, Vitest, and the production build.
 
-`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; moves a folder internally; exercises Calculator button and keyboard input, a working Finder menu command, and the About dialog; verifies that the disk follows native pointer input; verifies invalid-drop snapback; confirms the live Trash drop-target state and eject animation; observes the renderer-to-main quit request; checks the atomically written state file; and relaunches Electron to prove the disk and virtual filesystem reload.
+`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; moves a folder internally; exercises Calculator button and keyboard input, modal dialog precedence, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled Trash movement, disk pointer following, invalid-drop snapback, the live Trash drop-target state, and eject animation; observes the renderer-to-main quit request; checks the resulting state file; and relaunches Electron to prove the disk and virtual filesystem reload.
 
 ## Architecture and security
 
