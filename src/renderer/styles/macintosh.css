@@ -187,6 +187,16 @@ button:focus-visible {
   touch-action: none;
 }
 
+.desktop-surface.is-file-drop-target::after {
+  position: absolute;
+  z-index: 6900;
+  inset: 5px;
+  border: 2px dashed #000;
+  pointer-events: none;
+  content: '';
+  animation: marching-ants 280ms steps(2, end) infinite;
+}
+
 .desktop-icon {
   position: absolute;
   z-index: 200;
@@ -252,10 +262,20 @@ button:focus-visible {
   background: #000;
 }
 
+.desktop-icon.is-file-drop-target .desktop-icon-label {
+  color: #fff;
+  background: #000;
+}
+
 .desktop-icon.is-drop-target .desktop-icon-glyph {
   outline: 3px double #000;
   background: #fff;
   animation: target-blink 220ms steps(2, jump-none) infinite;
+}
+
+.desktop-icon.is-file-drop-target .desktop-icon-glyph {
+  outline: 3px double #000;
+  background: #fff;
 }
 
 .desktop-icon.is-ejecting {
@@ -438,6 +458,11 @@ button:focus-visible {
   display: none;
 }
 
+.window-content.is-file-drop-target {
+  outline: 3px double #000;
+  outline-offset: -5px;
+}
+
 .finder-icon-grid {
   display: grid;
   min-width: 610px;
@@ -460,6 +485,11 @@ button:focus-visible {
   background: #fff;
 }
 
+.finder-item[draggable='true'],
+.finder-list-row[draggable='true'] {
+  cursor: var(--grab-cursor), grab;
+}
+
 .finder-item span {
   max-width: 120px;
   margin-top: 5px;
@@ -478,6 +508,24 @@ button:focus-visible {
 .finder-item.is-selected span,
 .finder-list-row.is-selected {
   color: #fff;
+  background: #000;
+}
+
+.finder-item.is-file-drop-target,
+.finder-list-row.is-file-drop-target {
+  outline: 3px double #000;
+  outline-offset: 1px;
+}
+
+.finder-item.is-file-drop-target span,
+.finder-list-row.is-file-drop-target {
+  color: #fff;
+  background: #000;
+}
+
+.finder-item.is-file-drop-target .pixel-icon,
+.finder-list-row.is-file-drop-target .pixel-icon {
+  filter: invert(1);
   background: #000;
 }
 
@@ -894,6 +942,25 @@ button:focus-visible {
   font-size: 11px;
 }
 
+.transfer-notice {
+  position: absolute;
+  z-index: 6200;
+  bottom: 24px;
+  left: 24px;
+  max-width: 440px;
+  padding: 9px 12px;
+  border: 3px double #000;
+  background: #fff;
+  box-shadow: 3px 3px 0 #000;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.transfer-notice.is-error::before {
+  margin-right: 7px;
+  content: '!';
+}
+
 .startup-screen {
   position: fixed;
   z-index: 10000;
@@ -1041,7 +1108,8 @@ button:focus-visible {
   .startup-progress-fill,
   .startup-scanline,
   .selection-marquee,
-  .desktop-icon.is-drop-target .desktop-icon-glyph {
+  .desktop-icon.is-drop-target .desktop-icon-glyph,
+  .desktop-surface.is-file-drop-target::after {
     animation-duration: 1ms;
     animation-iteration-count: 1;
   }

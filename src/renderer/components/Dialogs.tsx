@@ -85,7 +85,7 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
       <div className="about-content">
         <PixelIcon name="computer" size={64} />
         <div className="about-copy">
-          <h3>Macintosh Workbench</h3>
+          <h3>The Macintosh</h3>
           <p>System Software 1.0</p>
           <p>© 2026 Payton Ison</p>
         </div>
@@ -151,7 +151,7 @@ export function EjectTipDialog({ onClose }: { onClose: () => void }) {
     <ClassicDialog onClose={onClose} title="Eject System Disk" width={420}>
       <div className="message-content">
         <PixelIcon name="disk" size={48} />
-        <p>Drag System Disk onto Trash to eject it and shut down Macintosh Workbench.</p>
+        <p>Drag System Disk onto Trash to eject it and shut down The Macintosh.</p>
       </div>
       <div className="dialog-actions">
         <button className="classic-default-button" onClick={onClose} type="button">

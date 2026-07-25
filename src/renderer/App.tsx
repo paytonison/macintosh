@@ -8,19 +8,29 @@ import {
   type VfsNode,
   type WindowGeometry,
 } from '../shared/state';
+import type { ImportedEntry } from '../shared/contracts';
 import { playEjectSound } from './audio/sounds';
 import { CalculatorWindow } from './components/CalculatorWindow';
 import { AboutDialog, EjectTipDialog, InfoDialog } from './components/Dialogs';
 import { DesktopIcon } from './components/DesktopIcon';
-import { DesktopSurface } from './components/DesktopSurface';
+import { DesktopSurface, VFS_DRAG_TYPE } from './components/DesktopSurface';
 import { FinderWindow } from './components/FinderWindow';
 import { MenuBar, type MenuDefinition } from './components/MenuBar';
 import { StartupScreen } from './components/StartupScreen';
-import { addFolder, emptyTrash, listChildren } from './model/vfs';
+import {
+  addFolder,
+  duplicateNodes,
+  emptyTrash,
+  listChildren,
+  mergeImportedEntries,
+  moveNodes,
+  type VfsMutationResult,
+} from './model/vfs';
 
 type DesktopIconId = 'system-disk' | 'trash';
 type DialogState =
   { type: 'about' } | { type: 'info'; node: VfsNode } | { type: 'eject-tip' } | null;
+type TransferNotice = { message: string; error: boolean } | null;
 
 const pause = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -37,6 +47,12 @@ const useClock = (): string => {
 
 const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.max(minimum, Math.min(maximum, value));
+
+const canContainItems = (node: VfsNode | undefined): node is VfsNode =>
+  node?.kind === 'disk' || node?.kind === 'folder' || node?.kind === 'trash';
+
+const plural = (count: number, singular: string, pluralValue = `${singular}s`): string =>
+  count === 1 ? singular : pluralValue;
 
 export default function App() {
   const automation = useMemo(
@@ -57,10 +73,79 @@ export default function App() {
   const [dialog, setDialog] = useState<DialogState>(null);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
   const dragOrigins = useRef<Partial<Record<DesktopIconId, Point>>>({});
   const zoomRestore = useRef<Map<string, WindowGeometry>>(new Map());
+  const stateRef = useRef<MacintoshState | null>(null);
+  const clipboardNodeIds = useRef<string[]>([]);
+  const transferNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hydrated = useRef(false);
   const clock = useClock();
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(
+    () => () => {
+      if (transferNoticeTimer.current) clearTimeout(transferNoticeTimer.current);
+    },
+    [],
+  );
+
+  const showTransferNotice = useCallback((message: string, error = false): void => {
+    if (transferNoticeTimer.current) clearTimeout(transferNoticeTimer.current);
+    setTransferNotice({ message, error });
+    transferNoticeTimer.current = setTimeout(() => setTransferNotice(null), error ? 5_000 : 3_200);
+  }, []);
+
+  const pasteDestinationId = useCallback((current: MacintoshState): string => {
+    const active = current.desktop.windows.at(-1);
+    const activeContainer = active
+      ? current.nodes.find((node) => node.id === active.nodeId)
+      : undefined;
+    return canContainItems(activeContainer) ? activeContainer.id : 'system-disk';
+  }, []);
+
+  const commitVfsMutation = useCallback(
+    (
+      current: MacintoshState,
+      result: VfsMutationResult,
+      destinationId: string,
+      verb: 'Copied' | 'Moved',
+      extraSkipped = 0,
+      extraTruncated = 0,
+    ): void => {
+      const addedCount = Math.max(0, result.state.nodes.length - current.nodes.length);
+      const affectedCount = verb === 'Moved' ? result.affectedIds.length : addedCount;
+      const skipped = result.skippedCount + extraSkipped;
+      const truncated = result.truncatedCount + extraTruncated;
+      if (result.state === current || affectedCount === 0) {
+        showTransferNotice(
+          skipped > 0
+            ? `Nothing changed; ${skipped} ${plural(skipped, 'item')} could not be ${verb === 'Moved' ? 'moved' : 'copied'}.`
+            : 'Nothing changed.',
+          true,
+        );
+        return;
+      }
+
+      stateRef.current = result.state;
+      setState(result.state);
+      setFinderSelection(new Set(result.affectedIds));
+      setDesktopSelection(new Set());
+      const destination =
+        result.state.nodes.find((node) => node.id === destinationId)?.name ?? 'System Disk';
+      const details = [
+        skipped > 0 ? `${skipped} skipped` : '',
+        truncated > 0 ? `${truncated} truncated` : '',
+      ].filter(Boolean);
+      showTransferNotice(
+        `${verb} ${affectedCount} ${plural(affectedCount, 'item')} to ${destination}.${details.length > 0 ? ` ${details.join(', ')}.` : ''}`,
+      );
+    },
+    [showTransferNotice],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -236,6 +321,64 @@ export default function App() {
     });
   };
 
+  const startFinderItemDrag = (id: string, dataTransfer: DataTransfer): void => {
+    if (!state) return;
+    const nodeIds = finderSelection.has(id) ? [...finderSelection] : [id];
+    if (!finderSelection.has(id)) {
+      setFinderSelection(new Set([id]));
+      setDesktopSelection(new Set());
+    }
+    const names = nodeIds.flatMap((nodeId) => {
+      const node = state.nodes.find((item) => item.id === nodeId);
+      return node ? [node.name] : [];
+    });
+    dataTransfer.effectAllowed = 'copyMove';
+    dataTransfer.setData(VFS_DRAG_TYPE, JSON.stringify(nodeIds));
+    dataTransfer.setData('text/plain', names.join('\n'));
+  };
+
+  const importHostFiles = useCallback(
+    async (files: File[], destinationId: string): Promise<void> => {
+      if (files.length === 0) return;
+      try {
+        const inspected = await window.macintosh.importFiles(files);
+        const current = stateRef.current;
+        if (!current) return;
+        if (inspected.entries.length === 0) {
+          showTransferNotice('No readable files or folders were found.', true);
+          return;
+        }
+        const result = mergeImportedEntries(current, inspected.entries, destinationId);
+        commitVfsMutation(
+          current,
+          result,
+          destinationId,
+          'Copied',
+          inspected.skippedCount,
+          inspected.truncatedCount,
+        );
+      } catch (error) {
+        console.error(error);
+        showTransferNotice('The dropped items could not be copied.', true);
+      }
+    },
+    [commitVfsMutation, showTransferNotice],
+  );
+
+  const dropItems = useCallback(
+    (destinationId: string, nodeIds: string[], files: File[]): void => {
+      if (nodeIds.length > 0) {
+        const current = stateRef.current;
+        if (!current) return;
+        const result = moveNodes(current, nodeIds, destinationId);
+        commitVfsMutation(current, result, destinationId, 'Moved');
+        return;
+      }
+      void importHostFiles(files, destinationId);
+    },
+    [commitVfsMutation, importHostFiles],
+  );
+
   const startIconDrag = (id: DesktopIconId, origin: Point): void => {
     dragOrigins.current[id] = origin;
     setDraggingIcon(id);
@@ -350,6 +493,135 @@ export default function App() {
     return desktopId ? (state.nodes.find((node) => node.id === desktopId) ?? null) : null;
   }, [desktopSelection, finderSelection, state]);
 
+  const copyFinderSelection = useCallback((): boolean => {
+    const current = stateRef.current;
+    if (!current) return false;
+    const nodeIds = [...finderSelection].filter((id) => {
+      const node = current.nodes.find((item) => item.id === id);
+      return Boolean(node && node.id !== 'system-disk' && node.id !== 'trash');
+    });
+    if (nodeIds.length === 0) return false;
+    clipboardNodeIds.current = nodeIds;
+    showTransferNotice(
+      `Copied ${nodeIds.length} ${plural(nodeIds.length, 'item')} to the Clipboard.`,
+    );
+    return true;
+  }, [finderSelection, showTransferNotice]);
+
+  const pasteCopiedItems = useCallback((): boolean => {
+    const current = stateRef.current;
+    if (!current || clipboardNodeIds.current.length === 0) return false;
+    const destinationId = pasteDestinationId(current);
+    const result = duplicateNodes(current, clipboardNodeIds.current, destinationId);
+    commitVfsMutation(current, result, destinationId, 'Copied');
+    return true;
+  }, [commitVfsMutation, pasteDestinationId]);
+
+  const pasteText = useCallback(
+    (content: string): void => {
+      const current = stateRef.current;
+      if (!current) return;
+      const destinationId = pasteDestinationId(current);
+      const timestamp = new Date().toISOString();
+      const entry: ImportedEntry = {
+        name: 'Clipboard',
+        kind: 'document',
+        content,
+        createdAt: timestamp,
+        modifiedAt: timestamp,
+      };
+      const result = mergeImportedEntries(current, [entry], destinationId);
+      commitVfsMutation(current, result, destinationId, 'Copied');
+    },
+    [commitVfsMutation, pasteDestinationId],
+  );
+
+  const pasteFromClipboard = useCallback((): void => {
+    if (pasteCopiedItems()) return;
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const pasteTarget = document.createElement('textarea');
+    pasteTarget.setAttribute('aria-hidden', 'true');
+    pasteTarget.tabIndex = -1;
+    pasteTarget.style.position = 'fixed';
+    pasteTarget.style.width = '1px';
+    pasteTarget.style.height = '1px';
+    pasteTarget.style.opacity = '0';
+    pasteTarget.style.pointerEvents = 'none';
+    document.body.append(pasteTarget);
+    pasteTarget.focus();
+    void window.macintosh
+      .requestPaste()
+      .catch((error: unknown) => {
+        console.error(error);
+        showTransferNotice('The Clipboard could not be read.', true);
+      })
+      .finally(() => {
+        pasteTarget.remove();
+        previousFocus?.focus({ preventScroll: true });
+      });
+  }, [pasteCopiedItems, showTransferNotice]);
+
+  useEffect(() => {
+    const handlePaste = (event: ClipboardEvent): void => {
+      const clipboard = event.clipboardData;
+      if (!clipboard) return;
+      const files = Array.from(clipboard.files);
+      const current = stateRef.current;
+      if (!current) return;
+      const destinationId = pasteDestinationId(current);
+      if (files.length > 0) {
+        event.preventDefault();
+        void importHostFiles(files, destinationId);
+        return;
+      }
+      const text = clipboard.getData('text/plain');
+      if (text.length > 0) {
+        event.preventDefault();
+        pasteText(text);
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [importHostFiles, pasteDestinationId, pasteText]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if ((!event.metaKey && !event.ctrlKey) || event.altKey) return;
+      if (event.key.toLocaleLowerCase() === 'c') {
+        if (copyFinderSelection()) event.preventDefault();
+        else clipboardNodeIds.current = [];
+        return;
+      }
+      if (event.key.toLocaleLowerCase() === 'v') {
+        event.preventDefault();
+        pasteFromClipboard();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [copyFinderSelection, pasteFromClipboard]);
+
+  useEffect(() => {
+    const clearInternalClipboard = (): void => {
+      clipboardNodeIds.current = [];
+    };
+    window.addEventListener('blur', clearInternalClipboard);
+    return () => window.removeEventListener('blur', clearInternalClipboard);
+  }, []);
+
+  useEffect(() => {
+    const preventFileNavigation = (event: DragEvent): void => {
+      if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
+    };
+    window.addEventListener('dragover', preventFileNavigation);
+    window.addEventListener('drop', preventFileNavigation);
+    return () => {
+      window.removeEventListener('dragover', preventFileNavigation);
+      window.removeEventListener('drop', preventFileNavigation);
+    };
+  }, []);
+
   const openSelected = useCallback((): void => {
     if (selectedNode) openNode(selectedNode.id);
   }, [openNode, selectedNode]);
@@ -437,8 +709,14 @@ export default function App() {
           { id: 'undo', label: 'Undo', shortcut: '⌘Z', disabled: true },
           { id: 'edit-separator', separator: true },
           { id: 'cut', label: 'Cut', shortcut: '⌘X', disabled: true },
-          { id: 'copy', label: 'Copy', shortcut: '⌘C', disabled: true },
-          { id: 'paste', label: 'Paste', shortcut: '⌘V', disabled: true },
+          {
+            id: 'copy',
+            label: 'Copy',
+            shortcut: '⌘C',
+            disabled: finderSelection.size === 0,
+            action: () => copyFinderSelection(),
+          },
+          { id: 'paste', label: 'Paste', shortcut: '⌘V', action: pasteFromClipboard },
           { id: 'edit-separator-2', separator: true },
           { id: 'select-all', label: 'Select All', shortcut: '⌘A', action: selectAll },
           {
@@ -509,7 +787,18 @@ export default function App() {
         ],
       },
     ];
-  }, [activeWindow, closeWindow, createFolder, openSelected, selectAll, selectedNode, state]);
+  }, [
+    activeWindow,
+    closeWindow,
+    copyFinderSelection,
+    createFolder,
+    finderSelection.size,
+    openSelected,
+    pasteFromClipboard,
+    selectAll,
+    selectedNode,
+    state,
+  ]);
 
   if (!startupComplete || !state) {
     return <StartupScreen automation={automation} onComplete={() => setStartupComplete(true)} />;
@@ -520,7 +809,7 @@ export default function App() {
   const activeWindowId = state.desktop.windows.at(-1)?.id ?? null;
 
   return (
-    <main className="macintosh" aria-label="Macintosh Workbench desktop">
+    <main className="macintosh" aria-label="The Macintosh desktop">
       <MenuBar clock={clock} menus={menus} />
       <DesktopSurface
         onBackgroundClick={() => {
@@ -531,6 +820,7 @@ export default function App() {
           setDesktopSelection(new Set(ids));
           setFinderSelection(new Set());
         }}
+        onDropItems={dropItems}
         vfsCount={state.nodes.length}
       >
         {state.desktop.windows.map((windowState, index) => {
@@ -546,6 +836,7 @@ export default function App() {
               onActivate={activateWindow}
               onClose={closeWindow}
               onGeometry={setWindowGeometry}
+              onItemDragStart={startFinderItemDrag}
               onItemOpen={openNode}
               onItemSelect={selectFinderItem}
               onZoom={zoomWindow}
@@ -602,6 +893,15 @@ export default function App() {
             <button onClick={() => setPersistenceError(null)} type="button">
               OK
             </button>
+          </div>
+        )}
+        {transferNotice && (
+          <div
+            className={`transfer-notice ${transferNotice.error ? 'is-error' : ''}`}
+            data-transfer-notice="true"
+            role={transferNotice.error ? 'alert' : 'status'}
+          >
+            {transferNotice.message}
           </div>
         )}
       </DesktopSurface>

@@ -5,7 +5,7 @@ import App from './App';
 import './styles/macintosh.css';
 
 const root = document.getElementById('root');
-if (!root) throw new Error('Macintosh Workbench could not find its renderer root.');
+if (!root) throw new Error('The Macintosh could not find its renderer root.');
 
 createRoot(root).render(
   <StrictMode>

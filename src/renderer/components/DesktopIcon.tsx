@@ -107,6 +107,8 @@ export function DesktopIcon({
         .filter(Boolean)
         .join(' ')}
       data-desktop-icon={id}
+      data-drop-destination={id}
+      data-drop-mode={id === 'trash' ? 'internal' : undefined}
       onDoubleClick={() => onOpen(id)}
       onPointerCancel={pointerUp}
       onPointerDown={pointerDown}

@@ -90,7 +90,7 @@ export const createDefaultState = (): MacintoshState => ({
       'system-disk',
       'Welcome',
       'document',
-      'Welcome to Macintosh Workbench.\n\nThis clean-room desktop is built from original code and original bitmap artwork. Double-click folders, drag icons, open the menus, and drag System Disk to Trash when it is time to shut down.',
+      'Welcome to The Macintosh.\n\nThis clean-room desktop is built from original code and original bitmap artwork. Double-click folders, drag icons, open the menus, and drag System Disk to Trash when it is time to shut down.',
     ),
     seedNode(
       'finder-notes',

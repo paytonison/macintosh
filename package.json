@@ -1,5 +1,6 @@
 {
   "name": "macintosh-workbench",
+  "productName": "The Macintosh",
   "version": "1.0.0",
   "private": true,
   "description": "A clean-room, monochrome classic Macintosh desktop built with Electron.",
@@ -7,8 +8,8 @@
   "license": "BSD-3-Clause",
   "main": "dist/electron/main/main.js",
   "scripts": {
-    "dev": "npm run build && electron .",
-    "start": "electron .",
+    "dev": "npm run build && npm start",
+    "start": "node scripts/start.mjs",
     "build": "npm run build:renderer && npm run build:electron",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",

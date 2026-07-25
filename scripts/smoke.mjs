@@ -1,12 +1,12 @@
 import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const require = createRequire(import.meta.url);
-const electronPath = require('electron');
+import { getBrandedElectronExecutable } from './macos-runtime.mjs';
+
+const electronPath = await getBrandedElectronExecutable();
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const userData = await mkdtemp(path.join(tmpdir(), 'macintosh-workbench-smoke-'));
 
@@ -55,6 +55,35 @@ try {
   ) {
     throw new Error('The folder created through the File menu was not persisted.');
   }
+  const droppedDocument = state.nodes.find(
+    (node) => node.parentId === 'system-disk' && node.name === 'Dropped Note.txt',
+  );
+  if (!droppedDocument?.content?.includes('external Electron drop')) {
+    throw new Error('The externally dropped document and its contents were not persisted.');
+  }
+  const droppedCopy = state.nodes.find(
+    (node) => node.parentId === 'system-disk' && node.name === 'Dropped Note copy.txt',
+  );
+  if (droppedCopy?.content !== droppedDocument.content) {
+    throw new Error('The copied and pasted virtual document was not persisted correctly.');
+  }
+  const clipboardDocument = state.nodes.find(
+    (node) => node.parentId === 'system-disk' && node.name === 'Clipboard',
+  );
+  if (clipboardDocument?.content !== 'This document arrived through Paste.') {
+    throw new Error('The pasted Clipboard document was not persisted.');
+  }
+  const droppedFolder = state.nodes.find(
+    (node) => node.parentId === 'documents' && node.name === 'Drop Folder',
+  );
+  if (!droppedFolder) throw new Error('The internally dragged folder was not moved to Documents.');
+  if (
+    !state.nodes.some(
+      (node) => node.parentId === droppedFolder.id && node.name === 'Nested Note.txt',
+    )
+  ) {
+    throw new Error('The externally dropped folder hierarchy was not persisted.');
+  }
   if (state.desktop.diskPosition.x < 0 || state.desktop.diskPosition.y < 0) {
     throw new Error('The disk did not return to a valid persisted desktop position.');
   }
@@ -78,7 +107,7 @@ try {
   }
 
   console.log(
-    'Electron smoke passed: menus, Calculator buttons/keyboard/outline drag, Finder drag overlap/release redraw, disk pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, external file/folder drop, document paste and duplication, internal folder move, menus, Calculator buttons/keyboard/outline drag, Finder drag overlap/release redraw, disk pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
   );
   console.log(
     'Persistence relaunch passed: Finder geometry, System Disk, and virtual filesystem reloaded.',

@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { createDefaultState } from '../../shared/state';
-import { addFolder, emptyTrash, listChildren, rectanglesOverlap } from './vfs';
+import {
+  addFolder,
+  duplicateNodes,
+  emptyTrash,
+  listChildren,
+  mergeImportedEntries,
+  moveNodes,
+  rectanglesOverlap,
+} from './vfs';
 
 describe('virtual Finder helpers', () => {
   it('sorts list view without disturbing icon insertion order', () => {
@@ -68,5 +76,95 @@ describe('virtual Finder helpers', () => {
         { left: 10, top: 10, right: 20, bottom: 20 },
       ),
     ).toBe(false);
+  });
+
+  it('imports folder trees and resolves duplicate document names', () => {
+    const state = createDefaultState();
+    const imported = mergeImportedEntries(
+      state,
+      [
+        {
+          name: 'Read Me',
+          kind: 'document',
+          content: 'first imported copy',
+          createdAt: '2026-07-22T12:00:00.000Z',
+          modifiedAt: '2026-07-22T12:00:00.000Z',
+        },
+        {
+          name: 'Project',
+          kind: 'folder',
+          createdAt: '2026-07-22T12:00:00.000Z',
+          modifiedAt: '2026-07-22T12:00:00.000Z',
+          children: [
+            {
+              name: 'Notes.txt',
+              kind: 'document',
+              content: 'nested document',
+              createdAt: '2026-07-22T12:00:00.000Z',
+              modifiedAt: '2026-07-22T12:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      'documents',
+    );
+
+    const copy = imported.state.nodes.find(
+      (node) => node.parentId === 'documents' && node.name === 'Read Me copy',
+    );
+    const project = imported.state.nodes.find(
+      (node) => node.parentId === 'documents' && node.name === 'Project',
+    );
+    expect(copy?.content).toBe('first imported copy');
+    expect(imported.state.nodes.find((node) => node.parentId === project?.id)).toMatchObject({
+      name: 'Notes.txt',
+      content: 'nested document',
+    });
+  });
+
+  it('moves folders to valid targets but refuses descendant cycles', () => {
+    const state = createDefaultState();
+    const moved = moveNodes(state, ['applications'], 'trash', '2026-07-22T12:00:00.000Z');
+    expect(moved.state.nodes.find((node) => node.id === 'applications')?.parentId).toBe('trash');
+
+    const nested = mergeImportedEntries(
+      state,
+      [
+        {
+          name: 'Parent',
+          kind: 'folder',
+          createdAt: '2026-07-22T12:00:00.000Z',
+          modifiedAt: '2026-07-22T12:00:00.000Z',
+          children: [
+            {
+              name: 'Child',
+              kind: 'folder',
+              createdAt: '2026-07-22T12:00:00.000Z',
+              modifiedAt: '2026-07-22T12:00:00.000Z',
+            },
+          ],
+        },
+      ],
+      'system-disk',
+    );
+    const parent = nested.state.nodes.find((node) => node.name === 'Parent');
+    const child = nested.state.nodes.find((node) => node.parentId === parent?.id);
+    const refused = moveNodes(nested.state, [parent?.id ?? ''], child?.id ?? '');
+
+    expect(refused.state).toBe(nested.state);
+    expect(refused.affectedIds).toEqual([]);
+  });
+
+  it('duplicates selected documents with their contents', () => {
+    const state = createDefaultState();
+    const duplicated = duplicateNodes(state, ['read-me'], 'documents', '2026-07-22T12:00:00.000Z');
+    const copy = duplicated.state.nodes.find(
+      (node) => node.parentId === 'documents' && node.name === 'Read Me copy',
+    );
+
+    expect(copy?.id).not.toBe('read-me');
+    expect(copy?.content).toBe(
+      'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
+    );
   });
 });

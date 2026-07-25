@@ -1,4 +1,10 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import {
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 
 import { rectanglesOverlap, type Rectangle } from '../model/vfs';
 
@@ -7,7 +13,10 @@ interface DesktopSurfaceProps {
   vfsCount: number;
   onBackgroundClick: () => void;
   onMarquee: (ids: Array<'system-disk' | 'trash'>) => void;
+  onDropItems: (destinationId: string, nodeIds: string[], files: File[]) => void;
 }
+
+export const VFS_DRAG_TYPE = 'application/x-macintosh-vfs-node-ids';
 
 interface MarqueeState {
   pointerId: number;
@@ -22,9 +31,73 @@ export function DesktopSurface({
   vfsCount,
   onBackgroundClick,
   onMarquee,
+  onDropItems,
 }: DesktopSurfaceProps) {
   const surface = useRef<HTMLDivElement>(null);
+  const highlightedDropTarget = useRef<HTMLElement | null>(null);
   const [marquee, setMarquee] = useState<MarqueeState | null>(null);
+
+  const clearDropTarget = (): void => {
+    highlightedDropTarget.current?.classList.remove('is-file-drop-target');
+    highlightedDropTarget.current = null;
+  };
+
+  const resolveDropTarget = (
+    target: EventTarget | null,
+    external: boolean,
+  ): { destinationId: string; element: HTMLElement } | null => {
+    let element = target instanceof HTMLElement ? target : null;
+    while (element && surface.current?.contains(element)) {
+      const destinationId = element.dataset.dropDestination;
+      if (destinationId) {
+        if (external && element.dataset.dropMode === 'internal') return null;
+        return { destinationId, element };
+      }
+      if (element.dataset.dropBlocked === 'true') return null;
+      element = element.parentElement;
+    }
+    return null;
+  };
+
+  const parseNodeIds = (dataTransfer: DataTransfer): string[] => {
+    try {
+      const value = JSON.parse(dataTransfer.getData(VFS_DRAG_TYPE)) as unknown;
+      return Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === 'string').slice(0, 512)
+        : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const dragOver = (event: ReactDragEvent<HTMLDivElement>): void => {
+    const internal = event.dataTransfer.types.includes(VFS_DRAG_TYPE);
+    const external = !internal && event.dataTransfer.types.includes('Files');
+    if (!external && !internal) return;
+    const target = resolveDropTarget(event.target, external);
+    if (!target) {
+      clearDropTarget();
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = external ? 'copy' : 'move';
+    if (highlightedDropTarget.current !== target.element) {
+      clearDropTarget();
+      highlightedDropTarget.current = target.element;
+      target.element.classList.add('is-file-drop-target');
+    }
+  };
+
+  const drop = (event: ReactDragEvent<HTMLDivElement>): void => {
+    const nodeIds = parseNodeIds(event.dataTransfer);
+    const files = Array.from(event.dataTransfer.files);
+    const target = resolveDropTarget(event.target, nodeIds.length === 0 && files.length > 0);
+    clearDropTarget();
+    if (!target || (nodeIds.length === 0 && files.length === 0)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onDropItems(target.destinationId, nodeIds, files);
+  };
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0 || event.target !== event.currentTarget) return;
@@ -91,7 +164,19 @@ export function DesktopSurface({
   return (
     <div
       className="desktop-surface"
+      data-drop-destination="system-disk"
       data-vfs-count={vfsCount}
+      onDragEnd={clearDropTarget}
+      onDragLeave={(event) => {
+        if (
+          !(event.relatedTarget instanceof HTMLElement) ||
+          !event.currentTarget.contains(event.relatedTarget)
+        ) {
+          clearDropTarget();
+        }
+      }}
+      onDragOver={dragOver}
+      onDrop={drop}
       onPointerCancel={pointerUp}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}

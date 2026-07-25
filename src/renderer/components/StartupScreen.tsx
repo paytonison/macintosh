@@ -28,7 +28,7 @@ export function StartupScreen({ automation, onComplete }: StartupScreenProps) {
         {stage > 0 && (
           <>
             <PixelIcon name="computer" size={64} />
-            <div className="startup-title">Macintosh Workbench</div>
+            <div className="startup-title">The Macintosh</div>
             <div className="startup-subtitle">Starting up…</div>
             {stage > 1 && (
               <div className="startup-progress" aria-label="Startup progress">
