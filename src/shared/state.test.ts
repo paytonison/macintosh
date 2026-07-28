@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createDefaultState, sanitizeState } from './state';
+import { createDefaultState, sanitizeState, STATE_SCHEMA_VERSION } from './state';
 
 describe('persistent Macintosh state', () => {
   it('creates a virtual disk and a non-deletable Trash root', () => {
@@ -31,5 +31,52 @@ describe('persistent Macintosh state', () => {
     expect(safe.desktop.diskPosition.x).toBe(createDefaultState().desktop.diskPosition.x);
     expect(safe.desktop.diskPosition.y).toBe(-256);
     expect(safe.desktop.lastEjectAt).toBe('2026-07-22T12:00:00.000Z');
+  });
+
+  it('migrates version 1 state without resetting its desktop or virtual disk', () => {
+    const legacy = createDefaultState();
+    legacy.desktop.diskPosition = { x: 731, y: 137 };
+    legacy.desktop.windows[0] = { ...legacy.desktop.windows[0]!, x: 319, y: 117 };
+
+    const migrated = sanitizeState({ ...legacy, schemaVersion: 1 });
+
+    expect(migrated.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+    expect(migrated.desktop.diskPosition).toEqual({ x: 731, y: 137 });
+    expect(migrated.desktop.windows[0]).toMatchObject({ x: 319, y: 117 });
+    expect(migrated.nodes.map((node) => node.id)).toEqual(legacy.nodes.map((node) => node.id));
+  });
+
+  it('preserves arbitrary child icon positions without snapping them to a grid', () => {
+    const state = createDefaultState();
+    const applications = state.nodes.find((node) => node.id === 'applications');
+    if (!applications) throw new Error('Missing Applications fixture.');
+    applications.iconPosition = { x: 173, y: 119 };
+
+    const safe = sanitizeState(state);
+
+    expect(safe.nodes.find((node) => node.id === 'applications')?.iconPosition).toEqual({
+      x: 173,
+      y: 119,
+    });
+  });
+
+  it('rounds and bounds Finder positions while omitting malformed and root positions', () => {
+    const state = createDefaultState();
+    const disk = state.nodes.find((node) => node.id === 'system-disk');
+    const applications = state.nodes.find((node) => node.id === 'applications');
+    const documents = state.nodes.find((node) => node.id === 'documents');
+    if (!disk || !applications || !documents) throw new Error('Missing state fixtures.');
+    disk.iconPosition = { x: 12, y: 24 };
+    applications.iconPosition = { x: -4.4, y: 9000.2 };
+    documents.iconPosition = { x: Number.NaN, y: 88 };
+
+    const safe = sanitizeState(state);
+
+    expect(safe.nodes.find((node) => node.id === 'system-disk')?.iconPosition).toBeUndefined();
+    expect(safe.nodes.find((node) => node.id === 'applications')?.iconPosition).toEqual({
+      x: 0,
+      y: 8192,
+    });
+    expect(safe.nodes.find((node) => node.id === 'documents')?.iconPosition).toBeUndefined();
   });
 });

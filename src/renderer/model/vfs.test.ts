@@ -8,6 +8,7 @@ import {
   listChildren,
   mergeImportedEntries,
   moveNodes,
+  placeFinderIcons,
   rectanglesOverlap,
 } from './vfs';
 
@@ -155,6 +156,45 @@ describe('virtual Finder helpers', () => {
     expect(refused.affectedIds).toEqual([]);
   });
 
+  it('places icons freely without changing filesystem metadata', () => {
+    const state = createDefaultState();
+    const before = state.nodes.find((node) => node.id === 'applications');
+    const positioned = placeFinderIcons(state, 'system-disk', [
+      { nodeId: 'applications', position: { x: 173, y: 119 } },
+    ]);
+    const after = positioned.nodes.find((node) => node.id === 'applications');
+
+    expect(after).toEqual({ ...before, iconPosition: { x: 173, y: 119 } });
+    expect(after?.parentId).toBe('system-disk');
+    expect(after?.modifiedAt).toBe(before?.modifiedAt);
+    expect(positioned.nodes).toHaveLength(state.nodes.length);
+  });
+
+  it('moves a root without carrying its old parent-relative position', () => {
+    const state = createDefaultState();
+    const applications = state.nodes.find((node) => node.id === 'applications');
+    if (!applications) throw new Error('Missing VFS fixture.');
+    applications.iconPosition = { x: 173, y: 119 };
+    state.nodes.push({
+      id: 'sample-application',
+      parentId: 'applications',
+      name: 'Sample',
+      kind: 'document',
+      iconPosition: { x: 91, y: 77 },
+      createdAt: '2026-07-22T12:00:00.000Z',
+      modifiedAt: '2026-07-22T12:00:00.000Z',
+    });
+
+    const moved = moveNodes(state, ['applications'], 'trash', '2026-07-22T12:00:00.000Z');
+
+    expect(
+      moved.state.nodes.find((node) => node.id === 'applications')?.iconPosition,
+    ).toBeUndefined();
+    expect(
+      moved.state.nodes.find((node) => node.id === 'sample-application')?.iconPosition,
+    ).toEqual({ x: 91, y: 77 });
+  });
+
   it('duplicates selected documents with their contents', () => {
     const state = createDefaultState();
     const duplicated = duplicateNodes(state, ['read-me'], 'documents', '2026-07-22T12:00:00.000Z');
@@ -166,5 +206,30 @@ describe('virtual Finder helpers', () => {
     expect(copy?.content).toBe(
       'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
     );
+  });
+
+  it('auto-places copied roots while retaining layout inside copied folders', () => {
+    const state = createDefaultState();
+    const documents = state.nodes.find((node) => node.id === 'documents');
+    const readMe = state.nodes.find((node) => node.id === 'read-me');
+    if (!documents || !readMe) throw new Error('Missing copy fixtures.');
+    documents.iconPosition = { x: 173, y: 119 };
+    readMe.iconPosition = { x: 87, y: 133 };
+
+    const duplicated = duplicateNodes(
+      state,
+      ['documents'],
+      'system-disk',
+      '2026-07-22T12:00:00.000Z',
+    );
+    const copiedFolder = duplicated.state.nodes.find(
+      (node) => node.parentId === 'system-disk' && node.name === 'Documents copy',
+    );
+    const copiedReadMe = duplicated.state.nodes.find(
+      (node) => node.parentId === copiedFolder?.id && node.name === 'Read Me',
+    );
+
+    expect(copiedFolder?.iconPosition).toBeUndefined();
+    expect(copiedReadMe?.iconPosition).toEqual({ x: 87, y: 133 });
   });
 });

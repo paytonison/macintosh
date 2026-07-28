@@ -695,6 +695,116 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error(`Document Copy/Paste failed: ${JSON.stringify(pastedDocuments)}.`);
   }
 
+  const freeIconPlacement = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector('[data-vfs-item="applications"]');
+      const canvas = document.querySelector('[data-icon-layout-parent="system-disk"]');
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(source instanceof HTMLElement) || !(canvas instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      const sourceRect = source.getBoundingClientRect();
+      const canvasRect = canvas.getBoundingClientRect();
+      const hotspot = { x: 31, y: 19 };
+      const destination = { x: 441, y: 239 };
+      const client = {
+        x: Math.round(canvasRect.left + destination.x + hotspot.x),
+        y: Math.round(canvasRect.top + destination.y + hotspot.y)
+      };
+      const data = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', {
+        dataTransfer: data,
+        clientX: Math.round(sourceRect.left + hotspot.x),
+        clientY: Math.round(sourceRect.top + hotspot.y),
+        bubbles: true,
+        cancelable: true
+      }));
+      canvas.dispatchEvent(new DragEvent('dragover', {
+        dataTransfer: data,
+        clientX: client.x,
+        clientY: client.y,
+        bubbles: true,
+        cancelable: true
+      }));
+      const highlighted = canvas.classList.contains('is-file-drop-target');
+      canvas.dispatchEvent(new DragEvent('drop', {
+        dataTransfer: data,
+        clientX: client.x,
+        clientY: client.y,
+        bubbles: true,
+        cancelable: true
+      }));
+      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
+      return {
+        highlighted,
+        payload: data.getData('application/x-macintosh-vfs-node-ids'),
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; payload: string; vfsCount: number } | null;
+  if (!freeIconPlacement?.payload || !freeIconPlacement.highlighted) {
+    throw new Error(
+      `Free Finder placement did not use the internal drag surface: ${JSON.stringify(freeIconPlacement)}.`,
+    );
+  }
+  await pause(100);
+  const placedIcon = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector('[data-vfs-item="applications"]');
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(source instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        x: Number(source.dataset.iconX),
+        y: Number(source.dataset.iconY),
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
+    })()`,
+    true,
+  )) as { x: number; y: number; vfsCount: number } | null;
+  if (
+    !placedIcon ||
+    placedIcon.x !== 441 ||
+    placedIcon.y !== 239 ||
+    placedIcon.vfsCount !== freeIconPlacement.vfsCount
+  ) {
+    throw new Error(`Finder icon did not commit its free position: ${JSON.stringify(placedIcon)}.`);
+  }
+
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu="view"]')?.click()`,
+    true,
+  );
+  await pause(20);
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu-action="view-list"]')?.click()`,
+    true,
+  );
+  await pause(60);
+  const listViewVisible = await window.webContents.executeJavaScript(
+    `document.querySelector('[data-finder-window="window-system-disk"] .finder-list') !== null`,
+    true,
+  );
+  if (!listViewVisible) throw new Error('View by Name did not replace the free icon canvas.');
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu="view"]')?.click()`,
+    true,
+  );
+  await pause(20);
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu-action="view-icons"]')?.click()`,
+    true,
+  );
+  await pause(60);
+  const restoredIconPosition = await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector('[data-vfs-item="applications"]');
+      return source instanceof HTMLElement && Number(source.dataset.iconX) === 441 && Number(source.dataset.iconY) === 239;
+    })()`,
+    true,
+  );
+  if (!restoredIconPosition) {
+    throw new Error('Returning to icon view did not restore the free Finder position.');
+  }
+
   const importCaptureDestination = process.env.MACINTOSH_SMOKE_IMPORT_CAPTURE_PATH;
   if (importCaptureDestination) {
     const image = await window.webContents.capturePage();
@@ -1236,24 +1346,24 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   await pause(40);
 
-  const invalidTarget = {
-    x: Math.max(140, coordinates.disk.x - 240),
-    y: Math.min(520, coordinates.disk.y + 220),
-  };
-  await sendDrag(coordinates.disk, invalidTarget, true);
+  const repositionTarget = { x: 137, y: 343 };
+  await sendDrag(coordinates.disk, repositionTarget, true);
   await pause(260);
-  const invalidDropRestored = await window.webContents.executeJavaScript(
+  const diskPositionCommitted = await window.webContents.executeJavaScript(
     `(() => {
       const disk = document.querySelector('[data-desktop-icon="system-disk"]');
       const trash = document.querySelector('[data-desktop-icon="trash"]');
       if (!(disk instanceof HTMLElement) || !(trash instanceof HTMLElement)) return false;
       const rect = disk.getBoundingClientRect();
-      const distance = Math.hypot(rect.left + rect.width / 2 - ${coordinates.disk.x}, rect.top + rect.height / 2 - ${coordinates.disk.y});
+      const distance = Math.hypot(rect.left + rect.width / 2 - ${repositionTarget.x}, rect.top + rect.height / 2 - ${repositionTarget.y});
       return distance <= 2 && !trash.classList.contains('is-drop-target');
     })()`,
     true,
   );
-  if (!invalidDropRestored) throw new Error('Invalid disk drop did not return cleanly to desktop.');
+  if (!diskPositionCommitted) {
+    throw new Error('System Disk did not remain at its free desktop position.');
+  }
+  coordinates.disk = repositionTarget;
 
   window.webContents.sendInputEvent({ type: 'mouseMove', ...coordinates.disk });
   window.webContents.sendInputEvent({
@@ -1310,12 +1420,17 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
     const disk = document.querySelector('[data-desktop-icon="system-disk"]');
     const root = document.querySelector('[data-vfs-count]');
     const finder = document.querySelector('[data-finder-window="window-applications"]');
-    if (!(disk instanceof HTMLElement) || !(root instanceof HTMLElement) || !(finder instanceof HTMLElement)) return null;
+    const applications = document.querySelector('[data-vfs-item="applications"]');
+    if (!(disk instanceof HTMLElement) || !(root instanceof HTMLElement) || !(finder instanceof HTMLElement) || !(applications instanceof HTMLElement)) return null;
     const rect = disk.getBoundingClientRect();
     return {
       loaded: document.body.dataset.stateLoaded === 'true',
       diskLabel: disk.getAttribute('aria-label'),
       diskVisible: rect.width > 0 && rect.height > 0,
+      diskX: Number.parseFloat(disk.style.getPropertyValue('--icon-x')),
+      diskY: Number.parseFloat(disk.style.getPropertyValue('--icon-y')),
+      applicationsX: Number(applications.dataset.iconX),
+      applicationsY: Number(applications.dataset.iconY),
       vfsCount: Number(root.dataset.vfsCount || 0),
       windowLeft: Number.parseFloat(finder.style.left),
       windowTop: Number.parseFloat(finder.style.top)

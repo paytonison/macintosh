@@ -1,5 +1,5 @@
 import type { ImportedEntry } from '../../shared/contracts';
-import type { FinderViewMode, MacintoshState, VfsNode } from '../../shared/state';
+import type { FinderViewMode, MacintoshState, Point, VfsNode } from '../../shared/state';
 
 const MAX_VFS_NODES = 512;
 const MAX_VFS_CONTENT = 192 * 1024;
@@ -16,6 +16,11 @@ export interface Rectangle {
   top: number;
   right: number;
   bottom: number;
+}
+
+export interface NodeIconPlacement {
+  nodeId: string;
+  position: Point;
 }
 
 export const rectanglesOverlap = (first: Rectangle, second: Rectangle): boolean =>
@@ -153,7 +158,9 @@ export const moveNodes = (
       ...state,
       nodes: state.nodes.map((node) => {
         const update = updates.get(node.id);
-        return update ? { ...node, ...update, modifiedAt: timestamp } : node;
+        return update
+          ? { ...node, ...update, iconPosition: undefined, modifiedAt: timestamp }
+          : node;
       }),
     },
     affectedIds: [...updates.keys()],
@@ -191,7 +198,12 @@ export const duplicateNodes = (
   let skippedCount = 0;
   let truncatedCount = 0;
 
-  const clone = (source: VfsNode, destinationId: string, name: string): VfsNode | null => {
+  const clone = (
+    source: VfsNode,
+    destinationId: string,
+    name: string,
+    retainIconPosition: boolean,
+  ): VfsNode | null => {
     if (state.nodes.length + additions.length >= MAX_VFS_NODES) {
       skippedCount += 1 + descendantsOf(state.nodes, source.id).size;
       return null;
@@ -210,20 +222,21 @@ export const duplicateNodes = (
       id,
       parentId: destinationId,
       name,
+      iconPosition: retainIconPosition ? source.iconPosition : undefined,
       ...(content === undefined ? {} : { content }),
       createdAt: timestamp,
       modifiedAt: timestamp,
     };
     additions.push(copy);
     for (const child of byParent.get(source.id) ?? []) {
-      clone(child, id, child.name);
+      clone(child, id, child.name, true);
     }
     return copy;
   };
 
   for (const root of roots) {
     const name = uniqueName(root.name, root.kind, names);
-    const copy = clone(root, parentId, name);
+    const copy = clone(root, parentId, name, false);
     if (copy) {
       names.add(name);
       affectedIds.push(copy.id);
@@ -349,4 +362,39 @@ export const addFolder = (
       },
     ],
   };
+};
+
+export const placeFinderIcons = (
+  state: MacintoshState,
+  parentId: string,
+  placements: readonly NodeIconPlacement[],
+): MacintoshState => {
+  const byId = new Map(
+    placements.flatMap(({ nodeId, position }) =>
+      Number.isFinite(position.x) && Number.isFinite(position.y)
+        ? [
+            [
+              nodeId,
+              {
+                x: Math.round(Math.min(8192, Math.max(0, position.x))),
+                y: Math.round(Math.min(8192, Math.max(0, position.y))),
+              },
+            ] as const,
+          ]
+        : [],
+    ),
+  );
+  if (byId.size === 0) return state;
+
+  let changed = false;
+  const nodes = state.nodes.map((node) => {
+    const position = node.parentId === parentId ? byId.get(node.id) : undefined;
+    if (!position || (node.iconPosition?.x === position.x && node.iconPosition.y === position.y)) {
+      return node;
+    }
+    changed = true;
+    return { ...node, iconPosition: position };
+  });
+
+  return changed ? { ...state, nodes } : state;
 };

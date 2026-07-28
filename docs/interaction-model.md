@@ -187,19 +187,30 @@ Zoom restore geometry is transient in version 1. Relaunch preserves the last com
 
 Scroll controls affect only their own Finder window content. A scroll action must not activate, select, move, or resize another window.
 
+### Icon placement
+
+Icon view begins with an orderly deterministic arrangement, but it does not constrain committed positions to that arrangement.
+
+- Dragging onto bare icon-view space commits an integer-pixel position relative to that folder's scrollable content.
+- Dragging multiple selected icons applies one shared delta so their relative arrangement remains intact.
+- Dropping onto a folder icon performs the existing virtual filesystem move instead of a placement-only change.
+- Dropping into the bare icon canvas of another open folder moves the items and places them at the drop point.
+- List view ignores icon positions and remains name-sorted. Returning to icon view restores the saved positions.
+- Cancellation or a drop outside a valid target discards the preview and changes neither layout nor filesystem state.
+
 ## Desktop icons and drag behavior
 
 The desktop contains System Disk and Trash.
 
-Trash is repositionable. Its provisional position follows the pointer during drag and becomes durable when the drag commits.
+System Disk and Trash are freely repositionable. Their provisional positions follow the pointer during drag and become durable when the drag commits.
 
 System Disk drag is the eject gesture:
 
 - During drag, its preview follows the pointer while its committed position remains unchanged.
 - Trash becomes visibly full or highlighted when the pointer enters the valid drop region.
-- Releasing away from Trash is an invalid drop and animates the disk back to its origin.
+- Releasing away from Trash commits the disk's new desktop position.
 - Releasing on Trash begins ejection.
-- The disk's original desktop position remains its durable position after ejection.
+- The disk's position immediately before the eject drag remains its durable position after ejection.
 
 Ejection is a transaction:
 
@@ -211,7 +222,7 @@ Ejection is a transaction:
 
 If saving fails, Macintosh Workbench must not quit. It must report the failure, leave durable state recoverable, and return System Disk to its origin.
 
-Dragging Trash over itself or dragging System Disk to any non-Trash target has no hidden filesystem effect.
+Repositioning either desktop icon has no hidden filesystem effect.
 
 ## Dialogs and alerts
 
@@ -229,20 +240,21 @@ The virtual filesystem is local application state. A user may copy host files or
 that state through an explicit drop or paste, but the imported nodes are bounded virtual copies,
 not live references to host paths.
 
-Each node has a stable identifier, parent identifier, name, kind, and timestamps. Documents may contain bounded text content. System Disk and Trash are required roots.
+Each node has a stable identifier, parent identifier, name, kind, and timestamps. Non-root nodes may also carry bounded Finder icon coordinates. Documents may contain bounded text content. System Disk and Trash are required roots.
 
 Finder commands operate on the virtual tree only. Host import paths may come only from
 browser-granted `File` objects and must be inspected behind the existing narrow main-process
 boundary. Imported nodes do not retain arbitrary paths or ongoing host access. General host
 filesystem browsing or arbitrary path handling remains a separate product and security decision.
 
-Opening, selecting, changing view mode, moving a window, and moving Trash must not mutate virtual filesystem contents. Filesystem mutations occur only through explicit commands such as New Folder or Empty Trash.
+Opening, selecting, changing view mode, moving a window, and repositioning icons must not mutate virtual filesystem contents. Finder icon movement changes layout metadata only. Filesystem mutations occur only through explicit commands such as New Folder or Empty Trash.
 
 ## Persistence boundary
 
-The following state is durable in version 1:
+The following state is durable in schema version 2:
 
 - System Disk and Trash positions;
+- Finder icon positions within disks, folders, and Trash;
 - Finder window identity, geometry, and stack order;
 - Finder view mode;
 - virtual filesystem nodes and document content;
@@ -251,7 +263,7 @@ The following state is durable in version 1:
 The following state is transient:
 
 - desktop and Finder selection;
-- drag origins, previews, hover states, and snapback animation;
+- drag origins, previews, hover states, and cancellation feedback;
 - the current open menu;
 - dialogs and dialog positions;
 - Calculator open state, calculation state, and position;
@@ -260,6 +272,8 @@ The following state is transient:
 - temporary errors after acknowledgement.
 
 Renderer state is sanitized before persistence and again in the main process. Writes are serialized and atomic. A relaunch must never observe a partially written state file.
+
+Schema version 1 states migrate to version 2 without resetting the desktop or virtual disk. Nodes without a saved icon position use the deterministic initial arrangement until the user moves them.
 
 Adding durable fields requires all of the following:
 
@@ -280,6 +294,13 @@ Visual feedback must communicate state, not decorate latency.
 - Hover treatment appears only for a meaningful target.
 - Animation should be stepped or restrained when that better fits the 1-bit language.
 - System sounds are synthesized or original and remain local to the application.
+
+The renderer remains an ordinary DOM/RGBA scene; it does not emulate a 1-bit framebuffer. Authored
+interface paint is limited to black, white, and deterministic black-and-white patterns. Intermediate
+tones must come from aligned bitmap dithering rather than literal gray, translucency, blur, gradients,
+or a global post-processing filter. If raster-image display is added later, quantize that content at
+its rendering boundary instead of filtering the live desktop. Browser text rasterization may still use
+compositor antialiasing and is not evidence of a larger authored palette.
 
 Do not import modern easing, translucency, blur, spring motion, toast notifications, or platform-native controls unless Payton deliberately chooses them for a specific reason.
 

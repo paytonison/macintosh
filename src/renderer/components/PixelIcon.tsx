@@ -1,44 +1,10 @@
+import { rasterizeOneBitBitmap, type PixelRun } from '../model/pixel-bitmap';
+
 export type PixelIconName =
   'computer' | 'disk' | 'trash' | 'trash-full' | 'folder' | 'document' | 'system-folder';
 
-interface PixelBitmap {
-  x: number;
-  y: number;
-  rows: string[];
-}
-
-interface PixelRun {
-  x: number;
-  y: number;
-  width: number;
-  color: 'black' | 'gray' | 'white';
-}
-
-const rasterize = ({ x, y, rows }: PixelBitmap): PixelRun[] =>
-  rows.flatMap((row, rowIndex) => {
-    const runs: PixelRun[] = [];
-    let start = 0;
-    while (start < row.length) {
-      const pixel = row[start];
-      if (pixel !== '#' && pixel !== '.' && pixel !== 'g') {
-        start += 1;
-        continue;
-      }
-      let end = start + 1;
-      while (end < row.length && row[end] === pixel) end += 1;
-      runs.push({
-        x: x + start,
-        y: y + rowIndex,
-        width: end - start,
-        color: pixel === '#' ? 'black' : pixel === 'g' ? 'gray' : 'white',
-      });
-      start = end;
-    }
-    return runs;
-  });
-
 const drawings: Record<PixelIconName, PixelRun[]> = {
-  computer: rasterize({
+  computer: rasterizeOneBitBitmap({
     x: 3,
     y: 2,
     rows: [
@@ -67,7 +33,7 @@ const drawings: Record<PixelIconName, PixelRun[]> = {
       '  ####################  ',
     ],
   }),
-  disk: rasterize({
+  disk: rasterizeOneBitBitmap({
     x: 5,
     y: 2,
     rows: [
@@ -95,7 +61,7 @@ const drawings: Record<PixelIconName, PixelRun[]> = {
       '######################',
     ],
   }),
-  trash: rasterize({
+  trash: rasterizeOneBitBitmap({
     x: 0,
     y: 3,
     rows: [
@@ -125,7 +91,7 @@ const drawings: Record<PixelIconName, PixelRun[]> = {
       '      ################        ',
     ],
   }),
-  'trash-full': rasterize({
+  'trash-full': rasterizeOneBitBitmap({
     x: 0,
     y: 3,
     rows: [
@@ -156,7 +122,7 @@ const drawings: Record<PixelIconName, PixelRun[]> = {
       '       ###############        ',
     ],
   }),
-  folder: rasterize({
+  folder: rasterizeOneBitBitmap({
     x: 2,
     y: 7,
     rows: [
@@ -180,7 +146,7 @@ const drawings: Record<PixelIconName, PixelRun[]> = {
       '   ######################## ',
     ],
   }),
-  'system-folder': rasterize({
+  'system-folder': rasterizeOneBitBitmap({
     x: 2,
     y: 7,
     rows: [
@@ -204,7 +170,7 @@ const drawings: Record<PixelIconName, PixelRun[]> = {
       '   ######################## ',
     ],
   }),
-  document: rasterize({
+  document: rasterizeOneBitBitmap({
     x: 7,
     y: 2,
     rows: [
@@ -257,7 +223,7 @@ export function PixelIcon({ name, size = 48, className = '' }: PixelIconProps) {
     >
       {drawings[name].map((run, index) => (
         <rect
-          fill={run.color === 'white' ? '#fff' : run.color === 'gray' ? '#aaa' : '#000'}
+          fill={run.color === 'white' ? '#fff' : '#000'}
           height="1"
           key={`${name}-${index}`}
           width={run.width}

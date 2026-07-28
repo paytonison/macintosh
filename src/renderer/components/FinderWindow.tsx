@@ -10,10 +10,22 @@ import {
 import type {
   FinderViewMode,
   FinderWindowState,
+  Point,
   VfsNode,
   WindowGeometry,
 } from '../../shared/state';
+import {
+  finderIconCanvasSize,
+  resolveFinderIconPosition,
+  type FinderIconDragLayout,
+} from '../model/finder-icon-layout';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
+
+export interface FinderItemDragContext {
+  parentId: string;
+  nodeIds: string[];
+  layout: FinderIconDragLayout | null;
+}
 
 interface FinderWindowProps {
   windowState: FinderWindowState;
@@ -30,7 +42,7 @@ interface FinderWindowProps {
   onZoom: (id: string) => void;
   onItemSelect: (id: string, additive: boolean) => void;
   onItemOpen: (id: string) => void;
-  onItemDragStart: (id: string, dataTransfer: DataTransfer) => void;
+  onItemDragStart: (id: string, dataTransfer: DataTransfer, context: FinderItemDragContext) => void;
   onItemDragEnd: () => void;
   onInteractionChange: (active: boolean) => void;
 }
@@ -244,6 +256,41 @@ export function FinderWindow({
   } as CSSProperties;
 
   const isDocument = node.kind === 'document';
+  const iconItems = items.map((item, index) => ({
+    item,
+    position: resolveFinderIconPosition(item, index),
+  }));
+  const iconCanvasSize = finderIconCanvasSize(iconItems.map(({ position }) => position));
+
+  const beginItemDrag = (
+    event: ReactDragEvent<HTMLButtonElement>,
+    item: VfsNode,
+    position?: Point,
+  ): void => {
+    const draggedItems = selectedIds.has(item.id)
+      ? iconItems.filter(({ item: candidate }) => selectedIds.has(candidate.id))
+      : iconItems.filter(({ item: candidate }) => candidate.id === item.id);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    onItemDragStart(item.id, event.dataTransfer, {
+      parentId: node.id,
+      nodeIds: draggedItems.map(({ item: candidate }) => candidate.id),
+      layout: position
+        ? {
+            anchorId: item.id,
+            pointerOffset: {
+              x: Math.round(event.clientX - bounds.left),
+              y: Math.round(event.clientY - bounds.top),
+            },
+            positions: Object.fromEntries(
+              draggedItems.map(({ item: candidate, position: candidatePosition }) => [
+                candidate.id,
+                candidatePosition,
+              ]),
+            ),
+          }
+        : null,
+    });
+  };
 
   return (
     <section
@@ -306,26 +353,34 @@ export function FinderWindow({
         <div
           className="window-content"
           data-drop-blocked={isDocument ? 'true' : undefined}
-          data-drop-destination={isDocument ? undefined : node.id}
+          data-drop-destination={isDocument || viewMode === 'icons' ? undefined : node.id}
           ref={content}
         >
           {isDocument ? (
             <article className="document-sheet">{node.content ?? ''}</article>
           ) : viewMode === 'icons' ? (
-            <div className="finder-icon-grid">
-              {items.map((item) => (
+            <div
+              className="finder-icon-grid"
+              data-drop-destination={node.id}
+              data-icon-layout-parent={node.id}
+              style={{ minHeight: iconCanvasSize.height, minWidth: iconCanvasSize.width }}
+            >
+              {iconItems.map(({ item, position }) => (
                 <button
                   className={`finder-item ${selectedIds.has(item.id) ? 'is-selected' : ''}`}
                   data-drop-destination={item.kind === 'folder' ? item.id : undefined}
+                  data-icon-x={position.x}
+                  data-icon-y={position.y}
                   data-vfs-item={item.id}
                   draggable
                   key={item.id}
                   onClick={(event) => onItemSelect(item.id, event.shiftKey)}
                   onDoubleClick={() => onItemOpen(item.id)}
                   onDragStart={(event: ReactDragEvent<HTMLButtonElement>) =>
-                    onItemDragStart(item.id, event.dataTransfer)
+                    beginItemDrag(event, item, position)
                   }
                   onDragEnd={onItemDragEnd}
+                  style={{ left: position.x, top: position.y }}
                   type="button"
                 >
                   <PixelIcon name={iconForNode(item)} size={32} />
@@ -345,7 +400,7 @@ export function FinderWindow({
                   onClick={(event) => onItemSelect(item.id, event.shiftKey)}
                   onDoubleClick={() => onItemOpen(item.id)}
                   onDragStart={(event: ReactDragEvent<HTMLButtonElement>) =>
-                    onItemDragStart(item.id, event.dataTransfer)
+                    beginItemDrag(event, item)
                   }
                   onDragEnd={onItemDragEnd}
                   role="listitem"
@@ -405,9 +460,7 @@ export function FinderWindow({
           onPointerMove={resizeWindow}
           onPointerUp={endResize}
           type="button"
-        >
-          <span />
-        </button>
+        />
       </div>
     </section>
   );

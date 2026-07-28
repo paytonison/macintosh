@@ -7,7 +7,13 @@ import {
   type ReactNode,
 } from 'react';
 
+import type { Point } from '../../shared/state';
 import { rectanglesOverlap, type Rectangle } from '../model/vfs';
+
+export interface FinderIconDropLocation {
+  parentId: string;
+  point: Point;
+}
 
 interface DesktopSurfaceProps {
   children: ReactNode;
@@ -15,7 +21,12 @@ interface DesktopSurfaceProps {
   vfsCount: number;
   onBackgroundClick: () => void;
   onMarquee: (ids: Array<'system-disk' | 'trash'>) => void;
-  onDropItems: (destinationId: string, nodeIds: string[], files: File[]) => void;
+  onDropItems: (
+    destinationId: string,
+    nodeIds: string[],
+    files: File[],
+    iconLocation: FinderIconDropLocation | null,
+  ) => void;
   onInteractionChange: (active: boolean) => void;
 }
 
@@ -118,19 +129,36 @@ export function DesktopSurface({
     if (!target || (nodeIds.length === 0 && files.length === 0)) return;
     event.preventDefault();
     event.stopPropagation();
-    onDropItems(target.destinationId, nodeIds, files);
+    const layoutParent = target.element.dataset.iconLayoutParent;
+    const bounds = layoutParent ? target.element.getBoundingClientRect() : null;
+    onDropItems(
+      target.destinationId,
+      nodeIds,
+      files,
+      layoutParent && bounds
+        ? {
+            parentId: layoutParent,
+            point: {
+              x: Math.round(event.clientX - bounds.left),
+              y: Math.round(event.clientY - bounds.top),
+            },
+          }
+        : null,
+    );
   };
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0 || event.target !== event.currentTarget) return;
     onInteractionChange(true);
     event.currentTarget.setPointerCapture(event.pointerId);
+    const pointerX = Math.round(event.clientX);
+    const pointerY = Math.round(event.clientY);
     const next = {
       pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      currentX: event.clientX,
-      currentY: event.clientY,
+      startX: pointerX,
+      startY: pointerY,
+      currentX: pointerX,
+      currentY: pointerY,
     };
     marqueeSession.current = next;
     setMarquee(next);
@@ -138,7 +166,11 @@ export function DesktopSurface({
 
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (!marquee || marquee.pointerId !== event.pointerId) return;
-    const next = { ...marquee, currentX: event.clientX, currentY: event.clientY };
+    const next = {
+      ...marquee,
+      currentX: Math.round(event.clientX),
+      currentY: Math.round(event.clientY),
+    };
     marqueeSession.current = next;
     setMarquee(next);
     const selection: Rectangle = {

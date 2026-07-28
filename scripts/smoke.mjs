@@ -47,6 +47,8 @@ try {
   await runElectron('--smoke-test');
 
   const state = JSON.parse(await readFile(path.join(userData, 'macintosh-state.json'), 'utf8'));
+  if (state.schemaVersion !== 2)
+    throw new Error('The persisted state was not migrated to schema 2.');
   const disk = state.nodes.find((node) => node.id === 'system-disk');
   if (!disk || disk.kind !== 'disk') throw new Error('The persisted virtual disk was removed.');
   if (!state.desktop.lastEjectAt) throw new Error('The eject timestamp was not persisted.');
@@ -87,6 +89,19 @@ try {
   if (state.desktop.diskPosition.x < 0 || state.desktop.diskPosition.y < 0) {
     throw new Error('The disk did not return to a valid persisted desktop position.');
   }
+  if (state.desktop.diskPosition.x === 1036 && state.desktop.diskPosition.y === 52) {
+    throw new Error('The freely repositioned System Disk returned to its default position.');
+  }
+  const applications = state.nodes.find((node) => node.id === 'applications');
+  if (
+    applications?.parentId !== 'system-disk' ||
+    applications.iconPosition?.x !== 441 ||
+    applications.iconPosition?.y !== 239
+  ) {
+    throw new Error(
+      `The free Finder icon position was not persisted: ${JSON.stringify(applications)}.`,
+    );
+  }
   const savedWindow = state.desktop.windows.find((item) => item.id === 'window-applications');
   if (!savedWindow || savedWindow.x !== 405 || savedWindow.y !== 105) {
     throw new Error(
@@ -105,12 +120,24 @@ try {
   if (proof.windowLeft !== savedWindow.x || proof.windowTop !== savedWindow.y) {
     throw new Error('The persisted Finder window position was not restored on relaunch.');
   }
+  if (
+    proof.diskX !== state.desktop.diskPosition.x ||
+    proof.diskY !== state.desktop.diskPosition.y
+  ) {
+    throw new Error('The freely positioned System Disk was not restored on relaunch.');
+  }
+  if (
+    proof.applicationsX !== applications.iconPosition.x ||
+    proof.applicationsY !== applications.iconPosition.y
+  ) {
+    throw new Error('The free Finder icon position was not restored on relaunch.');
+  }
 
   console.log(
-    'Electron smoke passed: native The Macintosh identity/icon, external file/folder drop, document paste and duplication, internal folder move, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled Trash drag, disk pointer-follow, invalid snapback, Trash hover, eject animation, persisted quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, external file/folder drop, document paste and duplication, free Finder icon placement, internal folder move, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled Trash drag, free System Disk placement, disk pointer-follow, Trash hover, eject animation, persisted quit.',
   );
   console.log(
-    'Persistence relaunch passed: Finder geometry, System Disk, and virtual filesystem reloaded.',
+    'Persistence relaunch passed: Finder geometry, free icon positions, System Disk, and virtual filesystem reloaded.',
   );
 } finally {
   await rm(userData, { recursive: true, force: true });

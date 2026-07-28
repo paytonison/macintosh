@@ -1,4 +1,5 @@
-export const STATE_SCHEMA_VERSION = 1 as const;
+export const STATE_SCHEMA_VERSION = 2 as const;
+const LEGACY_STATE_SCHEMA_VERSION = 1 as const;
 
 export type VfsNodeKind = 'disk' | 'trash' | 'folder' | 'document';
 export type FinderViewMode = 'icons' | 'list';
@@ -24,6 +25,7 @@ export interface VfsNode {
   name: string;
   kind: VfsNodeKind;
   content?: string;
+  iconPosition?: Point;
   createdAt: string;
   modifiedAt: string;
 }
@@ -136,6 +138,22 @@ const sanitizePoint = (value: unknown, fallback: Point): Point => {
   };
 };
 
+const sanitizeIconPosition = (value: unknown): Point | null => {
+  if (
+    !isRecord(value) ||
+    typeof value.x !== 'number' ||
+    !Number.isFinite(value.x) ||
+    typeof value.y !== 'number' ||
+    !Number.isFinite(value.y)
+  ) {
+    return null;
+  }
+  return {
+    x: Math.round(Math.min(8192, Math.max(0, value.x))),
+    y: Math.round(Math.min(8192, Math.max(0, value.y))),
+  };
+};
+
 const validKinds = new Set<VfsNodeKind>(['disk', 'trash', 'folder', 'document']);
 
 const sanitizeNode = (value: unknown): VfsNode | null => {
@@ -147,12 +165,15 @@ const sanitizeNode = (value: unknown): VfsNode | null => {
   if (!id || !name) return null;
   const createdAt = safeTimestamp(value.createdAt, seedTimestamp) ?? seedTimestamp;
   const modifiedAt = safeTimestamp(value.modifiedAt, createdAt) ?? createdAt;
+  const parentId = value.parentId === null ? null : safeString(value.parentId, 'system-disk', 96);
+  const iconPosition = parentId === null ? null : sanitizeIconPosition(value.iconPosition);
   return {
     id,
-    parentId: value.parentId === null ? null : safeString(value.parentId, 'system-disk', 96),
+    parentId,
     name,
     kind: kind as VfsNodeKind,
     ...(typeof value.content === 'string' ? { content: value.content.slice(0, 64 * 1024) } : {}),
+    ...(iconPosition ? { iconPosition } : {}),
     createdAt,
     modifiedAt,
   };
@@ -175,7 +196,13 @@ const sanitizeWindow = (value: unknown): FinderWindowState | null => {
 
 export const sanitizeState = (value: unknown): MacintoshState => {
   const fallback = createDefaultState();
-  if (!isRecord(value) || value.schemaVersion !== STATE_SCHEMA_VERSION) return fallback;
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== LEGACY_STATE_SCHEMA_VERSION &&
+      value.schemaVersion !== STATE_SCHEMA_VERSION)
+  ) {
+    return fallback;
+  }
 
   const desktop = isRecord(value.desktop) ? value.desktop : {};
   const nodes = Array.isArray(value.nodes)

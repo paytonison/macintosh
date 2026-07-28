@@ -22,13 +22,14 @@ npm run dev
 - Click, Shift-click, or drag a marquee to select desktop icons.
 - Drag System Disk or Trash to reposition it.
 - Double-click System Disk, Trash, folders, or documents to open Finder windows.
+- In icon view, drag one or more selected Finder items to any pixel position in the open window. Dropping them onto a folder still moves them into that folder.
 - Drag selected documents or folders into another folder, onto System Disk, or into Trash. Moving a folder preserves its contents and invalid descendant drops are refused.
 - Drop files or folders from the host Finder onto the desktop, System Disk, or an open folder. Text documents keep their readable contents; binary files are represented by a safe document placeholder rather than copied into the virtual disk.
 - Use **Edit > Copy** or Command-C on selected Finder items, then **Paste** or Command-V to duplicate them in the active folder. Host files copied in Finder can also be pasted, while pasted plain text becomes a new `Clipboard` document.
 - Drag a window title bar to move its 1-bit outline; the full window redraws at the new position when released. Use its close and zoom boxes, or resize it from the lower-right grow box.
 - Use the System, File, Edit, View, and Special menus for About, New Folder, Open, Close, Get Info, selection, view, cleanup, and Trash commands.
 - Open **Calculator** from the System menu. It supports mouse or keyboard input for digits, decimal points, the four basic operators, Return/Enter for equals, C/Delete to clear, and Escape to close.
-- To quit, drag **System Disk onto Trash**. Trash opens and highlights, the disk ejects with a sound and stepped animation, the current desktop and virtual disk are saved, and the Electron main process quits the application. An invalid drop snaps the disk back without changing the saved position.
+- To quit, drag **System Disk onto Trash**. Trash opens and highlights, the disk ejects with a sound and stepped animation, the current desktop and virtual disk are saved, and the Electron main process quits the application. Releasing the disk anywhere else simply leaves it at that position.
 
 ## Validation
 
@@ -39,7 +40,7 @@ npm run smoke
 
 `npm run check` runs formatting verification, ESLint, strict TypeScript checks for both renderer and Electron, Vitest, and the production build.
 
-`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; moves a folder internally; exercises Calculator button and keyboard input, modal dialog precedence, drag-session input ownership, save-failure cancellation, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled Trash movement, disk pointer following, invalid-drop snapback, the live Trash drop-target state, and eject animation; observes the renderer-to-main quit request; checks the resulting state file; and relaunches Electron to prove the disk and virtual filesystem reload.
+`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; freely repositions Finder and desktop icons; moves a folder internally; exercises Calculator button and keyboard input, modal dialog precedence, drag-session input ownership, save-failure cancellation, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled Trash movement, disk pointer following, the live Trash drop-target state, and eject animation; observes the renderer-to-main quit request; checks the resulting state file; and relaunches Electron to prove the icon layout, disk, and virtual filesystem reload.
 
 ## Architecture and security
 
