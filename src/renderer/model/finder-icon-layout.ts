@@ -1,4 +1,5 @@
 import type { Point, VfsNode } from '../../shared/state';
+import { translateVfsIconDrag, type VfsIconDragLayout } from './vfs-drag';
 
 export const FINDER_ICON_WIDTH = 112;
 export const FINDER_ICON_HEIGHT = 84;
@@ -8,12 +9,6 @@ const FINDER_ICON_ORIGIN: Point = { x: 24, y: 28 };
 const FINDER_ICON_STEP: Point = { x: 144, y: 114 };
 const FINDER_CANVAS_MINIMUM = { width: 610, height: 240 };
 const FINDER_CANVAS_PADDING = { x: 42, y: 46 };
-
-export interface FinderIconDragLayout {
-  anchorId: string;
-  pointerOffset: Point;
-  positions: Record<string, Point>;
-}
 
 export const defaultFinderIconPosition = (index: number): Point => ({
   x: FINDER_ICON_ORIGIN.x + (index % FINDER_ICON_COLUMNS) * FINDER_ICON_STEP.x,
@@ -36,40 +31,12 @@ export const finderIconCanvasSize = (
 };
 
 export const translateFinderIconDrag = (
-  layout: FinderIconDragLayout,
+  layout: VfsIconDragLayout,
   dropPoint: Point,
-): Record<string, Point> => {
-  const anchor = layout.positions[layout.anchorId];
-  if (!anchor) return {};
-
-  const anchorDestination = {
-    x: Math.round(dropPoint.x - layout.pointerOffset.x),
-    y: Math.round(dropPoint.y - layout.pointerOffset.y),
-  };
-  const delta = {
-    x: anchorDestination.x - anchor.x,
-    y: anchorDestination.y - anchor.y,
-  };
-  const translated = Object.entries(layout.positions).map(([id, position]) => [
-    id,
-    { x: position.x + delta.x, y: position.y + delta.y },
-  ]) as Array<[string, Point]>;
-  const minimumX = Math.min(...translated.map(([, position]) => position.x));
-  const minimumY = Math.min(...translated.map(([, position]) => position.y));
-  const maximumX = Math.max(...translated.map(([, position]) => position.x));
-  const maximumY = Math.max(...translated.map(([, position]) => position.y));
-  const correction = {
-    x: minimumX < 0 ? -minimumX : maximumX > 8192 ? 8192 - maximumX : 0,
-    y: minimumY < 0 ? -minimumY : maximumY > 8192 ? 8192 - maximumY : 0,
-  };
-
-  return Object.fromEntries(
-    translated.map(([id, position]) => [
-      id,
-      {
-        x: position.x + correction.x,
-        y: position.y + correction.y,
-      },
-    ]),
-  );
-};
+): Record<string, Point> =>
+  translateVfsIconDrag(layout, dropPoint, {
+    minimumX: 0,
+    minimumY: 0,
+    maximumX: 8192,
+    maximumY: 8192,
+  });

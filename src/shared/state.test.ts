@@ -3,11 +3,18 @@ import { describe, expect, it } from 'vitest';
 import { createDefaultState, sanitizeState, STATE_SCHEMA_VERSION } from './state';
 
 describe('persistent Macintosh state', () => {
-  it('creates a virtual disk and a non-deletable Trash root', () => {
+  it('creates the three required roots, including a hidden Desktop container', () => {
     const state = createDefaultState();
 
     expect(state.nodes.find((node) => node.id === 'system-disk')?.kind).toBe('disk');
     expect(state.nodes.find((node) => node.id === 'trash')?.kind).toBe('trash');
+    expect(state.nodes.find((node) => node.id === 'desktop')).toMatchObject({
+      kind: 'desktop',
+      parentId: null,
+    });
+    expect(state.desktop.windows.some((windowState) => windowState.nodeId === 'desktop')).toBe(
+      false,
+    );
     expect(state.desktop.windows[0]?.nodeId).toBe('system-disk');
   });
 
@@ -19,6 +26,32 @@ describe('persistent Macintosh state', () => {
 
     expect(restored.nodes.some((node) => node.id === 'system-disk')).toBe(true);
     expect(restored.nodes.some((node) => node.id === 'trash')).toBe(true);
+    expect(restored.nodes.some((node) => node.id === 'desktop')).toBe(true);
+  });
+
+  it('repairs a missing or malformed Desktop root without discarding valid nodes', () => {
+    const missing = createDefaultState();
+    missing.nodes = missing.nodes.filter((node) => node.id !== 'desktop');
+    const repairedMissing = sanitizeState(missing);
+
+    expect(repairedMissing.nodes.find((node) => node.id === 'desktop')).toMatchObject({
+      kind: 'desktop',
+      parentId: null,
+    });
+    expect(repairedMissing.nodes.some((node) => node.id === 'welcome')).toBe(true);
+
+    const malformed = createDefaultState();
+    const desktop = malformed.nodes.find((node) => node.id === 'desktop');
+    if (!desktop) throw new Error('Missing Desktop fixture.');
+    desktop.parentId = 'system-disk';
+    desktop.iconPosition = { x: 83, y: 47 };
+    const repairedMalformed = sanitizeState(malformed);
+
+    expect(repairedMalformed.nodes.find((node) => node.id === 'desktop')).toEqual({
+      ...desktop,
+      parentId: null,
+      iconPosition: undefined,
+    });
   });
 
   it('clamps untrusted geometry and preserves a valid eject timestamp', () => {
@@ -33,23 +66,48 @@ describe('persistent Macintosh state', () => {
     expect(safe.desktop.lastEjectAt).toBe('2026-07-22T12:00:00.000Z');
   });
 
-  it('migrates version 1 state without resetting its desktop or virtual disk', () => {
-    const legacy = createDefaultState();
-    legacy.desktop.diskPosition = { x: 731, y: 137 };
-    legacy.desktop.windows[0] = { ...legacy.desktop.windows[0]!, x: 319, y: 117 };
+  it.each([1, 2])(
+    'migrates version %i state without resetting its desktop or virtual disk',
+    (schemaVersion) => {
+      const legacy = createDefaultState();
+      legacy.nodes = legacy.nodes.filter((node) => node.id !== 'desktop');
+      legacy.desktop.diskPosition = { x: 731, y: 137 };
+      legacy.desktop.trashPosition = { x: 97, y: 611 };
+      legacy.desktop.windows[0] = { ...legacy.desktop.windows[0]!, x: 319, y: 117 };
+      legacy.desktop.viewMode = 'list';
+      legacy.desktop.lastEjectAt = '2026-07-22T12:00:00.000Z';
+      const welcome = legacy.nodes.find((node) => node.id === 'welcome');
+      if (!welcome) throw new Error('Missing legacy fixture.');
+      welcome.name = 'Preserved Welcome';
+      welcome.iconPosition = { x: 173, y: 119 };
 
-    const migrated = sanitizeState({ ...legacy, schemaVersion: 1 });
+      const migrated = sanitizeState({ ...legacy, schemaVersion });
 
-    expect(migrated.schemaVersion).toBe(STATE_SCHEMA_VERSION);
-    expect(migrated.desktop.diskPosition).toEqual({ x: 731, y: 137 });
-    expect(migrated.desktop.windows[0]).toMatchObject({ x: 319, y: 117 });
-    expect(migrated.nodes.map((node) => node.id)).toEqual(legacy.nodes.map((node) => node.id));
-  });
+      expect(migrated.schemaVersion).toBe(STATE_SCHEMA_VERSION);
+      expect(migrated.desktop.diskPosition).toEqual({ x: 731, y: 137 });
+      expect(migrated.desktop.trashPosition).toEqual({ x: 97, y: 611 });
+      expect(migrated.desktop.windows[0]).toMatchObject({ x: 319, y: 117 });
+      expect(migrated.desktop.viewMode).toBe('list');
+      expect(migrated.desktop.lastEjectAt).toBe('2026-07-22T12:00:00.000Z');
+      expect(migrated.nodes.find((node) => node.id === 'welcome')).toMatchObject({
+        name: 'Preserved Welcome',
+        iconPosition: { x: 173, y: 119 },
+      });
+      expect(migrated.nodes.find((node) => node.id === 'desktop')).toMatchObject({
+        kind: 'desktop',
+        parentId: null,
+      });
+      expect(migrated.nodes.filter((node) => node.id !== 'desktop').map((node) => node.id)).toEqual(
+        legacy.nodes.map((node) => node.id),
+      );
+    },
+  );
 
-  it('preserves arbitrary child icon positions without snapping them to a grid', () => {
+  it('preserves arbitrary Desktop-child positions without snapping them to a grid', () => {
     const state = createDefaultState();
     const applications = state.nodes.find((node) => node.id === 'applications');
     if (!applications) throw new Error('Missing Applications fixture.');
+    applications.parentId = 'desktop';
     applications.iconPosition = { x: 173, y: 119 };
 
     const safe = sanitizeState(state);
@@ -58,21 +116,27 @@ describe('persistent Macintosh state', () => {
       x: 173,
       y: 119,
     });
+    expect(safe.nodes.find((node) => node.id === 'applications')?.parentId).toBe('desktop');
   });
 
   it('rounds and bounds Finder positions while omitting malformed and root positions', () => {
     const state = createDefaultState();
     const disk = state.nodes.find((node) => node.id === 'system-disk');
+    const desktop = state.nodes.find((node) => node.id === 'desktop');
     const applications = state.nodes.find((node) => node.id === 'applications');
     const documents = state.nodes.find((node) => node.id === 'documents');
-    if (!disk || !applications || !documents) throw new Error('Missing state fixtures.');
+    if (!disk || !desktop || !applications || !documents) {
+      throw new Error('Missing state fixtures.');
+    }
     disk.iconPosition = { x: 12, y: 24 };
+    desktop.iconPosition = { x: 33, y: 45 };
     applications.iconPosition = { x: -4.4, y: 9000.2 };
     documents.iconPosition = { x: Number.NaN, y: 88 };
 
     const safe = sanitizeState(state);
 
     expect(safe.nodes.find((node) => node.id === 'system-disk')?.iconPosition).toBeUndefined();
+    expect(safe.nodes.find((node) => node.id === 'desktop')?.iconPosition).toBeUndefined();
     expect(safe.nodes.find((node) => node.id === 'applications')?.iconPosition).toEqual({
       x: 0,
       y: 8192,

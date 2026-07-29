@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createDefaultState } from '../../shared/state';
 import {
   deriveFinderCommandContext,
+  finderCommandDestinationId,
   findMenuShortcutEntry,
   menuShortcutLabel,
 } from './command-context';
@@ -54,6 +55,37 @@ describe('menu shortcut matching', () => {
 });
 
 describe('Finder command context', () => {
+  it('uses Desktop when no active disk or folder window owns creation commands', () => {
+    const state = createDefaultState();
+    expect(finderCommandDestinationId(state)).toBe('system-disk');
+
+    expect(
+      finderCommandDestinationId({
+        ...state,
+        desktop: { ...state.desktop, windows: [] },
+      }),
+    ).toBe('desktop');
+
+    expect(
+      finderCommandDestinationId({
+        ...state,
+        desktop: {
+          ...state.desktop,
+          windows: [
+            {
+              id: 'window-welcome',
+              nodeId: 'welcome',
+              x: 100,
+              y: 100,
+              width: 520,
+              height: 390,
+            },
+          ],
+        },
+      }),
+    ).toBe('desktop');
+  });
+
   it('keeps only selected nodes visible in the active Finder window', () => {
     const state = createDefaultState();
     const context = deriveFinderCommandContext(

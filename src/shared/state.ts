@@ -1,7 +1,7 @@
-export const STATE_SCHEMA_VERSION = 2 as const;
-const LEGACY_STATE_SCHEMA_VERSION = 1 as const;
+export const STATE_SCHEMA_VERSION = 3 as const;
+const LEGACY_STATE_SCHEMA_VERSIONS = new Set([1, 2]);
 
-export type VfsNodeKind = 'disk' | 'trash' | 'folder' | 'document';
+export type VfsNodeKind = 'desktop' | 'disk' | 'trash' | 'folder' | 'document';
 export type FinderViewMode = 'icons' | 'list';
 
 export interface Point {
@@ -83,6 +83,7 @@ export const createDefaultState = (): MacintoshState => ({
   nodes: [
     seedNode('system-disk', null, 'System Disk', 'disk'),
     seedNode('trash', null, 'Trash', 'trash'),
+    seedNode('desktop', null, 'Desktop', 'desktop'),
     seedNode('system-folder', 'system-disk', 'System Folder', 'folder'),
     seedNode('applications', 'system-disk', 'Applications', 'folder'),
     seedNode('documents', 'system-disk', 'Documents', 'folder'),
@@ -154,7 +155,7 @@ const sanitizeIconPosition = (value: unknown): Point | null => {
   };
 };
 
-const validKinds = new Set<VfsNodeKind>(['disk', 'trash', 'folder', 'document']);
+const validKinds = new Set<VfsNodeKind>(['desktop', 'disk', 'trash', 'folder', 'document']);
 
 const sanitizeNode = (value: unknown): VfsNode | null => {
   if (!isRecord(value)) return null;
@@ -194,12 +195,50 @@ const sanitizeWindow = (value: unknown): FinderWindowState | null => {
   };
 };
 
+const requiredRoots = [
+  { id: 'system-disk', kind: 'disk' },
+  { id: 'trash', kind: 'trash' },
+  { id: 'desktop', kind: 'desktop' },
+] as const;
+
+const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNode[] => {
+  const requirements = new Map<string, VfsNodeKind>(
+    requiredRoots.map((root) => [root.id, root.kind]),
+  );
+  const seen = new Set<string>();
+  const repaired: VfsNode[] = [];
+
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue;
+    const requiredKind = requirements.get(node.id);
+    if (requiredKind && node.kind !== requiredKind) continue;
+    if (node.kind === 'desktop' && node.id !== 'desktop') continue;
+
+    seen.add(node.id);
+    if (requiredKind) {
+      const root = { ...node };
+      delete root.iconPosition;
+      repaired.push({ ...root, parentId: null });
+    } else {
+      repaired.push(node);
+    }
+  }
+
+  for (const requirement of requiredRoots) {
+    if (seen.has(requirement.id)) continue;
+    const fallback = fallbackNodes.find((node) => node.id === requirement.id);
+    if (fallback) repaired.push({ ...fallback });
+  }
+
+  return repaired;
+};
+
 export const sanitizeState = (value: unknown): MacintoshState => {
   const fallback = createDefaultState();
   if (
     !isRecord(value) ||
-    (value.schemaVersion !== LEGACY_STATE_SCHEMA_VERSION &&
-      value.schemaVersion !== STATE_SCHEMA_VERSION)
+    (value.schemaVersion !== STATE_SCHEMA_VERSION &&
+      !LEGACY_STATE_SCHEMA_VERSIONS.has(value.schemaVersion as number))
   ) {
     return fallback;
   }
@@ -212,10 +251,10 @@ export const sanitizeState = (value: unknown): MacintoshState => {
         .slice(0, 512)
     : fallback.nodes;
 
-  const hasDisk = nodes.some((node) => node.id === 'system-disk' && node.kind === 'disk');
-  const hasTrash = nodes.some((node) => node.id === 'trash' && node.kind === 'trash');
-  const safeNodes = hasDisk && hasTrash ? nodes : fallback.nodes;
-  const nodeIds = new Set(safeNodes.map((node) => node.id));
+  const safeNodes = ensureRequiredRoots(nodes, fallback.nodes);
+  const nodeIds = new Set(
+    safeNodes.filter((node) => node.kind !== 'desktop').map((node) => node.id),
+  );
   const windows = Array.isArray(desktop.windows)
     ? desktop.windows
         .map(sanitizeWindow)

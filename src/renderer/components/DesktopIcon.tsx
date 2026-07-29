@@ -151,6 +151,7 @@ export function DesktopIcon({
       data-desktop-icon={id}
       data-drop-destination={id}
       data-drop-mode={id === 'trash' ? 'internal' : undefined}
+      data-vfs-node-id={id}
       onDoubleClick={() => onOpen(id)}
       onPointerCancel={pointerCancel}
       onPointerDown={pointerDown}

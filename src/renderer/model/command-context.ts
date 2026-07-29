@@ -44,6 +44,14 @@ export interface FinderCommandContext {
   visibleSelectionIds: string[];
 }
 
+export const finderCommandDestinationId = (state: MacintoshState): string => {
+  const activeWindow = state.desktop.windows.at(-1);
+  const activeNode = activeWindow
+    ? state.nodes.find((node) => node.id === activeWindow.nodeId)
+    : undefined;
+  return activeNode?.kind === 'disk' || activeNode?.kind === 'folder' ? activeNode.id : 'desktop';
+};
+
 export const deriveFinderCommandContext = (
   state: MacintoshState | null,
   selectedIds: ReadonlySet<string>,

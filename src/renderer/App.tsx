@@ -14,15 +14,22 @@ import { playEjectSound, playMenuTick } from './audio/sounds';
 import { CalculatorWindow } from './components/CalculatorWindow';
 import { AboutDialog, EjectTipDialog, InfoDialog, PersistenceAlert } from './components/Dialogs';
 import { DesktopIcon } from './components/DesktopIcon';
-import {
-  DesktopSurface,
-  VFS_DRAG_TYPE,
-  type FinderIconDropLocation,
-} from './components/DesktopSurface';
-import { FinderWindow, type FinderItemDragContext } from './components/FinderWindow';
+import { DesktopSurface, type IconDropLocation } from './components/DesktopSurface';
+import { DesktopVfsIcon } from './components/DesktopVfsIcon';
+import { FinderWindow } from './components/FinderWindow';
 import { MenuBar, type MenuDefinition, type MenuEntry } from './components/MenuBar';
 import { StartupScreen } from './components/StartupScreen';
-import { deriveFinderCommandContext, findMenuShortcutEntry } from './model/command-context';
+import {
+  deriveFinderCommandContext,
+  finderCommandDestinationId,
+  findMenuShortcutEntry,
+} from './model/command-context';
+import {
+  defaultDesktopIconPosition,
+  placeImportedDesktopRoots,
+  resolveDesktopIconPosition,
+  translateDesktopIconDrag,
+} from './model/desktop-icon-layout';
 import { isTrashDropPoint } from './model/desktop-drop-target';
 import { translateFinderIconDrag } from './model/finder-icon-layout';
 import { resolveKeyboardOwner } from './model/input-owner';
@@ -36,8 +43,9 @@ import {
   placeFinderIcons,
   type VfsMutationResult,
 } from './model/vfs';
+import { writeVfsDragPayload, type VfsItemDragContext } from './model/vfs-drag';
 
-type DesktopIconId = 'system-disk' | 'trash';
+type SpecialDesktopIconId = 'system-disk' | 'trash';
 type DialogState =
   { type: 'about' } | { type: 'info'; node: VfsNode } | { type: 'eject-tip' } | null;
 type TransferNotice = { message: string; error: boolean } | null;
@@ -58,9 +66,6 @@ const useClock = (): string => {
 const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.max(minimum, Math.min(maximum, value));
 
-const canContainItems = (node: VfsNode | undefined): node is VfsNode =>
-  node?.kind === 'disk' || node?.kind === 'folder' || node?.kind === 'trash';
-
 const plural = (count: number, singular: string, pluralValue = `${singular}s`): string =>
   count === 1 ? singular : pluralValue;
 
@@ -71,13 +76,13 @@ export default function App() {
   );
   const [state, setState] = useState<MacintoshState | null>(null);
   const [startupComplete, setStartupComplete] = useState(false);
-  const [desktopSelection, setDesktopSelection] = useState<Set<DesktopIconId>>(new Set());
+  const [desktopSelection, setDesktopSelection] = useState<Set<string>>(new Set());
   const [finderSelection, setFinderSelection] = useState<Set<string>>(new Set());
-  const [previewPositions, setPreviewPositions] = useState<Partial<Record<DesktopIconId, Point>>>(
-    {},
-  );
-  const [draggingIcon, setDraggingIcon] = useState<DesktopIconId | null>(null);
-  const [snappingIcon, setSnappingIcon] = useState<DesktopIconId | null>(null);
+  const [previewPositions, setPreviewPositions] = useState<
+    Partial<Record<SpecialDesktopIconId, Point>>
+  >({});
+  const [draggingIcon, setDraggingIcon] = useState<SpecialDesktopIconId | null>(null);
+  const [snappingIcon, setSnappingIcon] = useState<SpecialDesktopIconId | null>(null);
   const [trashHover, setTrashHover] = useState(false);
   const [ejecting, setEjecting] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
@@ -87,8 +92,8 @@ export default function App() {
   const [interactionCancelToken, setInteractionCancelToken] = useState(0);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
-  const dragOrigins = useRef<Partial<Record<DesktopIconId, Point>>>({});
-  const finderItemDrag = useRef<FinderItemDragContext | null>(null);
+  const dragOrigins = useRef<Partial<Record<SpecialDesktopIconId, Point>>>({});
+  const vfsItemDrag = useRef<VfsItemDragContext | null>(null);
   const zoomRestore = useRef<Map<string, WindowGeometry>>(new Map());
   const stateRef = useRef<MacintoshState | null>(null);
   const clipboardNodeIds = useRef<string[]>([]);
@@ -101,7 +106,7 @@ export default function App() {
   }, [state]);
 
   useEffect(() => {
-    finderItemDrag.current = null;
+    vfsItemDrag.current = null;
   }, [interactionCancelToken]);
 
   useEffect(
@@ -136,13 +141,32 @@ export default function App() {
     setPersistenceError(message);
   }, []);
 
-  const pasteDestinationId = useCallback((current: MacintoshState): string => {
-    const active = current.desktop.windows.at(-1);
-    const activeContainer = active
-      ? current.nodes.find((node) => node.id === active.nodeId)
-      : undefined;
-    return canContainItems(activeContainer) ? activeContainer.id : 'system-disk';
-  }, []);
+  const positionDesktopMutation = useCallback(
+    (
+      current: MacintoshState,
+      result: VfsMutationResult,
+      location: IconDropLocation | null = null,
+    ): VfsMutationResult => {
+      if (result.affectedIds.length === 0) return result;
+      const surface = document.querySelector<HTMLElement>('.desktop-surface');
+      const surfaceSize = location?.surfaceSize ?? {
+        width: surface?.clientWidth ?? window.innerWidth,
+        height: surface?.clientHeight ?? window.innerHeight - 22,
+      };
+      const dropPoint =
+        location?.point ??
+        defaultDesktopIconPosition(listChildren(current.nodes, 'desktop', 'icons').length);
+      return {
+        ...result,
+        state: placeFinderIcons(
+          result.state,
+          'desktop',
+          placeImportedDesktopRoots(result.affectedIds, dropPoint, surfaceSize),
+        ),
+      };
+    },
+    [],
+  );
 
   const commitVfsMutation = useCallback(
     (
@@ -169,8 +193,13 @@ export default function App() {
 
       stateRef.current = result.state;
       setState(result.state);
-      setFinderSelection(new Set(result.affectedIds));
-      setDesktopSelection(new Set());
+      if (destinationId === 'desktop') {
+        setDesktopSelection(new Set(result.affectedIds));
+        setFinderSelection(new Set());
+      } else {
+        setFinderSelection(new Set(result.affectedIds));
+        setDesktopSelection(new Set());
+      }
       const destination =
         result.state.nodes.find((node) => node.id === destinationId)?.name ?? 'System Disk';
       const details = [
@@ -227,6 +256,10 @@ export default function App() {
     () => deriveFinderCommandContext(state, finderSelection),
     [finderSelection, state],
   );
+  const desktopItems = useMemo(
+    () => (state ? listChildren(state.nodes, 'desktop', 'icons') : []),
+    [state],
+  );
   const { activeWindow, activeNode, visibleSelection } = finderCommandContext;
   const copyableFinderSelectionIds = useMemo(
     () =>
@@ -269,7 +302,7 @@ export default function App() {
     setState((current) => {
       if (!current) return current;
       const node = current.nodes.find((item) => item.id === nodeId);
-      if (!node) return current;
+      if (!node || node.kind === 'desktop') return current;
       const windowId = `window-${nodeId}`;
       const existing = current.desktop.windows.find((item) => item.id === windowId);
       const remaining = current.desktop.windows.filter((item) => item.id !== windowId);
@@ -359,7 +392,7 @@ export default function App() {
     [setWindowGeometry, state],
   );
 
-  const selectDesktopIcon = (id: DesktopIconId, additive: boolean): void => {
+  const selectDesktopIcon = (id: string, additive: boolean): void => {
     setFinderSelection(new Set());
     setDesktopSelection((current) => {
       if (!additive) return new Set([id]);
@@ -381,28 +414,67 @@ export default function App() {
     });
   };
 
-  const startFinderItemDrag = (
+  const startVfsItemDrag = (
     id: string,
     dataTransfer: DataTransfer,
-    context: FinderItemDragContext,
+    context: VfsItemDragContext,
   ): void => {
-    if (!state) return;
-    finderItemDrag.current = context;
+    const current = stateRef.current;
+    if (!current) return;
+    vfsItemDrag.current = context;
     setPointerSessionActive(true);
     const nodeIds = context.nodeIds.length > 0 ? context.nodeIds : [id];
-    setFinderSelection(new Set(nodeIds));
-    setDesktopSelection(new Set());
+    if (context.source === 'desktop') {
+      setDesktopSelection(new Set(nodeIds));
+      setFinderSelection(new Set());
+    } else {
+      setFinderSelection(new Set(nodeIds));
+      setDesktopSelection(new Set());
+    }
     const names = nodeIds.flatMap((nodeId) => {
-      const node = state.nodes.find((item) => item.id === nodeId);
+      const node = current.nodes.find((item) => item.id === nodeId);
       return node ? [node.name] : [];
     });
-    dataTransfer.effectAllowed = 'copyMove';
-    dataTransfer.setData(VFS_DRAG_TYPE, JSON.stringify(nodeIds));
-    dataTransfer.setData('text/plain', names.join('\n'));
+    writeVfsDragPayload(dataTransfer, nodeIds, names);
+  };
+
+  const startDesktopItemDrag = (
+    id: string,
+    dataTransfer: DataTransfer,
+    pointerOffset: Point,
+  ): void => {
+    const current = stateRef.current;
+    if (!current) return;
+    const items = listChildren(current.nodes, 'desktop', 'icons');
+    const selectedItems = desktopSelection.has(id)
+      ? items.filter((item) => desktopSelection.has(item.id))
+      : items.filter((item) => item.id === id);
+    const draggedItems =
+      selectedItems.length > 0 ? selectedItems : items.filter((item) => item.id === id);
+    startVfsItemDrag(id, dataTransfer, {
+      parentId: 'desktop',
+      nodeIds: draggedItems.map((item) => item.id),
+      layout: {
+        anchorId: id,
+        pointerOffset,
+        positions: Object.fromEntries(
+          items.flatMap((item, index) =>
+            draggedItems.some((dragged) => dragged.id === item.id)
+              ? [[item.id, resolveDesktopIconPosition(item, index)]]
+              : [],
+          ),
+        ),
+      },
+      source: 'desktop',
+    });
   };
 
   const importHostFiles = useCallback(
-    async (files: File[], destinationId: string): Promise<void> => {
+    async (
+      files: File[],
+      destinationId: string,
+      iconLocation: IconDropLocation | null = null,
+    ): Promise<void> => {
       if (files.length === 0) return;
       try {
         const inspected = await window.macintosh.importFiles(files);
@@ -412,7 +484,11 @@ export default function App() {
           showTransferNotice('No readable files or folders were found.', true);
           return;
         }
-        const result = mergeImportedEntries(current, inspected.entries, destinationId);
+        const merged = mergeImportedEntries(current, inspected.entries, destinationId);
+        const result =
+          destinationId === 'desktop'
+            ? positionDesktopMutation(current, merged, iconLocation)
+            : merged;
         commitVfsMutation(
           current,
           result,
@@ -426,7 +502,7 @@ export default function App() {
         showTransferNotice('The dropped items could not be copied.', true);
       }
     },
-    [commitVfsMutation, showTransferNotice],
+    [commitVfsMutation, positionDesktopMutation, showTransferNotice],
   );
 
   const dropItems = useCallback(
@@ -434,15 +510,21 @@ export default function App() {
       destinationId: string,
       nodeIds: string[],
       files: File[],
-      iconLocation: FinderIconDropLocation | null,
+      iconLocation: IconDropLocation | null,
     ): void => {
       if (nodeIds.length > 0) {
         const current = stateRef.current;
         if (!current) return;
-        const dragContext = finderItemDrag.current;
+        const dragContext = vfsItemDrag.current;
         const translatedPositions =
-          iconLocation && iconLocation.parentId === destinationId && dragContext?.layout
-            ? translateFinderIconDrag(dragContext.layout, iconLocation.point)
+          iconLocation && iconLocation.parentId === destinationId && dragContext
+            ? destinationId === 'desktop'
+              ? translateDesktopIconDrag(
+                  dragContext.layout,
+                  iconLocation.point,
+                  iconLocation.surfaceSize,
+                )
+              : translateFinderIconDrag(dragContext.layout, iconLocation.point)
             : null;
         const placementsFor = (ids: string[]) =>
           ids.flatMap((nodeId) => {
@@ -459,6 +541,11 @@ export default function App() {
           if (positioned !== current) {
             stateRef.current = positioned;
             setState(positioned);
+          }
+          if (destinationId === 'desktop') {
+            setDesktopSelection(new Set(dragContext.nodeIds));
+            setFinderSelection(new Set());
+          } else {
             setFinderSelection(new Set(dragContext.nodeIds));
             setDesktopSelection(new Set());
           }
@@ -472,17 +559,17 @@ export default function App() {
         commitVfsMutation(current, { ...result, state: positionedState }, destinationId, 'Moved');
         return;
       }
-      void importHostFiles(files, destinationId);
+      void importHostFiles(files, destinationId, iconLocation);
     },
     [commitVfsMutation, importHostFiles],
   );
 
-  const finishFinderItemDrag = (): void => {
-    finderItemDrag.current = null;
+  const finishVfsItemDrag = (): void => {
+    vfsItemDrag.current = null;
     setPointerSessionActive(false);
   };
 
-  const startIconDrag = (id: DesktopIconId, origin: Point): void => {
+  const startIconDrag = (id: SpecialDesktopIconId, origin: Point): void => {
     dragOrigins.current[id] = origin;
     setDraggingIcon(id);
     setSnappingIcon(null);
@@ -495,7 +582,7 @@ export default function App() {
     return isTrashDropPoint(pointer, trash);
   };
 
-  const previewIconDrag = (id: DesktopIconId, position: Point, pointer: Point): void => {
+  const previewIconDrag = (id: SpecialDesktopIconId, position: Point, pointer: Point): void => {
     const surface = document.querySelector<HTMLElement>('.desktop-surface');
     const maxX = Math.max(0, (surface?.clientWidth ?? window.innerWidth) - 90);
     const maxY = Math.max(0, (surface?.clientHeight ?? window.innerHeight - 24) - 92);
@@ -506,7 +593,7 @@ export default function App() {
     setTrashHover(pointerTargetsTrash(pointer));
   };
 
-  const cancelIconDrag = (id: DesktopIconId): void => {
+  const cancelIconDrag = (id: SpecialDesktopIconId): void => {
     setPreviewPositions((current) => {
       const next = { ...current };
       delete next[id];
@@ -518,7 +605,7 @@ export default function App() {
     setTrashHover(false);
   };
 
-  const restoreIcon = (id: DesktopIconId): void => {
+  const restoreIcon = (id: SpecialDesktopIconId): void => {
     const origin = dragOrigins.current[id];
     if (origin) setPreviewPositions((current) => ({ ...current, [id]: origin }));
     setDraggingIcon(null);
@@ -578,7 +665,7 @@ export default function App() {
     }
   };
 
-  const finishIconDrag = (id: DesktopIconId, pointer: Point): void => {
+  const finishIconDrag = (id: SpecialDesktopIconId, pointer: Point): void => {
     if (!state) return;
     if (id === 'system-disk' && pointerTargetsTrash(pointer)) {
       void ejectSystemDisk();
@@ -610,22 +697,34 @@ export default function App() {
 
   const createFolder = useCallback((): void => {
     if (!state) return;
-    const parentId =
-      activeNode && (activeNode.kind === 'disk' || activeNode.kind === 'folder')
-        ? activeNode.id
-        : 'system-disk';
-    const next = addFolder(state, parentId);
-    const added = next.nodes.at(-1);
+    const parentId = finderCommandDestinationId(state);
+    const addedState = addFolder(state, parentId);
+    const added = addedState.nodes.at(-1);
+    const next =
+      parentId === 'desktop' && added
+        ? positionDesktopMutation(state, {
+            state: addedState,
+            affectedIds: [added.id],
+            skippedCount: 0,
+            truncatedCount: 0,
+          }).state
+        : addedState;
+    stateRef.current = next;
     setState(next);
-    setDesktopSelection(new Set());
-    if (added) setFinderSelection(new Set([added.id]));
-  }, [activeNode, state]);
+    if (added && parentId === 'desktop') {
+      setDesktopSelection(new Set([added.id]));
+      setFinderSelection(new Set());
+    } else {
+      setDesktopSelection(new Set());
+      if (added) setFinderSelection(new Set([added.id]));
+    }
+  }, [positionDesktopMutation, state]);
 
   const selectedNode = useMemo(() => {
     if (!state) return null;
     const finderNode = visibleSelection[0];
     if (finderNode) return finderNode;
-    const desktopId = desktopSelection.values().next().value as DesktopIconId | undefined;
+    const desktopId = desktopSelection.values().next().value;
     return desktopId ? (state.nodes.find((node) => node.id === desktopId) ?? null) : null;
   }, [desktopSelection, state, visibleSelection]);
 
@@ -646,17 +745,19 @@ export default function App() {
   const pasteCopiedItems = useCallback((): boolean => {
     const current = stateRef.current;
     if (!current || clipboardNodeIds.current.length === 0) return false;
-    const destinationId = pasteDestinationId(current);
-    const result = duplicateNodes(current, clipboardNodeIds.current, destinationId);
+    const destinationId = finderCommandDestinationId(current);
+    const duplicated = duplicateNodes(current, clipboardNodeIds.current, destinationId);
+    const result =
+      destinationId === 'desktop' ? positionDesktopMutation(current, duplicated) : duplicated;
     commitVfsMutation(current, result, destinationId, 'Copied');
     return true;
-  }, [commitVfsMutation, pasteDestinationId]);
+  }, [commitVfsMutation, positionDesktopMutation]);
 
   const pasteText = useCallback(
     (content: string): void => {
       const current = stateRef.current;
       if (!current) return;
-      const destinationId = pasteDestinationId(current);
+      const destinationId = finderCommandDestinationId(current);
       const timestamp = new Date().toISOString();
       const entry: ImportedEntry = {
         name: 'Clipboard',
@@ -665,10 +766,12 @@ export default function App() {
         createdAt: timestamp,
         modifiedAt: timestamp,
       };
-      const result = mergeImportedEntries(current, [entry], destinationId);
+      const merged = mergeImportedEntries(current, [entry], destinationId);
+      const result =
+        destinationId === 'desktop' ? positionDesktopMutation(current, merged) : merged;
       commitVfsMutation(current, result, destinationId, 'Copied');
     },
-    [commitVfsMutation, pasteDestinationId],
+    [commitVfsMutation, positionDesktopMutation],
   );
 
   const pasteFromClipboard = useCallback((): void => {
@@ -705,7 +808,7 @@ export default function App() {
       const files = Array.from(clipboard.files);
       const current = stateRef.current;
       if (!current) return;
-      const destinationId = pasteDestinationId(current);
+      const destinationId = finderCommandDestinationId(current);
       if (files.length > 0) {
         event.preventDefault();
         void importHostFiles(files, destinationId);
@@ -719,7 +822,7 @@ export default function App() {
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [importHostFiles, pasteDestinationId, pasteText, systemInputBlocked]);
+  }, [importHostFiles, pasteText, systemInputBlocked]);
 
   useEffect(() => {
     const clearInternalClipboard = (): void => {
@@ -755,10 +858,12 @@ export default function App() {
       );
       setDesktopSelection(new Set());
     } else {
-      setDesktopSelection(new Set(['system-disk', 'trash']));
+      setDesktopSelection(
+        new Set(['system-disk', 'trash', ...desktopItems.map((item) => item.id)]),
+      );
       setFinderSelection(new Set());
     }
-  }, [activeNode, state]);
+  }, [activeNode, desktopItems, state]);
 
   const closeCalculator = useCallback((): void => setCalculatorOpen(false), []);
 
@@ -970,7 +1075,7 @@ export default function App() {
       >
         {state.desktop.windows.map((windowState, index) => {
           const node = state.nodes.find((item) => item.id === windowState.nodeId);
-          if (!node) return null;
+          if (!node || node.kind === 'desktop') return null;
           const items = listChildren(state.nodes, node.id, state.desktop.viewMode);
           return (
             <FinderWindow
@@ -982,8 +1087,8 @@ export default function App() {
               onActivate={activateWindow}
               onClose={closeWindow}
               onGeometry={setWindowGeometry}
-              onItemDragStart={startFinderItemDrag}
-              onItemDragEnd={finishFinderItemDrag}
+              onItemDragStart={startVfsItemDrag}
+              onItemDragEnd={finishVfsItemDrag}
               onItemOpen={openNode}
               onItemSelect={selectFinderItem}
               onInteractionChange={setPointerSessionActive}
@@ -1003,6 +1108,19 @@ export default function App() {
             onInteractionChange={setPointerSessionActive}
           />
         ) : null}
+        {desktopItems.map((item, index) => (
+          <DesktopVfsIcon
+            interactionCancelToken={interactionCancelToken}
+            key={item.id}
+            node={item}
+            onDragEnd={finishVfsItemDrag}
+            onDragStart={startDesktopItemDrag}
+            onOpen={openNode}
+            onSelect={selectDesktopIcon}
+            position={resolveDesktopIconPosition(item, index)}
+            selected={desktopSelection.has(item.id)}
+          />
+        ))}
         <DesktopIcon
           dragging={draggingIcon === 'system-disk'}
           ejecting={ejecting}
@@ -1047,7 +1165,11 @@ export default function App() {
           <AboutDialog onClose={() => setDialog(null)} />
         )}
         {!persistenceError && dialog?.type === 'info' && (
-          <InfoDialog node={dialog.node} onClose={() => setDialog(null)} />
+          <InfoDialog
+            node={dialog.node}
+            onClose={() => setDialog(null)}
+            where={state.nodes.find((node) => node.id === dialog.node.parentId)?.name ?? 'Desktop'}
+          />
         )}
         {!persistenceError && dialog?.type === 'eject-tip' && (
           <EjectTipDialog onClose={() => setDialog(null)} />

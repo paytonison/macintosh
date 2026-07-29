@@ -190,6 +190,7 @@ export function CalculatorWindow({
       aria-label="Calculator"
       className="calculator-window"
       data-calculator-window="true"
+      data-drop-blocked="true"
       onPointerDown={() => windowElement.current?.focus()}
       ref={windowElement}
       style={{ left: position.x, top: position.y }}

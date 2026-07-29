@@ -196,7 +196,15 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function InfoDialog({ node, onClose }: { node: VfsNode; onClose: () => void }) {
+export function InfoDialog({
+  node,
+  where,
+  onClose,
+}: {
+  node: VfsNode;
+  where: string;
+  onClose: () => void;
+}) {
   return (
     <ClassicDialog onClose={onClose} title={`${node.name} Info`} width={384}>
       <div className="info-content">
@@ -211,7 +219,7 @@ export function InfoDialog({ node, onClose }: { node: VfsNode; onClose: () => vo
           </div>
           <div>
             <dt>Where:</dt>
-            <dd>System Disk</dd>
+            <dd>{where}</dd>
           </div>
           <div>
             <dt>Created:</dt>

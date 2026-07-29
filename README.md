@@ -19,12 +19,12 @@ npm run dev
 
 ## Controls
 
-- Click, Shift-click, or drag a marquee to select desktop icons.
+- Click, Shift-click, or drag a marquee to select System Disk, Trash, and ordinary desktop files and folders.
 - Drag System Disk or Trash to reposition it.
 - Double-click System Disk, Trash, folders, or documents to open Finder windows.
 - In icon view, drag one or more selected Finder items to any pixel position in the open window. Dropping them onto a folder still moves them into that folder.
-- Drag selected documents or folders into another folder, onto System Disk, or into Trash. Moving a folder preserves its contents and invalid descendant drops are refused.
-- Drop files or folders from the host Finder onto the desktop, System Disk, or an open folder. Text documents keep their readable contents; binary files are represented by a safe document placeholder rather than copied into the virtual disk.
+- Drag selected documents or folders onto empty desktop space, into another folder, onto System Disk, or into Trash. Empty-desktop drops preserve a free icon position; moving a folder preserves its contents and invalid descendant drops are refused.
+- Drop files or folders from the host Finder onto the desktop, System Disk, or an open folder. Empty-desktop drops create visible items at the drop point. Text documents keep their readable contents; binary files are represented by a safe document placeholder rather than copied into the virtual disk.
 - Use **Edit > Copy** or Command-C on selected Finder items, then **Paste** or Command-V to duplicate them in the active folder. Host files copied in Finder can also be pasted, while pasted plain text becomes a new `Clipboard` document.
 - Drag a window title bar to move its 1-bit outline; the full window redraws at the new position when released. Use its close and zoom boxes, or resize it from the lower-right grow box.
 - Use the System, File, Edit, View, and Special menus for About, New Folder, Open, Close, Get Info, selection, view, cleanup, and Trash commands.
@@ -40,14 +40,14 @@ npm run smoke
 
 `npm run check` runs formatting verification, ESLint, strict TypeScript checks for both renderer and Electron, Vitest, and the production build.
 
-`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; checks the authored arrow, grab, drag, and resize cursor dimensions and hotspots; exercises pointer-based menu selection plus Finder zoom and resize controls; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; freely repositions Finder and desktop icons; moves a folder internally; exercises Calculator button and keyboard input, modal dialog precedence, drag-session input ownership, save-failure cancellation, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled and committed Trash movement, exact Trash artwork-edge/label hit testing for System Disk and internal items at normal, scaled, and minimum-window coordinates, and eject animation; observes the renderer-to-main quit request; checks the resulting state file; and relaunches Electron to prove the icon layout, disk, and virtual filesystem reload.
+`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; checks the authored arrow, grab, drag, and resize cursor dimensions and hotspots; exercises pointer-based menu selection plus Finder zoom and resize controls; places a disk-backed file and nested folder directly on Desktop; moves and freely repositions a Finder item on Desktop; tests Desktop selection, Open, Get Info, blocked document fall-through, and destination-specific System Disk, folder, and Trash drops; pastes and duplicates documents; freely repositions Finder and special desktop icons; exercises Calculator button and keyboard input, modal dialog precedence, drag-session input ownership, save-failure cancellation, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled and committed Trash movement, exact Trash artwork-edge/label hit testing for System Disk and internal items at normal, scaled, and minimum-window coordinates, and eject animation; observes the renderer-to-main quit request; checks the resulting schema-3 state file; and relaunches Electron to prove exact Desktop/Finder icon layout, disk, and virtual-filesystem recovery.
 
 ## Architecture and security
 
 - `src/main/` owns the frameless `BrowserWindow`, state files, IPC validation, and application quit.
 - `src/renderer/` contains the React desktop, Finder components, interaction state, pixel artwork, sound synthesis, and styling.
 - `src/shared/` contains the typed IPC contract and defensive persistent-state schema.
-- Persistent state is written as `macintosh-state.json` inside Electron's per-user application-data directory using a temporary file followed by an atomic rename.
+- Persistent state is written as `macintosh-state.json` inside Electron's per-user application-data directory using a temporary file followed by an atomic rename. The VFS has required System Disk, Trash, and hidden Desktop roots; ordinary desktop items are direct children of Desktop.
 - The window uses `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, and `webSecurity: true`.
 - The preload exposes narrow state, paste-command, bounded file-import, and quit capabilities; the renderer has no Node.js or direct host-filesystem access. Import paths can only be derived from browser-granted `File` objects created by a user drop or paste, and filesystem inspection stays in the main process.
 - Navigation and new windows are denied. All code and visuals are bundled locally; there are no CDNs or runtime network requests.
