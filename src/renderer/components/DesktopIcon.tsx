@@ -20,7 +20,7 @@ interface DesktopIconProps {
   ejecting?: boolean;
   validDropTarget?: boolean;
   onSelect: (id: 'system-disk' | 'trash', additive: boolean) => void;
-  onOpen: (id: 'system-disk' | 'trash') => void;
+  onOpen: (id: 'system-disk' | 'trash', source: HTMLElement) => void;
   onDragStart: (id: 'system-disk' | 'trash', origin: Point) => void;
   onDrag: (id: 'system-disk' | 'trash', position: Point, pointer: Point) => void;
   onDragEnd: (id: 'system-disk' | 'trash', pointer: Point) => void;
@@ -152,7 +152,7 @@ export function DesktopIcon({
       data-drop-destination={id}
       data-drop-mode={id === 'trash' ? 'internal' : undefined}
       data-vfs-node-id={id}
-      onDoubleClick={() => onOpen(id)}
+      onDoubleClick={(event) => onOpen(id, event.currentTarget)}
       onPointerCancel={pointerCancel}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}

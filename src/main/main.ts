@@ -282,6 +282,12 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }
 
   type SmokePoint = { x: number; y: number };
+  type SmokeWindowAnimation = {
+    phase: 'opening' | 'closing';
+    animationName: string;
+    offsetX: string;
+    offsetY: string;
+  };
   const clickAt = async (point: SmokePoint): Promise<void> => {
     window.webContents.sendInputEvent({ type: 'mouseMove', ...point });
     await pause(20);
@@ -298,6 +304,54 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       ...point,
     });
     await pause(40);
+  };
+  const observeWindowAnimation = async (
+    windowLabel: string,
+    phase: SmokeWindowAnimation['phase'],
+    run: () => void | Promise<void>,
+  ): Promise<SmokeWindowAnimation | null> => {
+    await window.webContents.executeJavaScript(
+      `(() => {
+        window.__macintoshSmokeWindowAnimation = new Promise((resolve) => {
+          const surface = document.querySelector('.desktop-surface');
+          if (!(surface instanceof HTMLElement)) {
+            resolve(null);
+            return;
+          }
+          const animationAttribute = ${JSON.stringify(`data-${phase}`)};
+          const observer = new MutationObserver(() => {
+            const finder = [...document.querySelectorAll('[data-finder-window]')].find(
+              (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
+            );
+            if (!(finder instanceof HTMLElement) || finder.getAttribute(animationAttribute) !== 'true') return;
+            observer.disconnect();
+            const style = getComputedStyle(finder);
+            resolve({
+              phase: ${JSON.stringify(phase)},
+              animationName: style.animationName,
+              offsetX: style.getPropertyValue('--window-animation-offset-x').trim(),
+              offsetY: style.getPropertyValue('--window-animation-offset-y').trim(),
+            });
+          });
+          observer.observe(surface, {
+            attributes: true,
+            attributeFilter: ['class', 'data-opening', 'data-closing'],
+            childList: true,
+            subtree: true,
+          });
+          setTimeout(() => {
+            observer.disconnect();
+            resolve(null);
+          }, 300);
+        });
+      })()`,
+      true,
+    );
+    await run();
+    return window.webContents.executeJavaScript(
+      'window.__macintoshSmokeWindowAnimation',
+      true,
+    ) as Promise<SmokeWindowAnimation | null>;
   };
   const assertPixelCursor = (
     label: string,
@@ -944,20 +998,56 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   if (!desktopSelectionWorked) throw new Error('Desktop VFS Shift-selection did not work.');
 
-  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'O', modifiers: ['meta'] });
-  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'O', modifiers: ['meta'] });
-  await pause(80);
+  const desktopDocumentOpenAnimation = await observeWindowAnimation(
+    'Dropped Note.txt window',
+    'opening',
+    () => {
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'O', modifiers: ['meta'] });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'O', modifiers: ['meta'] });
+    },
+  );
+  if (
+    desktopDocumentOpenAnimation?.phase !== 'opening' ||
+    desktopDocumentOpenAnimation.animationName !== 'finder-window-open' ||
+    desktopDocumentOpenAnimation.offsetX !== '0px' ||
+    desktopDocumentOpenAnimation.offsetY !== '0px'
+  ) {
+    throw new Error(
+      `Desktop document opening did not scale from its command origin: ${JSON.stringify(desktopDocumentOpenAnimation)}.`,
+    );
+  }
+  await pause(220);
   const desktopDocumentOpened = await window.webContents.executeJavaScript(
     `document.querySelector('[aria-label="Dropped Note.txt window"] .document-sheet')
       ?.textContent?.includes('external Electron drop') === true`,
     true,
   );
   if (!desktopDocumentOpened) throw new Error('Open did not use the selected Desktop document.');
-  await window.webContents.executeJavaScript(
-    `document.querySelector('[aria-label="Close Dropped Note.txt"]')?.click()`,
+  const desktopDocumentCloseAnimation = await observeWindowAnimation(
+    'Dropped Note.txt window',
+    'closing',
+    () => {
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'W', modifiers: ['meta'] });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'W', modifiers: ['meta'] });
+    },
+  );
+  if (
+    desktopDocumentCloseAnimation?.phase !== 'closing' ||
+    desktopDocumentCloseAnimation.animationName !== 'finder-window-close' ||
+    (desktopDocumentCloseAnimation.offsetX === '0px' &&
+      desktopDocumentCloseAnimation.offsetY === '0px')
+  ) {
+    throw new Error(
+      `Desktop document closing did not scale to its icon: ${JSON.stringify(desktopDocumentCloseAnimation)}.`,
+    );
+  }
+  await pause(50);
+  const desktopDocumentClosed = await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Dropped Note.txt window"]') === null`,
     true,
   );
-  await pause(50);
+  if (!desktopDocumentClosed)
+    throw new Error('Desktop document remained after its close animation.');
 
   await window.webContents.executeJavaScript(
     `document.querySelector('[data-desktop-vfs-item][aria-label="Dropped Note.txt"]')?.click()`,
@@ -979,12 +1069,26 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
 
-  await window.webContents.executeJavaScript(
-    `document.querySelector('[data-desktop-vfs-item][aria-label="Drop Folder"]')
-      ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
-    true,
+  const desktopFolderOpenAnimation = await observeWindowAnimation(
+    'Drop Folder window',
+    'opening',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[data-desktop-vfs-item][aria-label="Drop Folder"]')
+            ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
   );
-  await pause(80);
+  if (
+    desktopFolderOpenAnimation?.phase !== 'opening' ||
+    desktopFolderOpenAnimation.animationName !== 'finder-window-open' ||
+    (desktopFolderOpenAnimation.offsetX === '0px' && desktopFolderOpenAnimation.offsetY === '0px')
+  ) {
+    throw new Error(
+      `Desktop folder opening did not scale from its icon: ${JSON.stringify(desktopFolderOpenAnimation)}.`,
+    );
+  }
+  await pause(220);
   const desktopFolderOpened = await window.webContents.executeJavaScript(
     `document.querySelector('[aria-label="Drop Folder window"] [data-vfs-item]')
       ?.textContent?.includes('Nested Note.txt') === true`,
@@ -992,11 +1096,30 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   if (!desktopFolderOpened)
     throw new Error('The imported Desktop folder did not open its hierarchy.');
-  await window.webContents.executeJavaScript(
-    `document.querySelector('[aria-label="Close Drop Folder"]')?.click()`,
+  const desktopFolderCloseAnimation = await observeWindowAnimation(
+    'Drop Folder window',
+    'closing',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Close Drop Folder"]')?.click()`,
+        true,
+      ),
+  );
+  if (
+    desktopFolderCloseAnimation?.phase !== 'closing' ||
+    desktopFolderCloseAnimation.animationName !== 'finder-window-close' ||
+    (desktopFolderCloseAnimation.offsetX === '0px' && desktopFolderCloseAnimation.offsetY === '0px')
+  ) {
+    throw new Error(
+      `Desktop folder closing did not scale to its icon: ${JSON.stringify(desktopFolderCloseAnimation)}.`,
+    );
+  }
+  await pause(50);
+  const desktopFolderClosed = await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Drop Folder window"]') === null`,
     true,
   );
-  await pause(50);
+  if (!desktopFolderClosed) throw new Error('Desktop folder remained after its close animation.');
 
   const systemDiskDropPoint = (await window.webContents.executeJavaScript(
     `(() => {

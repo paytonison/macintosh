@@ -14,7 +14,7 @@ interface DesktopVfsIconProps {
   position: Point;
   selected: boolean;
   onSelect: (id: string, additive: boolean) => void;
-  onOpen: (id: string) => void;
+  onOpen: (id: string, source: HTMLElement) => void;
   onDragStart: (id: string, dataTransfer: DataTransfer, pointerOffset: Point) => void;
   onDragEnd: () => void;
 }
@@ -69,7 +69,7 @@ export function DesktopVfsIcon({
       data-vfs-node-id={node.id}
       draggable
       onClick={(event) => onSelect(node.id, event.shiftKey)}
-      onDoubleClick={() => onOpen(node.id)}
+      onDoubleClick={(event) => onOpen(node.id, event.currentTarget)}
       onDragEnd={finishDrag}
       onDragStart={beginDrag}
       ref={icon}

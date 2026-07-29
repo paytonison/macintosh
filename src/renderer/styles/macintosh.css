@@ -317,6 +317,24 @@ button:focus-visible {
   box-shadow: 2px 2px 0 #000;
 }
 
+.finder-window.is-opening,
+.finder-window.is-closing {
+  pointer-events: none;
+  will-change: transform;
+}
+
+.finder-window.is-opening {
+  animation: finder-window-open 180ms steps(6, end) both;
+}
+
+.finder-window.is-closing {
+  animation: finder-window-close 180ms steps(6, end) both;
+}
+
+.macintosh.is-automation .finder-window.is-closing {
+  animation-duration: 1ms;
+}
+
 .window-drag-shadow {
   position: absolute;
   z-index: 100;
@@ -1097,6 +1115,34 @@ button:focus-visible {
   }
 }
 
+@keyframes finder-window-open {
+  from {
+    transform: translate3d(
+        var(--window-animation-offset-x, 0),
+        var(--window-animation-offset-y, 0),
+        0
+      )
+      scale(0.12);
+  }
+  to {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes finder-window-close {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(
+        var(--window-animation-offset-x, 0),
+        var(--window-animation-offset-y, 0),
+        0
+      )
+      scale(0.12);
+  }
+}
+
 @keyframes target-blink {
   0%,
   100% {
@@ -1154,6 +1200,8 @@ button:focus-visible {
 
   .startup-progress-fill,
   .startup-scanline,
+  .finder-window.is-opening,
+  .finder-window.is-closing,
   .selection-marquee,
   .desktop-icon.is-drop-target .desktop-icon-glyph,
   .desktop-surface.is-file-drop-target::after {
