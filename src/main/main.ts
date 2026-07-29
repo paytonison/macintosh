@@ -201,6 +201,180 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
+  type SmokePoint = { x: number; y: number };
+  const clickAt = async (point: SmokePoint): Promise<void> => {
+    window.webContents.sendInputEvent({ type: 'mouseMove', ...point });
+    await pause(20);
+    window.webContents.sendInputEvent({
+      type: 'mouseDown',
+      button: 'left',
+      clickCount: 1,
+      ...point,
+    });
+    window.webContents.sendInputEvent({
+      type: 'mouseUp',
+      button: 'left',
+      clickCount: 1,
+      ...point,
+    });
+    await pause(40);
+  };
+  const assertPixelCursor = (
+    label: string,
+    value: string,
+    width: number,
+    height: number,
+    hotspot: SmokePoint,
+  ): void => {
+    let decoded = '';
+    try {
+      decoded = decodeURIComponent(value);
+    } catch {
+      // The assertion below reports the invalid computed value.
+    }
+    if (
+      !decoded.includes(`width="${width}" height="${height}"`) ||
+      !decoded.includes('<rect ') ||
+      !value.includes(`) ${hotspot.x} ${hotspot.y}`)
+    ) {
+      throw new Error(`${label} did not use its tested pixel cursor and hotspot.`);
+    }
+  };
+
+  const cursorBindings = (await window.webContents.executeJavaScript(
+    `(() => {
+      const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+      const finder = document.querySelector('[data-finder-window="window-system-disk"]');
+      const titlebar = finder?.querySelector('[data-window-drag-handle="true"]');
+      const close = finder?.querySelector('[aria-label="Close System Disk"]');
+      const grow = finder?.querySelector('[aria-label="Resize System Disk"]');
+      if (!(disk instanceof HTMLElement) || !(titlebar instanceof HTMLElement) || !(close instanceof HTMLElement) || !(grow instanceof HTMLElement)) return null;
+      return {
+        body: getComputedStyle(document.body).cursor,
+        desktopIcon: getComputedStyle(disk).cursor,
+        titlebar: getComputedStyle(titlebar).cursor,
+        windowControl: getComputedStyle(close).cursor,
+        growBox: getComputedStyle(grow).cursor
+      };
+    })()`,
+    true,
+  )) as {
+    body: string;
+    desktopIcon: string;
+    titlebar: string;
+    windowControl: string;
+    growBox: string;
+  } | null;
+  if (!cursorBindings) throw new Error('Pixel cursor bindings could not be inspected.');
+  assertPixelCursor('Desktop arrow', cursorBindings.body, 11, 16, { x: 1, y: 1 });
+  assertPixelCursor('Desktop icon grab', cursorBindings.desktopIcon, 16, 16, { x: 7, y: 8 });
+  assertPixelCursor('Window title-bar grab', cursorBindings.titlebar, 16, 16, { x: 7, y: 8 });
+  assertPixelCursor('Window control arrow', cursorBindings.windowControl, 11, 16, { x: 1, y: 1 });
+  assertPixelCursor('Window resize', cursorBindings.growBox, 15, 15, { x: 7, y: 7 });
+
+  type SmokeWindowGeometry = {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    zoom: SmokePoint;
+    grow: SmokePoint;
+  };
+  const readSystemWindowGeometry = async (): Promise<SmokeWindowGeometry | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const finder = document.querySelector('[data-finder-window="window-system-disk"]');
+        const zoom = finder?.querySelector('[aria-label="Zoom System Disk"]');
+        const grow = finder?.querySelector('[aria-label="Resize System Disk"]');
+        if (!(finder instanceof HTMLElement) || !(zoom instanceof HTMLElement) || !(grow instanceof HTMLElement)) return null;
+        const frame = finder.getBoundingClientRect();
+        const zoomBounds = zoom.getBoundingClientRect();
+        const growBounds = grow.getBoundingClientRect();
+        return {
+          left: frame.left,
+          top: frame.top,
+          width: frame.width,
+          height: frame.height,
+          zoom: { x: Math.round(zoomBounds.left + zoomBounds.width / 2), y: Math.round(zoomBounds.top + zoomBounds.height / 2) },
+          grow: { x: Math.round(growBounds.left + growBounds.width / 2), y: Math.round(growBounds.top + growBounds.height / 2) }
+        };
+      })()`,
+      true,
+    )) as SmokeWindowGeometry | null;
+  const originalWindow = await readSystemWindowGeometry();
+  if (!originalWindow) throw new Error('System Disk controls could not be located.');
+
+  await clickAt(originalWindow.zoom);
+  const zoomedWindow = await readSystemWindowGeometry();
+  if (
+    !zoomedWindow ||
+    (Math.abs(zoomedWindow.width - originalWindow.width) < 10 &&
+      Math.abs(zoomedWindow.height - originalWindow.height) < 10)
+  ) {
+    throw new Error('The Finder zoom control did not change window geometry.');
+  }
+  await clickAt(zoomedWindow.zoom);
+  const restoredWindow = await readSystemWindowGeometry();
+  if (
+    !restoredWindow ||
+    Math.abs(restoredWindow.left - originalWindow.left) > 1 ||
+    Math.abs(restoredWindow.top - originalWindow.top) > 1 ||
+    Math.abs(restoredWindow.width - originalWindow.width) > 1 ||
+    Math.abs(restoredWindow.height - originalWindow.height) > 1
+  ) {
+    throw new Error('The Finder zoom control did not restore its original geometry.');
+  }
+
+  const resizeWindow = async (from: SmokePoint, to: SmokePoint): Promise<void> => {
+    window.webContents.sendInputEvent({ type: 'mouseMove', ...from });
+    await pause(20);
+    window.webContents.sendInputEvent({
+      type: 'mouseDown',
+      button: 'left',
+      clickCount: 1,
+      ...from,
+    });
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      ...to,
+    });
+    await pause(40);
+    window.webContents.sendInputEvent({
+      type: 'mouseUp',
+      button: 'left',
+      clickCount: 1,
+      ...to,
+    });
+    await pause(60);
+  };
+  const resizeDelta = { x: 24, y: 16 };
+  await resizeWindow(restoredWindow.grow, {
+    x: restoredWindow.grow.x + resizeDelta.x,
+    y: restoredWindow.grow.y + resizeDelta.y,
+  });
+  const resizedWindow = await readSystemWindowGeometry();
+  if (
+    !resizedWindow ||
+    Math.abs(resizedWindow.width - (originalWindow.width + resizeDelta.x)) > 1 ||
+    Math.abs(resizedWindow.height - (originalWindow.height + resizeDelta.y)) > 1
+  ) {
+    throw new Error('The Finder grow box did not resize from the pixel-cursor hotspot.');
+  }
+  await resizeWindow(resizedWindow.grow, {
+    x: resizedWindow.grow.x - resizeDelta.x,
+    y: resizedWindow.grow.y - resizeDelta.y,
+  });
+  const resizeRestoredWindow = await readSystemWindowGeometry();
+  if (
+    !resizeRestoredWindow ||
+    Math.abs(resizeRestoredWindow.width - originalWindow.width) > 1 ||
+    Math.abs(resizeRestoredWindow.height - originalWindow.height) > 1
+  ) {
+    throw new Error('The Finder grow box did not restore its original geometry.');
+  }
+
   const initialVfsCount = (await window.webContents.executeJavaScript(
     "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
     true,
@@ -212,14 +386,28 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   await writeFile(importDocument, 'This document arrived through an external Electron drop.\n');
   await writeFile(path.join(importFolder, 'Nested Note.txt'), 'Nested folder import passed.\n');
 
-  await window.webContents.executeJavaScript(
-    'document.querySelector(\'[data-menu="system"]\')?.click()',
+  const systemMenuPoint = (await window.webContents.executeJavaScript(
+    `(() => {
+      const menu = document.querySelector('[data-menu="system"]');
+      if (!(menu instanceof HTMLElement)) return null;
+      const bounds = menu.getBoundingClientRect();
+      return { x: Math.round(bounds.left + bounds.width / 2), y: Math.round(bounds.top + bounds.height / 2) };
+    })()`,
     true,
-  );
-  await window.webContents.executeJavaScript(
-    'document.querySelector(\'[data-menu-action="about"]\')?.click()',
+  )) as SmokePoint | null;
+  if (!systemMenuPoint) throw new Error('The System menu could not be located.');
+  await clickAt(systemMenuPoint);
+  const aboutMenuPoint = (await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector('[data-menu-action="about"]');
+      if (!(item instanceof HTMLElement)) return null;
+      const bounds = item.getBoundingClientRect();
+      return { x: Math.round(bounds.left + bounds.width / 2), y: Math.round(bounds.top + bounds.height / 2) };
+    })()`,
     true,
-  );
+  )) as SmokePoint | null;
+  if (!aboutMenuPoint) throw new Error('The About menu item could not be located.');
+  await clickAt(aboutMenuPoint);
   const aboutOpened = await window.webContents.executeJavaScript(
     'document.querySelector(\'[aria-label="About This Macintosh"]\') !== null',
     true,
@@ -298,14 +486,16 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     `(() => {
       const calculator = document.querySelector('[data-calculator-window="true"]');
       const outline = calculator?.querySelector('.calculator-drag-outline');
-      if (!(calculator instanceof HTMLElement) || !(outline instanceof HTMLElement)) return null;
+      const handle = calculator?.querySelector('[data-calculator-drag-handle="true"]');
+      if (!(calculator instanceof HTMLElement) || !(outline instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
       const windowRect = calculator.getBoundingClientRect();
       const outlineRect = outline.getBoundingClientRect();
       return {
         windowLeft: windowRect.left,
         windowTop: windowRect.top,
         outlineLeft: outlineRect.left,
-        outlineTop: outlineRect.top
+        outlineTop: outlineRect.top,
+        cursor: getComputedStyle(handle).cursor
       };
     })()`,
     true,
@@ -314,7 +504,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     windowTop: number;
     outlineLeft: number;
     outlineTop: number;
+    cursor: string;
   } | null;
+  if (calculatorDragPreview) {
+    assertPixelCursor('Calculator drag', calculatorDragPreview.cursor, 16, 16, { x: 7, y: 7 });
+  }
   if (
     !calculatorDragPreview ||
     Math.abs(calculatorDragPreview.windowLeft - calculatorDragStart.window.left) > 1 ||
@@ -958,12 +1152,14 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     `(() => {
       const finder = document.querySelector('[data-finder-window="window-applications"]');
       const shadow = finder?.querySelector('.window-drag-shadow');
+      const handle = finder?.querySelector('[data-window-drag-handle="true"]');
       const releaseWindow = document.querySelector(
         '[data-finder-window="window-system-disk"]'
       );
       if (
         !(finder instanceof HTMLElement) ||
         !(shadow instanceof HTMLElement) ||
+        !(handle instanceof HTMLElement) ||
         !(releaseWindow instanceof HTMLElement)
       ) return null;
       const windowRect = finder.getBoundingClientRect();
@@ -976,6 +1172,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         shadowTop: shadowRect.top,
         shadowVisible: getComputedStyle(shadow).display !== 'none',
         dragging: finder.dataset.windowDragging === 'true',
+        cursor: getComputedStyle(handle).cursor,
         overlapsReleaseWindow:
           shadowRect.left < releaseRect.right &&
           shadowRect.right > releaseRect.left &&
@@ -991,9 +1188,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     shadowTop: number;
     shadowVisible: boolean;
     dragging: boolean;
+    cursor: string;
     overlapsReleaseWindow: boolean;
   } | null;
   if (!windowDragPreview) throw new Error('Finder drag preview could not be inspected.');
+  assertPixelCursor('Finder window drag', windowDragPreview.cursor, 16, 16, { x: 7, y: 7 });
   if (
     Math.abs(windowDragPreview.windowLeft - windowDragStart.window.left) > 1 ||
     Math.abs(windowDragPreview.windowTop - windowDragStart.window.top) > 1
@@ -1271,19 +1470,25 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     });
     await pause(16);
   }
-  const trashPreviewMoved = await window.webContents.executeJavaScript(
+  const trashPreviewMoved = (await window.webContents.executeJavaScript(
     `(() => {
       const trash = document.querySelector('[data-desktop-icon="trash"]');
-      if (!(trash instanceof HTMLElement)) return false;
+      if (!(trash instanceof HTMLElement)) return null;
       const rect = trash.getBoundingClientRect();
-      return Math.hypot(
-        rect.left + rect.width / 2 - ${coordinates.trash.x},
-        rect.top + rect.height / 2 - ${coordinates.trash.y}
-      ) > 40 && trash.classList.contains('is-dragging');
+      return {
+        moved: Math.hypot(
+          rect.left + rect.width / 2 - ${coordinates.trash.x},
+          rect.top + rect.height / 2 - ${coordinates.trash.y}
+        ) > 40 && trash.classList.contains('is-dragging'),
+        cursor: getComputedStyle(trash).cursor
+      };
     })()`,
     true,
-  );
-  if (!trashPreviewMoved) throw new Error('Trash did not enter a movable preview before cancel.');
+  )) as { moved: boolean; cursor: string } | null;
+  if (!trashPreviewMoved?.moved) {
+    throw new Error('Trash did not enter a movable preview before cancel.');
+  }
+  assertPixelCursor('Desktop icon drag', trashPreviewMoved.cursor, 16, 16, { x: 7, y: 7 });
   await window.webContents.executeJavaScript(
     `(() => {
       const trash = document.querySelector('[data-desktop-icon="trash"]');

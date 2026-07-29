@@ -4,7 +4,7 @@ The Macintosh is a clean-room Electron recreation of the tactile black-and-white
 
 On macOS, the native application menu and Dock identify the program as **The Macintosh**, with an original monochrome compact-computer icon that follows the desktop's clean-room visual language.
 
-The first version includes an original monochrome startup sequence, fixed Finder-style menu bar, draggable desktop icons, marquee and multi-selection, active/inactive draggable and resizable Finder windows, internal and host file drag-and-drop, document Copy/Paste, custom scrollbars, working Finder commands, a functional Calculator desk accessory, an About dialog, original code-drawn 1-bit bitmap icons, synthesized system sounds, and a persistent virtual disk.
+The first version includes an original monochrome startup sequence, fixed Finder-style menu bar, pixel-authored pointer states, draggable desktop icons, marquee and multi-selection, active/inactive draggable and resizable Finder windows, internal and host file drag-and-drop, document Copy/Paste, custom scrollbars, working Finder commands, a functional Calculator desk accessory, an About dialog, original code-drawn 1-bit bitmap icons, synthesized system sounds, and a persistent virtual disk.
 
 ## Run it
 
@@ -40,7 +40,7 @@ npm run smoke
 
 `npm run check` runs formatting verification, ESLint, strict TypeScript checks for both renderer and Electron, Vitest, and the production build.
 
-`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; freely repositions Finder and desktop icons; moves a folder internally; exercises Calculator button and keyboard input, modal dialog precedence, drag-session input ownership, save-failure cancellation, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled and committed Trash movement, exact Trash artwork-edge/label hit testing for System Disk and internal items at normal, scaled, and minimum-window coordinates, and eject animation; observes the renderer-to-main quit request; checks the resulting state file; and relaunches Electron to prove the icon layout, disk, and virtual filesystem reload.
+`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; checks the authored arrow, grab, drag, and resize cursor dimensions and hotspots; exercises pointer-based menu selection plus Finder zoom and resize controls; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; freely repositions Finder and desktop icons; moves a folder internally; exercises Calculator button and keyboard input, modal dialog precedence, drag-session input ownership, save-failure cancellation, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled and committed Trash movement, exact Trash artwork-edge/label hit testing for System Disk and internal items at normal, scaled, and minimum-window coordinates, and eject animation; observes the renderer-to-main quit request; checks the resulting state file; and relaunches Electron to prove the icon layout, disk, and virtual filesystem reload.
 
 ## Architecture and security
 

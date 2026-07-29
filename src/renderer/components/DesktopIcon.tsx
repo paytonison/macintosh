@@ -160,7 +160,7 @@ export function DesktopIcon({
       type="button"
     >
       <span className="desktop-icon-glyph">
-        <PixelIcon name={icon} size={id === 'trash' ? 40 : 32} />
+        <PixelIcon name={icon} size={32} />
       </span>
       <span className="desktop-icon-label" data-desktop-icon-label={id}>
         {label}

@@ -14,10 +14,6 @@
   --desktop-pattern: var(--mac-pattern-50);
   --stripe-pattern: var(--mac-stripe-pattern);
   --quarter-tone-pattern: var(--mac-pattern-25);
-  --arrow-cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='24' viewBox='0 0 16 24' shape-rendering='crispEdges'%3E%3Cpath d='M1 1L2 20L6 16L9 22L14 21L10 14L15 13Z' fill='%23000' stroke='%23fff' stroke-width='1.5' stroke-linejoin='miter'/%3E%3C/svg%3E")
-    1 1;
-  --grab-cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' shape-rendering='crispEdges'%3E%3Cpath d='M7 2h3v6h1V4h3v5h1V6h3v8l-4 5H7l-5-7V9h3l2 3z' fill='%23fff' stroke='%23000' stroke-width='1'/%3E%3C/svg%3E")
-    7 2;
 }
 
 * {
@@ -221,6 +217,7 @@ button:focus-visible {
   padding: 2px 2px 4px;
   border: 0;
   background: transparent;
+  cursor: var(--grab-cursor), grab;
   touch-action: none;
 }
 
@@ -231,7 +228,7 @@ button:focus-visible {
 
 .desktop-icon.is-dragging {
   z-index: 4000;
-  cursor: var(--grab-cursor), grabbing;
+  cursor: var(--grabbing-cursor), grabbing;
   filter: drop-shadow(3px 3px 0 #fff) drop-shadow(1px 1px 0 #000);
 }
 
@@ -373,6 +370,19 @@ button:focus-visible {
   align-items: center;
   border-bottom: 1px solid #000;
   background: #fff;
+  cursor: var(--grab-cursor), grab;
+}
+
+.window-titlebar:active,
+.dialog-titlebar:active,
+.calculator-titlebar:active {
+  cursor: var(--grabbing-cursor), grabbing;
+}
+
+.window-titlebar > button,
+.dialog-titlebar > button,
+.calculator-titlebar > button {
+  cursor: var(--arrow-cursor), default;
 }
 
 .is-active .window-titlebar,
@@ -500,6 +510,11 @@ button:focus-visible {
 .finder-item[draggable='true'],
 .finder-list-row[draggable='true'] {
   cursor: var(--grab-cursor), grab;
+}
+
+.finder-item[draggable='true']:active,
+.finder-list-row[draggable='true']:active {
+  cursor: var(--grabbing-cursor), grabbing;
 }
 
 .finder-item span {
@@ -665,7 +680,7 @@ button:focus-visible {
   position: relative;
   grid-column: 2;
   grid-row: 2;
-  cursor: nwse-resize;
+  cursor: var(--resize-cursor), nwse-resize;
 }
 
 .window-grow-box::before {
@@ -722,6 +737,7 @@ button:focus-visible {
   border-bottom: 1px solid #000;
   color: #fff;
   background: #000;
+  cursor: var(--grab-cursor), grab;
 }
 
 .calculator-titlebar h2 {
