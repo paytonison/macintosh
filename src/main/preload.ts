@@ -1,22 +1,31 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
-import type { ImportFilesResult, MacintoshAPI } from '../shared/contracts';
+import type {
+  ImportFilesOptions,
+  IpcChannels,
+  MacintoshAPI,
+  VfsMutationRequest,
+} from '../shared/contracts';
+import type { PresentationPatch } from '../shared/presentation';
 import type { MacintoshState } from '../shared/state';
 
 // Electron's sandboxed preload cannot require compiled sibling modules at runtime.
 // Keep these values aligned with the typed main-process contract.
 const IPC_CHANNELS = {
   loadState: 'macintosh:state:load',
-  saveState: 'macintosh:state:save',
+  savePresentation: 'macintosh:presentation:save',
+  mutateVfs: 'macintosh:vfs:mutate',
   importFiles: 'macintosh:files:import',
   requestPaste: 'macintosh:clipboard:paste',
-  quitAfterEject: 'macintosh:app:quit-after-eject',
-} as const;
+  saveAndQuitAfterEject: 'macintosh:app:save-and-quit-after-eject',
+} as const satisfies IpcChannels;
 
 const api: MacintoshAPI = Object.freeze({
   loadState: () => ipcRenderer.invoke(IPC_CHANNELS.loadState) as Promise<MacintoshState>,
-  saveState: (state: MacintoshState) => ipcRenderer.invoke(IPC_CHANNELS.saveState, state),
-  importFiles: (files: readonly unknown[]) => {
+  savePresentation: (presentation: PresentationPatch) =>
+    ipcRenderer.invoke(IPC_CHANNELS.savePresentation, presentation),
+  mutateVfs: (request: VfsMutationRequest) => ipcRenderer.invoke(IPC_CHANNELS.mutateVfs, request),
+  importFiles: (files: readonly unknown[], options: ImportFilesOptions) => {
     const paths = Array.isArray(files)
       ? files.slice(0, 64).flatMap((file) => {
           try {
@@ -29,10 +38,11 @@ const api: MacintoshAPI = Object.freeze({
           }
         })
       : [];
-    return ipcRenderer.invoke(IPC_CHANNELS.importFiles, paths) as Promise<ImportFilesResult>;
+    return ipcRenderer.invoke(IPC_CHANNELS.importFiles, { ...options, paths });
   },
   requestPaste: () => ipcRenderer.invoke(IPC_CHANNELS.requestPaste),
-  quitAfterEject: () => ipcRenderer.invoke(IPC_CHANNELS.quitAfterEject),
+  saveAndQuitAfterEject: (presentation: PresentationPatch) =>
+    ipcRenderer.invoke(IPC_CHANNELS.saveAndQuitAfterEject, presentation),
 });
 
 contextBridge.exposeInMainWorld('macintosh', api);

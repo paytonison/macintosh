@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import { createDefaultState } from '../../shared/state';
-import { placeImportedDesktopRoots } from './desktop-icon-layout';
 import {
   addFolder,
   duplicateNodes,
   emptyTrash,
+  executeVfsCommand,
+  isVfsCommand,
   listChildren,
+  MAX_VFS_NODES,
   mergeImportedEntries,
   moveNodes,
   placeFinderIcons,
   rectanglesOverlap,
-} from './vfs';
+} from '../../shared/vfs';
 
 describe('virtual Finder helpers', () => {
   it('sorts list view without disturbing icon insertion order', () => {
@@ -117,6 +119,7 @@ describe('virtual Finder helpers', () => {
     const project = imported.state.nodes.find(
       (node) => node.parentId === 'documents' && node.name === 'Project',
     );
+    expect(imported.addedCount).toBe(3);
     expect(copy?.content).toBe('first imported copy');
     expect(imported.state.nodes.find((node) => node.parentId === project?.id)).toMatchObject({
       name: 'Notes.txt',
@@ -218,9 +221,9 @@ describe('virtual Finder helpers', () => {
   });
 
   it('positions imported Desktop roots while leaving their nested hierarchy intact', () => {
-    const imported = mergeImportedEntries(
-      createDefaultState(),
-      [
+    const imported = executeVfsCommand(createDefaultState(), {
+      type: 'merge-imported-entries',
+      entries: [
         {
           name: 'Drop Folder',
           kind: 'folder',
@@ -244,20 +247,15 @@ describe('virtual Finder helpers', () => {
           modifiedAt: '2026-07-22T12:00:00.000Z',
         },
       ],
-      'desktop',
-    );
-    const positioned = placeFinderIcons(
-      imported.state,
-      'desktop',
-      placeImportedDesktopRoots(
-        imported.affectedIds,
-        { x: 173, y: 119 },
-        { width: 800, height: 538 },
-      ),
-    );
-    const folder = positioned.nodes.find((node) => node.name === 'Drop Folder');
-    const document = positioned.nodes.find((node) => node.name === 'Dropped Note.txt');
-    const nested = positioned.nodes.find((node) => node.parentId === folder?.id);
+      parentId: 'desktop',
+      desktopPlacement: {
+        point: { x: 173, y: 119 },
+        surfaceSize: { width: 800, height: 538 },
+      },
+    });
+    const folder = imported.state.nodes.find((node) => node.name === 'Drop Folder');
+    const document = imported.state.nodes.find((node) => node.name === 'Dropped Note.txt');
+    const nested = imported.state.nodes.find((node) => node.parentId === folder?.id);
 
     expect(folder).toMatchObject({ parentId: 'desktop', iconPosition: { x: 173, y: 119 } });
     expect(document).toMatchObject({ parentId: 'desktop', iconPosition: { x: 186, y: 130 } });
@@ -315,6 +313,7 @@ describe('virtual Finder helpers', () => {
       (node) => node.parentId === 'documents' && node.name === 'Read Me copy',
     );
 
+    expect(duplicated.addedCount).toBe(1);
     expect(copy?.id).not.toBe('read-me');
     expect(copy?.content).toBe(
       'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
@@ -344,5 +343,272 @@ describe('virtual Finder helpers', () => {
 
     expect(copiedFolder?.iconPosition).toBeUndefined();
     expect(copiedReadMe?.iconPosition).toEqual({ x: 87, y: 133 });
+  });
+
+  it('executes typed create commands and returns the new root IDs', () => {
+    const timestamp = '2026-07-22T12:00:00.000Z';
+    const folder = executeVfsCommand(
+      createDefaultState(),
+      { type: 'create-folder', parentId: 'documents' },
+      timestamp,
+    );
+    const createdFolder = folder.state.nodes.find((node) => node.id === folder.affectedIds[0]);
+    expect(createdFolder).toMatchObject({
+      parentId: 'documents',
+      name: 'untitled folder',
+      kind: 'folder',
+      createdAt: timestamp,
+    });
+
+    const document = executeVfsCommand(
+      folder.state,
+      {
+        type: 'create-document',
+        parentId: 'documents',
+        name: 'Read Me',
+        content: 'a pasted document',
+      },
+      timestamp,
+    );
+    expect(document.state.nodes.find((node) => node.id === document.affectedIds[0])).toMatchObject({
+      parentId: 'documents',
+      name: 'Read Me copy',
+      kind: 'document',
+      content: 'a pasted document',
+    });
+
+    const oversized = executeVfsCommand(createDefaultState(), {
+      type: 'create-document',
+      parentId: 'documents',
+      name: 'Large Note',
+      content: 'x'.repeat(64 * 1024 + 1),
+    });
+    expect(
+      oversized.state.nodes.find((node) => node.id === oversized.affectedIds[0])?.content,
+    ).toHaveLength(64 * 1024);
+    expect(oversized.truncatedCount).toBe(1);
+  });
+
+  it('rejects malformed commands before mutating state', () => {
+    const state = createDefaultState();
+    const internalImport = {
+      type: 'merge-imported-entries',
+      entries: [],
+      parentId: 'desktop',
+    };
+
+    expect(() => executeVfsCommand(state, { type: 'erase-everything' })).toThrow(TypeError);
+    expect(isVfsCommand(internalImport)).toBe(false);
+    expect(() =>
+      executeVfsCommand(state, {
+        type: 'move-nodes',
+        nodeIds: ['applications'],
+        parentId: 'desktop',
+        placements: [],
+        desktopPlacement: {
+          point: { x: 20, y: 20 },
+          surfaceSize: { width: 640, height: 480 },
+        },
+      }),
+    ).toThrow(TypeError);
+    expect(() => executeVfsCommand(state, { type: 'create-folder', parentId: 'trash' })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      executeVfsCommand(state, {
+        type: 'create-document',
+        parentId: 'trash',
+        name: 'Bypass',
+        content: 'must not persist',
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      executeVfsCommand(state, {
+        type: 'duplicate-nodes',
+        nodeIds: ['welcome'],
+        parentId: 'trash',
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      executeVfsCommand(state, {
+        type: 'duplicate-nodes',
+        nodeIds: ['welcome'],
+        parentId: 'desktop',
+        desktopPlacement: {
+          point: { x: 20, y: 20 },
+          surfaceSize: { width: 640, height: 480 },
+        },
+      }),
+    ).toThrow(TypeError);
+    expect(state).toBe(state);
+    expect(state.nodes.find((node) => node.id === 'applications')?.parentId).toBe('system-disk');
+  });
+
+  it('does not add a folder after the VFS node cap is reached', () => {
+    const state = createDefaultState();
+    while (state.nodes.length < MAX_VFS_NODES) {
+      const index = state.nodes.length;
+      state.nodes.push({
+        id: `filler-${index}`,
+        parentId: 'documents',
+        name: `Filler ${index}`,
+        kind: 'document',
+        createdAt: '2026-07-22T12:00:00.000Z',
+        modifiedAt: '2026-07-22T12:00:00.000Z',
+      });
+    }
+
+    expect(addFolder(state, 'documents')).toBe(state);
+    expect(executeVfsCommand(state, { type: 'create-folder', parentId: 'documents' })).toEqual({
+      state,
+      affectedIds: [],
+      addedCount: 0,
+      skippedCount: 1,
+      truncatedCount: 0,
+    });
+  });
+
+  it('terminates ancestor walks and duplication on malformed parent cycles', () => {
+    const state = createDefaultState();
+    state.nodes.push(
+      {
+        id: 'cycle-a',
+        parentId: 'cycle-b',
+        name: 'Cycle A',
+        kind: 'folder',
+        createdAt: '2026-07-22T12:00:00.000Z',
+        modifiedAt: '2026-07-22T12:00:00.000Z',
+      },
+      {
+        id: 'cycle-b',
+        parentId: 'cycle-a',
+        name: 'Cycle B',
+        kind: 'folder',
+        createdAt: '2026-07-22T12:00:00.000Z',
+        modifiedAt: '2026-07-22T12:00:00.000Z',
+      },
+      {
+        id: 'cycle-child',
+        parentId: 'cycle-a',
+        name: 'Cycle Child',
+        kind: 'document',
+        createdAt: '2026-07-22T12:00:00.000Z',
+        modifiedAt: '2026-07-22T12:00:00.000Z',
+      },
+    );
+
+    const moved = executeVfsCommand(state, {
+      type: 'move-nodes',
+      nodeIds: ['cycle-child'],
+      parentId: 'trash',
+    });
+    expect(moved.affectedIds).toEqual(['cycle-child']);
+    expect(moved.state.nodes.find((node) => node.id === 'cycle-child')?.parentId).toBe('trash');
+
+    const duplicated = executeVfsCommand(state, {
+      type: 'duplicate-nodes',
+      nodeIds: ['cycle-a'],
+      parentId: 'documents',
+    });
+    expect(duplicated.state.nodes.length).toBeLessThanOrEqual(MAX_VFS_NODES);
+    expect(duplicated.skippedCount).toBeGreaterThan(0);
+  });
+
+  it('atomically applies exact move placements only to affected roots', () => {
+    const state = createDefaultState();
+    const readMeBefore = state.nodes.find((node) => node.id === 'read-me');
+    const moved = executeVfsCommand(state, {
+      type: 'move-nodes',
+      nodeIds: ['applications'],
+      parentId: 'documents',
+      placements: [
+        { nodeId: 'applications', position: { x: 121, y: 88 } },
+        { nodeId: 'read-me', position: { x: 700, y: 700 } },
+      ],
+    });
+
+    expect(moved.state.nodes.find((node) => node.id === 'applications')).toMatchObject({
+      parentId: 'documents',
+      iconPosition: { x: 121, y: 88 },
+    });
+    expect(moved.state.nodes.find((node) => node.id === 'read-me')).toEqual(readMeBefore);
+  });
+
+  it('clamps an explicit import cascade while retaining free-form offsets', () => {
+    const timestamp = '2026-07-22T12:00:00.000Z';
+    const result = executeVfsCommand(
+      createDefaultState(),
+      {
+        type: 'merge-imported-entries',
+        entries: [
+          {
+            name: 'First',
+            kind: 'document',
+            createdAt: timestamp,
+            modifiedAt: timestamp,
+          },
+          {
+            name: 'Second',
+            kind: 'document',
+            createdAt: timestamp,
+            modifiedAt: timestamp,
+          },
+        ],
+        parentId: 'desktop',
+        desktopPlacement: {
+          point: { x: 900, y: 900 },
+          surfaceSize: { width: 200, height: 150 },
+        },
+      },
+      timestamp,
+    );
+    const positions = result.affectedIds.map(
+      (id) => result.state.nodes.find((node) => node.id === id)?.iconPosition,
+    );
+
+    expect(positions).toEqual([
+      { x: 105, y: 61 },
+      { x: 118, y: 72 },
+    ]);
+  });
+
+  it('executes internal imported-entry and empty-Trash commands with uniform results', () => {
+    const imported = executeVfsCommand(createDefaultState(), {
+      type: 'merge-imported-entries',
+      parentId: 'desktop',
+      entries: [
+        {
+          name: 'Imported Note',
+          kind: 'document',
+          content: 'hello',
+          createdAt: '2026-07-22T12:00:00.000Z',
+          modifiedAt: '2026-07-22T12:00:00.000Z',
+        },
+      ],
+      desktopPlacement: {
+        point: { x: 77, y: 55 },
+        surfaceSize: { width: 640, height: 480 },
+      },
+    });
+    const importedId = imported.affectedIds[0];
+    expect(imported.state.nodes.find((node) => node.id === importedId)).toMatchObject({
+      parentId: 'desktop',
+      iconPosition: { x: 77, y: 55 },
+    });
+
+    const moved = executeVfsCommand(imported.state, {
+      type: 'move-nodes',
+      nodeIds: [importedId ?? ''],
+      parentId: 'trash',
+    });
+    const emptied = executeVfsCommand(moved.state, { type: 'empty-trash' });
+    expect(emptied).toMatchObject({
+      affectedIds: [importedId],
+      addedCount: 0,
+      skippedCount: 0,
+      truncatedCount: 0,
+    });
+    expect(emptied.state.nodes.some((node) => node.id === importedId)).toBe(false);
+    expect(emptied.state.nodes.some((node) => node.id === 'trash')).toBe(true);
   });
 });

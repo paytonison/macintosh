@@ -1,5 +1,8 @@
+import { initialDesktopIconPosition } from './desktop-icon-position';
+
 export const STATE_SCHEMA_VERSION = 3 as const;
 const LEGACY_STATE_SCHEMA_VERSIONS = new Set([1, 2]);
+const MAX_STATE_NODES = 512;
 
 export type VfsNodeKind = 'desktop' | 'disk' | 'trash' | 'folder' | 'document';
 export type FinderViewMode = 'icons' | 'list';
@@ -212,7 +215,12 @@ const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNod
     if (seen.has(node.id)) continue;
     const requiredKind = requirements.get(node.id);
     if (requiredKind && node.kind !== requiredKind) continue;
-    if (node.kind === 'desktop' && node.id !== 'desktop') continue;
+    if (
+      !requiredKind &&
+      (node.kind === 'desktop' || node.kind === 'disk' || node.kind === 'trash')
+    ) {
+      continue;
+    }
 
     seen.add(node.id);
     if (requiredKind) {
@@ -230,8 +238,24 @@ const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNod
     if (fallback) repaired.push({ ...fallback });
   }
 
+  let overflow = repaired.length - MAX_STATE_NODES;
+  for (let index = repaired.length - 1; index >= 0 && overflow > 0; index -= 1) {
+    if (requirements.has(repaired[index]!.id)) continue;
+    repaired.splice(index, 1);
+    overflow -= 1;
+  }
+
   return repaired;
 };
+
+const materializeDesktopIconPositions = (nodes: VfsNode[]): VfsNode[] =>
+  nodes.map((node) =>
+    node.parentId === 'desktop' &&
+    (node.kind === 'folder' || node.kind === 'document') &&
+    !node.iconPosition
+      ? { ...node, iconPosition: initialDesktopIconPosition(node.id) }
+      : node,
+  );
 
 export const sanitizeState = (value: unknown): MacintoshState => {
   const fallback = createDefaultState();
@@ -248,10 +272,10 @@ export const sanitizeState = (value: unknown): MacintoshState => {
     ? value.nodes
         .map(sanitizeNode)
         .filter((node): node is VfsNode => node !== null)
-        .slice(0, 512)
+        .slice(0, MAX_STATE_NODES)
     : fallback.nodes;
 
-  const safeNodes = ensureRequiredRoots(nodes, fallback.nodes);
+  const safeNodes = materializeDesktopIconPositions(ensureRequiredRoots(nodes, fallback.nodes));
   const nodeIds = new Set(
     safeNodes.filter((node) => node.kind !== 'desktop').map((node) => node.id),
   );

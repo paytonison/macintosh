@@ -1,12 +1,34 @@
 import { describe, expect, it } from 'vitest';
 
+import { initialDesktopIconPosition } from '../../shared/desktop-icon-position';
+import type { VfsNode } from '../../shared/state';
 import {
   desktopIconIdsInRectangle,
-  placeImportedDesktopRoots,
+  resolveDesktopIconPosition,
   translateDesktopIconDrag,
 } from './desktop-icon-layout';
 
+const desktopNode = (id: string, iconPosition?: { x: number; y: number }): VfsNode => ({
+  id,
+  parentId: 'desktop',
+  name: id,
+  kind: 'document',
+  ...(iconPosition ? { iconPosition } : {}),
+  createdAt: '1989-01-24T09:00:00.000Z',
+  modifiedAt: '1989-01-24T09:00:00.000Z',
+});
+
 describe('Desktop free icon layout', () => {
+  it('resolves a missing position from stable node identity and preserves a saved position', () => {
+    expect(resolveDesktopIconPosition(desktopNode('document-m2'))).toEqual(
+      initialDesktopIconPosition('document-m2'),
+    );
+    expect(resolveDesktopIconPosition(desktopNode('document-m2', { x: 173, y: 119 }))).toEqual({
+      x: 173,
+      y: 119,
+    });
+  });
+
   it('moves a selected group by one free delta while preserving its relative arrangement', () => {
     const translated = translateDesktopIconDrag(
       {
@@ -45,19 +67,6 @@ describe('Desktop free icon layout', () => {
       first: { x: 618, y: 410 },
       second: { x: 718, y: 460 },
     });
-  });
-
-  it('cascades imported roots from a non-grid drop point without overlapping them', () => {
-    expect(
-      placeImportedDesktopRoots(
-        ['document', 'folder'],
-        { x: 173, y: 119 },
-        { width: 800, height: 538 },
-      ),
-    ).toEqual([
-      { nodeId: 'document', position: { x: 173, y: 119 } },
-      { nodeId: 'folder', position: { x: 186, y: 130 } },
-    ]);
   });
 
   it('returns arbitrary stable desktop node IDs from marquee overlap', () => {

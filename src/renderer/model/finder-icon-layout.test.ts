@@ -3,8 +3,20 @@ import { describe, expect, it } from 'vitest';
 import {
   defaultFinderIconPosition,
   finderIconCanvasSize,
+  resolveFinderIconPositions,
   translateFinderIconDrag,
 } from './finder-icon-layout';
+import type { VfsNode } from '../../shared/state';
+
+const finderNode = (id: string, iconPosition?: { x: number; y: number }): VfsNode => ({
+  id,
+  parentId: 'system-disk',
+  name: id,
+  kind: 'folder',
+  ...(iconPosition ? { iconPosition } : {}),
+  createdAt: '1989-01-24T09:00:00.000Z',
+  modifiedAt: '1989-01-24T09:00:00.000Z',
+});
 
 describe('Finder free icon layout', () => {
   it('provides orderly initial slots without quantizing committed coordinates', () => {
@@ -16,6 +28,17 @@ describe('Finder free icon layout', () => {
         { x: 777, y: 333 },
       ]),
     ).toEqual({ width: 931, height: 463 });
+  });
+
+  it('assigns missing initial slots by stable identity rather than storage order', () => {
+    const first = finderNode('folder-z');
+    const second = finderNode('folder-a');
+    const positioned = resolveFinderIconPositions([first, second]);
+    const reordered = resolveFinderIconPositions([second, first]);
+
+    expect(positioned.get('folder-a')).toEqual(defaultFinderIconPosition(0));
+    expect(positioned.get('folder-z')).toEqual(defaultFinderIconPosition(1));
+    expect(reordered).toEqual(positioned);
   });
 
   it('moves a selected group by one free delta while preserving its shape', () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { initialDesktopIconPosition } from './desktop-icon-position';
 import { createDefaultState, sanitizeState, STATE_SCHEMA_VERSION } from './state';
 
 describe('persistent Macintosh state', () => {
@@ -117,6 +118,70 @@ describe('persistent Macintosh state', () => {
       y: 119,
     });
     expect(safe.nodes.find((node) => node.id === 'applications')?.parentId).toBe('desktop');
+  });
+
+  it('materializes identity-derived Desktop positions independently of node array order', () => {
+    const state = createDefaultState();
+    const applications = state.nodes.find((node) => node.id === 'applications');
+    const documents = state.nodes.find((node) => node.id === 'documents');
+    if (!applications || !documents) throw new Error('Missing Desktop position fixtures.');
+    applications.parentId = 'desktop';
+    documents.parentId = 'desktop';
+
+    const reordered = { ...state, nodes: [...state.nodes].reverse() };
+    const originalPositions = new Map(
+      sanitizeState(state).nodes.map((node) => [node.id, node.iconPosition]),
+    );
+    const reorderedPositions = new Map(
+      sanitizeState(reordered).nodes.map((node) => [node.id, node.iconPosition]),
+    );
+
+    for (const nodeId of ['applications', 'documents']) {
+      const position = originalPositions.get(nodeId);
+      expect(position).toEqual(initialDesktopIconPosition(nodeId));
+      expect(Number.isInteger(position?.x)).toBe(true);
+      expect(Number.isInteger(position?.y)).toBe(true);
+      expect(reorderedPositions.get(nodeId)).toEqual(position);
+    }
+  });
+
+  it('keeps required roots inside the canonical node cap', () => {
+    const state = createDefaultState();
+    const timestamp = '2026-07-22T12:00:00.000Z';
+    state.nodes = Array.from({ length: 512 }, (_, index) => ({
+      id: `document-${index}`,
+      parentId: 'desktop',
+      name: `Document ${index}`,
+      kind: 'document' as const,
+      createdAt: timestamp,
+      modifiedAt: timestamp,
+    }));
+
+    const safe = sanitizeState(state);
+
+    expect(safe.nodes).toHaveLength(512);
+    expect(safe.nodes.some((node) => node.id === 'system-disk')).toBe(true);
+    expect(safe.nodes.some((node) => node.id === 'trash')).toBe(true);
+    expect(safe.nodes.some((node) => node.id === 'desktop')).toBe(true);
+    expect(
+      safe.nodes
+        .filter((node) => node.parentId === 'desktop')
+        .every((node) => node.iconPosition !== undefined),
+    ).toBe(true);
+  });
+
+  it('drops forged non-root volume kinds instead of rendering unpersisted Desktop items', () => {
+    const state = createDefaultState();
+    state.nodes.push({
+      id: 'forged-volume',
+      parentId: 'desktop',
+      name: 'Forged Volume',
+      kind: 'disk',
+      createdAt: '2026-07-22T12:00:00.000Z',
+      modifiedAt: '2026-07-22T12:00:00.000Z',
+    });
+
+    expect(sanitizeState(state).nodes.some((node) => node.id === 'forged-volume')).toBe(false);
   });
 
   it('rounds and bounds Finder positions while omitting malformed and root positions', () => {

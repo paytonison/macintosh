@@ -15,8 +15,19 @@ export const defaultFinderIconPosition = (index: number): Point => ({
   y: FINDER_ICON_ORIGIN.y + Math.floor(index / FINDER_ICON_COLUMNS) * FINDER_ICON_STEP.y,
 });
 
-export const resolveFinderIconPosition = (node: VfsNode, index: number): Point =>
-  node.iconPosition ?? defaultFinderIconPosition(index);
+export const resolveFinderIconPositions = (nodes: readonly VfsNode[]): Map<string, Point> => {
+  const fallbackIndex = new Map(
+    [...nodes]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((node, index) => [node.id, index] as const),
+  );
+  return new Map(
+    nodes.map((node) => [
+      node.id,
+      node.iconPosition ?? defaultFinderIconPosition(fallbackIndex.get(node.id) ?? 0),
+    ]),
+  );
+};
 
 export const finderIconCanvasSize = (
   positions: Iterable<Point>,

@@ -14,7 +14,7 @@ import type {
   VfsNode,
   WindowGeometry,
 } from '../../shared/state';
-import { finderIconCanvasSize, resolveFinderIconPosition } from '../model/finder-icon-layout';
+import { finderIconCanvasSize, resolveFinderIconPositions } from '../model/finder-icon-layout';
 import type { VfsItemDragContext } from '../model/vfs-drag';
 import { VfsNodeIcon } from './VfsNodeIcon';
 
@@ -241,9 +241,10 @@ export function FinderWindow({
   } as CSSProperties;
 
   const isDocument = node.kind === 'document';
-  const iconItems = items.map((item, index) => ({
+  const resolvedIconPositions = resolveFinderIconPositions(items);
+  const iconItems = items.map((item) => ({
     item,
-    position: resolveFinderIconPosition(item, index),
+    position: resolvedIconPositions.get(item.id) ?? { x: 0, y: 0 },
   }));
   const iconPositions = new Map(iconItems.map(({ item, position }) => [item.id, position]));
   const iconCanvasSize = finderIconCanvasSize(iconItems.map(({ position }) => position));

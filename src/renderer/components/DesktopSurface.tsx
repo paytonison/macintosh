@@ -10,7 +10,7 @@ import {
 import type { Point } from '../../shared/state';
 import { desktopIconIdsInRectangle } from '../model/desktop-icon-layout';
 import { isTrashDropPoint } from '../model/desktop-drop-target';
-import type { Rectangle } from '../model/vfs';
+import type { Rectangle } from '../../shared/vfs';
 import { VFS_DRAG_TYPE } from '../model/vfs-drag';
 
 export interface IconDropLocation {

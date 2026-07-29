@@ -190,7 +190,7 @@ Scroll controls affect only their own Finder window content. A scroll action mus
 
 ### Icon placement
 
-Icon view begins with an orderly deterministic arrangement, but it does not constrain committed positions to that arrangement.
+Icon view begins with an orderly deterministic arrangement ranked by stable node identity rather than VFS storage order, but it does not constrain committed positions to that arrangement.
 
 - Dragging onto bare icon-view space commits an integer-pixel position relative to that folder's scrollable content.
 - Dragging multiple selected icons applies one shared delta so their relative arrangement remains intact.
@@ -212,7 +212,7 @@ Ordinary Desktop items follow Finder semantics:
 - **Get Info** reports Desktop as their parent;
 - a folder icon is a drop destination, while a document icon blocks the drop instead of allowing it to fall through to bare Desktop behind it.
 
-Ordinary Desktop icon positions are integer-pixel coordinates relative to the actual Desktop surface. They are free-form and never grid-snapped. A drag of several selected Desktop children applies one shared translation so their relative layout remains intact. Committed positions are clamped using the rendered icon footprint so every item remains recoverable inside the usable surface.
+Ordinary Desktop icon positions are explicit persisted integer-pixel coordinates relative to the actual Desktop surface. They are free-form and never grid-snapped or derived from node-array order. A drag of several selected Desktop children applies one shared translation so their relative layout remains intact. Committed positions are clamped using the rendered icon footprint so every item remains recoverable inside the usable surface.
 
 Dragging an ordinary item from Finder to bare Desktop moves its selected top-level VFS roots beneath `desktop` and assigns positions from the drop point. Dragging an ordinary Desktop item to another container moves it and clears its Desktop-relative root position. Descendant layout inside moved folders remains unchanged. Moving an item to Desktop is a filesystem mutation; dropping an item already on Desktop onto another bare Desktop location is placement-only and does not change its parent or timestamps.
 
@@ -237,9 +237,9 @@ Ejection is a transaction:
 
 1. mark the interface as ejecting;
 2. provide sound and stepped visual feedback;
-3. update the last-eject timestamp;
-4. save the complete sanitized state;
-5. request application quit only after the save succeeds.
+3. ask the main process to record the last-eject timestamp;
+4. atomically commit the latest presentation against canonical state;
+5. quit from that same main-process transaction only after the save succeeds.
 
 If saving fails, Macintosh Workbench must not quit. It must report the failure, leave durable state recoverable, and return System Disk to its origin.
 
@@ -263,12 +263,18 @@ not live references to host paths.
 
 Each node has a stable identifier, parent identifier, name, kind, and timestamps. Non-root nodes may also carry bounded icon coordinates. Documents may contain bounded text content. System Disk, Trash, and Desktop are required roots. Desktop has the stable identity `desktop`, kind `desktop`, and a null parent. Root nodes never retain `iconPosition`.
 
-Finder commands operate on the virtual tree only. Host import paths may come only from
-browser-granted `File` objects and must be inspected behind the existing narrow main-process
-boundary. Imported nodes do not retain arbitrary paths or ongoing host access. General host
+Finder commands operate on the virtual tree only. Create, move, duplicate, document, host-import,
+and Trash mutations cross a typed preload boundary and execute against canonical state in the main
+process. Host import paths may come only from browser-granted `File` objects and must be inspected
+behind that boundary; inspection and insertion into the VFS are one serialized main-process
+transaction. Imported nodes do not retain arbitrary paths or ongoing host access. General host
 filesystem browsing or arbitrary path handling remains a separate product and security decision.
 
 Opening, selecting, changing view mode, moving a window, and repositioning icons must not mutate virtual filesystem contents. Finder and same-parent Desktop icon movement change layout metadata only. Filesystem mutations occur only through explicit commands and transfers such as New Folder, Paste, import, cross-container move, or Empty Trash.
+
+The renderer owns selection, hit testing, previews, and proposed layout coordinates. It may persist
+only allowlisted presentation fields and parent-scoped icon positions; it cannot replace node
+identity, hierarchy, names, contents, or timestamps through the presentation channel.
 
 ## Persistence boundary
 
@@ -293,9 +299,11 @@ The following state is transient:
 - startup progress;
 - temporary errors after acknowledgement.
 
-Renderer state is sanitized before persistence and again in the main process. Writes are serialized and atomic. A relaunch must never observe a partially written state file.
+The main process owns canonical durable state. It merges allowlisted renderer presentation patches,
+validates semantic VFS commands, and serializes all resulting atomic writes. Canonical state
+advances only after a write succeeds. A relaunch must never observe a partially written state file.
 
-Valid schema version 1 and version 2 states migrate to version 3 without resetting the desktop or virtual disk. Migration inserts the hidden Desktop root while leaving existing System Disk children in place and preserving names, contents, timestamps, window state, view mode, special icon positions, Finder icon positions, and eject time. Sanitization repairs missing or malformed required roots, removes root `iconPosition` values, and preserves arbitrary bounded positions for Desktop children. Nodes without a saved icon position use a deterministic initial position until the user moves them.
+Valid schema version 1 and version 2 states migrate to version 3 without resetting the desktop or virtual disk. Migration inserts the hidden Desktop root while leaving existing System Disk children in place and preserving names, contents, timestamps, window state, view mode, special icon positions, Finder icon positions, and eject time. Sanitization repairs missing or malformed required roots, removes root `iconPosition` values, and preserves arbitrary bounded positions for Desktop children. A legacy Desktop child without coordinates receives one identity-derived free-form position during sanitization; that materialized position is persisted and never depends on node-array order.
 
 Adding durable fields requires all of the following:
 

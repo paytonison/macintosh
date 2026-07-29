@@ -47,9 +47,10 @@ npm run smoke
 - `src/main/` owns the frameless `BrowserWindow`, state files, IPC validation, and application quit.
 - `src/renderer/` contains the React desktop, Finder components, interaction state, pixel artwork, sound synthesis, and styling.
 - `src/shared/` contains the typed IPC contract and defensive persistent-state schema.
-- Persistent state is written as `macintosh-state.json` inside Electron's per-user application-data directory using a temporary file followed by an atomic rename. The VFS has required System Disk, Trash, and hidden Desktop roots; ordinary desktop items are direct children of Desktop.
+- Persistent state is written as `macintosh-state.json` inside Electron's per-user application-data directory using a temporary file followed by an atomic rename. The VFS has required System Disk, Trash, and hidden Desktop roots; ordinary desktop items are direct children of Desktop and always carry explicit persisted coordinates.
 - The window uses `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, and `webSecurity: true`.
-- The preload exposes narrow state, paste-command, bounded file-import, and quit capabilities; the renderer has no Node.js or direct host-filesystem access. Import paths can only be derived from browser-granted `File` objects created by a user drop or paste, and filesystem inspection stays in the main process.
+- The preload exposes presentation-only persistence plus typed create, move, duplicate, document, import, Trash, paste-command, and eject capabilities. The main process owns the canonical virtual filesystem, serializes each mutation, and commits it atomically before returning the resulting state.
+- The renderer owns selection, hit testing, drag previews, and free-form layout interaction, but it has no Node.js or direct host-filesystem access. Import paths can only be derived from browser-granted `File` objects created by a user drop or paste; host inspection and the resulting VFS import commit occur together in the main process.
 - Navigation and new windows are denied. All code and visuals are bundled locally; there are no CDNs or runtime network requests.
 
 The virtual disk deliberately contains documents and folders only. Application modules such as painting, text editing, and control panels can be added later without widening the preload API.

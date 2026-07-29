@@ -1,10 +1,13 @@
 export const IPC_CHANNELS = {
   loadState: 'macintosh:state:load',
-  saveState: 'macintosh:state:save',
+  savePresentation: 'macintosh:presentation:save',
+  mutateVfs: 'macintosh:vfs:mutate',
   importFiles: 'macintosh:files:import',
   requestPaste: 'macintosh:clipboard:paste',
-  quitAfterEject: 'macintosh:app:quit-after-eject',
+  saveAndQuitAfterEject: 'macintosh:app:save-and-quit-after-eject',
 } as const;
+
+export type IpcChannels = typeof IPC_CHANNELS;
 
 export interface ImportedEntry {
   name: string;
@@ -33,10 +36,29 @@ export interface PasteResult {
   accepted: true;
 }
 
+export interface VfsMutationRequest {
+  command: import('./vfs').VfsCommand;
+  presentation: import('./presentation').PresentationPatch;
+}
+
+export interface ImportFilesOptions {
+  parentId: string;
+  presentation: import('./presentation').PresentationPatch;
+  desktopPlacement?: import('./vfs').DesktopPlacement;
+}
+
 export interface MacintoshAPI {
   loadState: () => Promise<import('./state').MacintoshState>;
-  saveState: (state: import('./state').MacintoshState) => Promise<SaveResult>;
-  importFiles: (files: readonly unknown[]) => Promise<ImportFilesResult>;
+  savePresentation: (
+    presentation: import('./presentation').PresentationPatch,
+  ) => Promise<SaveResult>;
+  mutateVfs: (request: VfsMutationRequest) => Promise<import('./vfs').VfsMutationResult>;
+  importFiles: (
+    files: readonly unknown[],
+    options: ImportFilesOptions,
+  ) => Promise<import('./vfs').VfsMutationResult>;
   requestPaste: () => Promise<PasteResult>;
-  quitAfterEject: () => Promise<QuitResult>;
+  saveAndQuitAfterEject: (
+    presentation: import('./presentation').PresentationPatch,
+  ) => Promise<QuitResult>;
 }

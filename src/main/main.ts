@@ -12,7 +12,14 @@ import path from 'node:path';
 
 import { IPC_CHANNELS } from '../shared/contracts';
 import { createDefaultState, sanitizeState, type MacintoshState } from '../shared/state';
+import {
+  executeVfsCommand,
+  isMergeImportedEntriesCommand,
+  isVfsCommand,
+  type VfsMutationResult,
+} from '../shared/vfs';
 import { inspectImportPaths } from './import-files';
+import { createAuthoritativeStateController } from './state-controller';
 import { createSerializedStateWriter } from './state-save-queue';
 
 const STATE_FILE_NAME = 'macintosh-state.json';
@@ -41,7 +48,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 let mainWindow: BrowserWindow | null = null;
 let applicationIcon: NativeImage | null = null;
 let quitRequested = false;
-let smokeSaveFailuresRemaining = 0;
+let smokeSaveFailureTarget: 'eject' | 'import' | 'presentation' | 'vfs' | null = null;
 
 const getApplicationIcon = (): NativeImage => {
   if (applicationIcon) return applicationIcon;
@@ -104,6 +111,40 @@ const writeStateAtomically = async (state: MacintoshState): Promise<void> => {
 };
 
 const saveState = createSerializedStateWriter(writeStateAtomically);
+const stateController = createAuthoritativeStateController({
+  load: loadState,
+  write: saveState,
+});
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const injectSmokeSaveFailure = (operation: Exclude<typeof smokeSaveFailureTarget, null>): void => {
+  if (!smokeMode || smokeSaveFailureTarget !== operation) return;
+  smokeSaveFailureTarget = null;
+  throw new Error('Injected smoke-test save failure.');
+};
+
+const commitVfsCommand = async (
+  presentation: unknown,
+  command: unknown,
+): Promise<VfsMutationResult> => {
+  if (!isVfsCommand(command)) throw new TypeError('Invalid renderer VFS command.');
+  injectSmokeSaveFailure('vfs');
+  const committed = await stateController.transact(presentation, (state) => {
+    const result = executeVfsCommand(state, command);
+    return {
+      state: result.state,
+      value: {
+        affectedIds: result.affectedIds,
+        addedCount: result.addedCount,
+        skippedCount: result.skippedCount,
+        truncatedCount: result.truncatedCount,
+      },
+    };
+  });
+  return { state: committed.state, ...committed.value };
+};
 
 const assertTrustedRenderer = (event: IpcMainInvokeEvent): void => {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
@@ -118,22 +159,50 @@ const assertTrustedRenderer = (event: IpcMainInvokeEvent): void => {
 const registerIpc = (): void => {
   ipcMain.handle(IPC_CHANNELS.loadState, async (event) => {
     assertTrustedRenderer(event);
-    return loadState();
+    return stateController.load();
   });
 
-  ipcMain.handle(IPC_CHANNELS.saveState, async (event, value: unknown) => {
+  ipcMain.handle(IPC_CHANNELS.savePresentation, async (event, value: unknown) => {
     assertTrustedRenderer(event);
-    if (smokeMode && smokeSaveFailuresRemaining > 0) {
-      smokeSaveFailuresRemaining -= 1;
-      throw new Error('Injected smoke-test save failure.');
-    }
-    await saveState(sanitizeState(value));
+    injectSmokeSaveFailure('presentation');
+    await stateController.savePresentation(value);
     return { ok: true as const };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.mutateVfs, async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    if (!isRecord(value)) throw new TypeError('Invalid VFS mutation request.');
+    return commitVfsCommand(value.presentation, value.command);
   });
 
   ipcMain.handle(IPC_CHANNELS.importFiles, async (event, value: unknown) => {
     assertTrustedRenderer(event);
-    return inspectImportPaths(value);
+    if (!isRecord(value)) throw new TypeError('Invalid host import request.');
+    const request = {
+      type: 'merge-imported-entries',
+      entries: [],
+      parentId: value.parentId,
+      ...(value.desktopPlacement === undefined ? {} : { desktopPlacement: value.desktopPlacement }),
+    };
+    if (!isMergeImportedEntriesCommand(request)) {
+      throw new TypeError('Invalid host import destination.');
+    }
+    injectSmokeSaveFailure('import');
+    const committed = await stateController.transact(value.presentation, async (state) => {
+      const inspected = await inspectImportPaths(value.paths);
+      const command = { ...request, entries: inspected.entries };
+      const result = executeVfsCommand(state, command);
+      return {
+        state: result.state,
+        value: {
+          affectedIds: result.affectedIds,
+          addedCount: result.addedCount,
+          skippedCount: result.skippedCount + inspected.skippedCount,
+          truncatedCount: result.truncatedCount + inspected.truncatedCount,
+        },
+      };
+    });
+    return { state: committed.state, ...committed.value };
   });
 
   ipcMain.handle(IPC_CHANNELS.requestPaste, (event) => {
@@ -142,8 +211,19 @@ const registerIpc = (): void => {
     return { accepted: true as const };
   });
 
-  ipcMain.handle(IPC_CHANNELS.quitAfterEject, (event) => {
+  ipcMain.handle(IPC_CHANNELS.saveAndQuitAfterEject, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    injectSmokeSaveFailure('eject');
+    await stateController.finalize(value, (state) => ({
+      state: {
+        ...state,
+        desktop: {
+          ...state.desktop,
+          lastEjectAt: new Date().toISOString(),
+        },
+      },
+      value: null,
+    }));
     quitRequested = true;
     setTimeout(() => app.quit(), 80);
     return { accepted: true as const };
@@ -1884,7 +1964,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   if (!trashCancelRestored) throw new Error('Cancelled Trash drag committed its preview.');
 
   await pause(260);
-  smokeSaveFailuresRemaining = 1;
+  smokeSaveFailureTarget = 'presentation';
   await window.webContents.executeJavaScript(
     'document.querySelector(\'[data-menu="special"]\')?.click()',
     true,
