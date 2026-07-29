@@ -19,6 +19,12 @@ import {
   resolveFinderIconPosition,
   type FinderIconDragLayout,
 } from '../model/finder-icon-layout';
+import {
+  beginPointerDrag,
+  releasePointerDrag,
+  updatePointerDrag,
+  type PointerDragIntent,
+} from '../model/pointer-drag';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
 
 export interface FinderItemDragContext {
@@ -49,12 +55,10 @@ interface FinderWindowProps {
 
 interface GeometrySession {
   pointerId: number;
-  pointerX: number;
-  pointerY: number;
   captureTarget: HTMLElement;
   original: WindowGeometry;
   current: WindowGeometry;
-  hasMoved: boolean;
+  intent: PointerDragIntent;
 }
 
 const iconForNode = (node: VfsNode): PixelIconName => {
@@ -88,6 +92,11 @@ export function FinderWindow({
   const windowElement = useRef<HTMLElement>(null);
   const dragShadow = useRef<HTMLDivElement>(null);
   const dragReleaseCleanup = useRef<(() => void) | null>(null);
+  const cancellationHandlers = useRef({ onGeometry, onInteractionChange });
+
+  useLayoutEffect(() => {
+    cancellationHandlers.current = { onGeometry, onInteractionChange };
+  }, [onGeometry, onInteractionChange]);
 
   useLayoutEffect(() => {
     const moveSession = drag.current;
@@ -95,18 +104,21 @@ export function FinderWindow({
     if (!moveSession && !resizeSession) return;
     dragReleaseCleanup.current?.();
     dragReleaseCleanup.current = null;
+    drag.current = null;
+    resize.current = null;
     for (const session of [moveSession, resizeSession]) {
       if (session?.captureTarget.hasPointerCapture(session.pointerId)) {
         session.captureTarget.releasePointerCapture(session.pointerId);
       }
     }
-    drag.current = null;
-    resize.current = null;
     windowElement.current?.classList.remove('is-shadow-dragging');
     if (windowElement.current) delete windowElement.current.dataset.windowDragging;
     if (dragShadow.current) dragShadow.current.style.transform = 'translate3d(0, 0, 0)';
-    onInteractionChange(false);
-  }, [interactionCancelToken, onInteractionChange]);
+    if (resizeSession?.intent.phase === 'dragging') {
+      cancellationHandlers.current.onGeometry(windowState.id, resizeSession.original);
+    }
+    cancellationHandlers.current.onInteractionChange(false);
+  }, [interactionCancelToken, windowState.id]);
 
   const clearDragShadow = (): void => {
     windowElement.current?.classList.remove('is-shadow-dragging');
@@ -123,13 +135,19 @@ export function FinderWindow({
     const session = drag.current;
     if (!session || session.pointerId !== pointerId) return;
     removeDragReleaseListeners();
+    drag.current = null;
     if (session.captureTarget.hasPointerCapture(pointerId)) {
       session.captureTarget.releasePointerCapture(pointerId);
     }
-    drag.current = null;
     clearDragShadow();
     onInteractionChange(false);
-    if (commit && session.hasMoved) onGeometry(windowState.id, session.current);
+    if (
+      commit &&
+      releasePointerDrag(session.intent) === 'drag' &&
+      (session.current.x !== session.original.x || session.current.y !== session.original.y)
+    ) {
+      onGeometry(windowState.id, session.current);
+    }
   };
 
   const watchWindowMoveRelease = (pointerId: number): void => {
@@ -168,12 +186,10 @@ export function FinderWindow({
     event.currentTarget.setPointerCapture(event.pointerId);
     const session = {
       pointerId: event.pointerId,
-      pointerX: event.clientX,
-      pointerY: event.clientY,
       captureTarget: event.currentTarget,
       original: windowState,
       current: windowState,
-      hasMoved: false,
+      intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
     };
     if (target === 'drag') {
       drag.current = session;
@@ -186,6 +202,11 @@ export function FinderWindow({
   const moveWindow = (event: ReactPointerEvent<HTMLElement>): void => {
     const session = drag.current;
     if (!session || session.pointerId !== event.pointerId) return;
+    session.intent = updatePointerDrag(session.intent, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (session.intent.phase !== 'dragging') return;
     const surface = windowElement.current?.closest<HTMLElement>('.desktop-surface');
     const maximumWidth = surface?.clientWidth ?? window.innerWidth;
     const maximumHeight = surface?.clientHeight ?? window.innerHeight - 22;
@@ -195,20 +216,19 @@ export function FinderWindow({
         0,
         Math.min(
           maximumWidth - 96,
-          Math.round(session.original.x + event.clientX - session.pointerX),
+          Math.round(session.original.x + event.clientX - session.intent.origin.x),
         ),
       ),
       y: Math.max(
         0,
         Math.min(
           maximumHeight - 28,
-          Math.round(session.original.y + event.clientY - session.pointerY),
+          Math.round(session.original.y + event.clientY - session.intent.origin.y),
         ),
       ),
     };
     session.current = next;
-    session.hasMoved = next.x !== session.original.x || next.y !== session.original.y;
-    if (session.hasMoved && windowElement.current) {
+    if (windowElement.current) {
       windowElement.current.classList.add('is-shadow-dragging');
       windowElement.current.dataset.windowDragging = 'true';
     }
@@ -220,11 +240,24 @@ export function FinderWindow({
   const resizeWindow = (event: ReactPointerEvent<HTMLElement>): void => {
     const session = resize.current;
     if (!session || session.pointerId !== event.pointerId) return;
-    onGeometry(windowState.id, {
-      ...session.original,
-      width: Math.max(300, Math.round(session.original.width + event.clientX - session.pointerX)),
-      height: Math.max(220, Math.round(session.original.height + event.clientY - session.pointerY)),
+    session.intent = updatePointerDrag(session.intent, {
+      x: event.clientX,
+      y: event.clientY,
     });
+    if (session.intent.phase !== 'dragging') return;
+    const next = {
+      ...session.original,
+      width: Math.max(
+        300,
+        Math.round(session.original.width + event.clientX - session.intent.origin.x),
+      ),
+      height: Math.max(
+        220,
+        Math.round(session.original.height + event.clientY - session.intent.origin.y),
+      ),
+    };
+    session.current = next;
+    onGeometry(windowState.id, next);
   };
 
   const releasePointer = (event: ReactPointerEvent<HTMLElement>): void => {
@@ -241,9 +274,24 @@ export function FinderWindow({
     finishWindowMove(event.pointerId, false);
   };
 
-  const endResize = (event: ReactPointerEvent<HTMLElement>): void => {
-    releasePointer(event);
+  const finishResize = (event: ReactPointerEvent<HTMLElement>, commit: boolean): void => {
+    const session = resize.current;
+    if (!session || session.pointerId !== event.pointerId) return;
     resize.current = null;
+    releasePointer(event);
+    if (!commit && session.intent.phase === 'dragging') {
+      onGeometry(windowState.id, session.original);
+    }
+    onInteractionChange(false);
+  };
+
+  const loseResizeCapture = (event: ReactPointerEvent<HTMLElement>): void => {
+    const session = resize.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    resize.current = null;
+    if (session.intent.phase === 'dragging') {
+      onGeometry(windowState.id, session.original);
+    }
     onInteractionChange(false);
   };
 
@@ -455,10 +503,11 @@ export function FinderWindow({
         <button
           aria-label={`Resize ${node.name}`}
           className="window-grow-box"
-          onPointerCancel={endResize}
+          onLostPointerCapture={loseResizeCapture}
+          onPointerCancel={(event) => finishResize(event, false)}
           onPointerDown={(event) => beginGeometry(event, 'resize')}
           onPointerMove={resizeWindow}
-          onPointerUp={endResize}
+          onPointerUp={(event) => finishResize(event, true)}
           type="button"
         />
       </div>

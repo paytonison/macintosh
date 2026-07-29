@@ -134,7 +134,7 @@ try {
   }
 
   console.log(
-    'Electron smoke passed: native The Macintosh identity/icon, external file/folder drop, document paste and duplication, free Finder icon placement, internal folder move, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled Trash drag, free System Disk placement, disk pointer-follow, Trash hover, eject animation, persisted quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, neutral system cursor bindings, thresholded click-hold/drag, off-center pointer alignment, focus-loss cleanup, external file/folder drop, document paste and duplication, free Finder icon placement, internal folder move, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled Trash drag, free System Disk placement, disk pointer-follow, Trash hover, eject animation, persisted quit.',
   );
   console.log(
     'Persistence relaunch passed: Finder geometry, free icon positions, System Disk, and virtual filesystem reloaded.',

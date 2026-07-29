@@ -93,7 +93,21 @@ export default function App() {
   const clipboardNodeIds = useRef<string[]>([]);
   const transferNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hydrated = useRef(false);
+  const pointerSessionActiveRef = useRef(false);
   const clock = useClock();
+
+  const setPointerInteractionActive = useCallback((active: boolean): void => {
+    pointerSessionActiveRef.current = active;
+    setPointerSessionActive(active);
+  }, []);
+
+  const cancelPointerInteractions = useCallback((): void => {
+    if (!pointerSessionActiveRef.current && !finderItemDrag.current) return;
+    pointerSessionActiveRef.current = false;
+    finderItemDrag.current = null;
+    setPointerSessionActive(false);
+    setInteractionCancelToken((current) => current + 1);
+  }, []);
 
   useEffect(() => {
     stateRef.current = state;
@@ -130,6 +144,7 @@ export default function App() {
 
   const reportPersistenceError = useCallback((message: string): void => {
     setOpenMenu(null);
+    pointerSessionActiveRef.current = false;
     setPointerSessionActive(false);
     setInteractionCancelToken((current) => current + 1);
     setPersistenceError(message);
@@ -387,7 +402,7 @@ export default function App() {
   ): void => {
     if (!state) return;
     finderItemDrag.current = context;
-    setPointerSessionActive(true);
+    setPointerInteractionActive(true);
     const nodeIds = context.nodeIds.length > 0 ? context.nodeIds : [id];
     setFinderSelection(new Set(nodeIds));
     setDesktopSelection(new Set());
@@ -478,7 +493,7 @@ export default function App() {
 
   const finishFinderItemDrag = (): void => {
     finderItemDrag.current = null;
-    setPointerSessionActive(false);
+    setPointerInteractionActive(false);
   };
 
   const startIconDrag = (id: DesktopIconId, origin: Point): void => {
@@ -726,12 +741,13 @@ export default function App() {
   }, [importHostFiles, pasteDestinationId, pasteText, systemInputBlocked]);
 
   useEffect(() => {
-    const clearInternalClipboard = (): void => {
+    const loseFocus = (): void => {
       clipboardNodeIds.current = [];
+      cancelPointerInteractions();
     };
-    window.addEventListener('blur', clearInternalClipboard);
-    return () => window.removeEventListener('blur', clearInternalClipboard);
-  }, []);
+    window.addEventListener('blur', loseFocus);
+    return () => window.removeEventListener('blur', loseFocus);
+  }, [cancelPointerInteractions]);
 
   useEffect(() => {
     const preventFileNavigation = (event: DragEvent): void => {
@@ -969,7 +985,7 @@ export default function App() {
           setFinderSelection(new Set());
         }}
         onDropItems={dropItems}
-        onInteractionChange={setPointerSessionActive}
+        onInteractionChange={setPointerInteractionActive}
         vfsCount={state.nodes.length}
       >
         {state.desktop.windows.map((windowState, index) => {
@@ -990,7 +1006,7 @@ export default function App() {
               onItemDragEnd={finishFinderItemDrag}
               onItemOpen={openNode}
               onItemSelect={selectFinderItem}
-              onInteractionChange={setPointerSessionActive}
+              onInteractionChange={setPointerInteractionActive}
               onZoom={zoomWindow}
               selectedIds={finderSelection}
               stackIndex={index}
@@ -1004,7 +1020,7 @@ export default function App() {
             interactionCancelToken={interactionCancelToken}
             keyboardEnabled={keyboardOwner === 'calculator'}
             onClose={closeCalculator}
-            onInteractionChange={setPointerSessionActive}
+            onInteractionChange={setPointerInteractionActive}
           />
         ) : null}
         <DesktopIcon
@@ -1018,7 +1034,7 @@ export default function App() {
           onDragCancel={cancelIconDrag}
           onDragEnd={finishIconDrag}
           onDragStart={startIconDrag}
-          onInteractionChange={setPointerSessionActive}
+          onInteractionChange={setPointerInteractionActive}
           onOpen={openNode}
           onSelect={selectDesktopIcon}
           position={diskPosition}
@@ -1039,7 +1055,7 @@ export default function App() {
           onDragCancel={cancelIconDrag}
           onDragEnd={finishIconDrag}
           onDragStart={startIconDrag}
-          onInteractionChange={setPointerSessionActive}
+          onInteractionChange={setPointerInteractionActive}
           onOpen={openNode}
           onSelect={selectDesktopIcon}
           position={trashPosition}
@@ -1048,13 +1064,26 @@ export default function App() {
           validDropTarget={trashHover}
         />
         {!persistenceError && dialog?.type === 'about' && (
-          <AboutDialog onClose={() => setDialog(null)} />
+          <AboutDialog
+            interactionCancelToken={interactionCancelToken}
+            onClose={() => setDialog(null)}
+            onInteractionChange={setPointerInteractionActive}
+          />
         )}
         {!persistenceError && dialog?.type === 'info' && (
-          <InfoDialog node={dialog.node} onClose={() => setDialog(null)} />
+          <InfoDialog
+            interactionCancelToken={interactionCancelToken}
+            node={dialog.node}
+            onClose={() => setDialog(null)}
+            onInteractionChange={setPointerInteractionActive}
+          />
         )}
         {!persistenceError && dialog?.type === 'eject-tip' && (
-          <EjectTipDialog onClose={() => setDialog(null)} />
+          <EjectTipDialog
+            interactionCancelToken={interactionCancelToken}
+            onClose={() => setDialog(null)}
+            onInteractionChange={setPointerInteractionActive}
+          />
         )}
         {persistenceError && (
           <PersistenceAlert message={persistenceError} onClose={() => setPersistenceError(null)} />

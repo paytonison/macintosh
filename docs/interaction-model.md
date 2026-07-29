@@ -56,6 +56,8 @@ Input has one owner. The following precedence applies from highest to lowest:
 
 A higher-priority context must prevent the same event from also triggering a lower-priority action. Components should use pointer capture, propagation control, and explicit keyboard routing rather than relying on incidental DOM focus.
 
+Authored pointer-session drags remain a press until movement reaches the shared four-pixel Euclidean threshold. Releasing before that threshold is a click; crossing it begins the drag and latches that state until release or cancellation. Pointer capture keeps the session owned when the pointer leaves its source element. Pointer cancellation or losing application focus clears transient interaction state so a later interaction starts cleanly.
+
 Opening a menu temporarily owns pointer interaction inside the menu bar. Clicking outside closes the menu; the underlying click may proceed only when doing so is intentional and tested.
 
 ## Startup and hydration

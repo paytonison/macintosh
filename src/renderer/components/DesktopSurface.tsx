@@ -8,6 +8,12 @@ import {
 } from 'react';
 
 import type { Point } from '../../shared/state';
+import {
+  beginPointerDrag,
+  releasePointerDrag,
+  updatePointerDrag,
+  type PointerDragIntent,
+} from '../model/pointer-drag';
 import { rectanglesOverlap, type Rectangle } from '../model/vfs';
 
 export interface FinderIconDropLocation {
@@ -38,6 +44,7 @@ interface MarqueeState {
   startY: number;
   currentX: number;
   currentY: number;
+  intent: PointerDragIntent;
 }
 
 export function DesktopSurface({
@@ -57,10 +64,10 @@ export function DesktopSurface({
   useLayoutEffect(() => {
     const active = marqueeSession.current;
     if (active) {
+      marqueeSession.current = null;
       if (surface.current?.hasPointerCapture(active.pointerId)) {
         surface.current.releasePointerCapture(active.pointerId);
       }
-      marqueeSession.current = null;
       setMarquee(null);
       onInteractionChange(false);
     }
@@ -159,20 +166,25 @@ export function DesktopSurface({
       startY: pointerY,
       currentX: pointerX,
       currentY: pointerY,
+      intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
     };
     marqueeSession.current = next;
     setMarquee(next);
   };
 
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (!marquee || marquee.pointerId !== event.pointerId) return;
+    const active = marqueeSession.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    const pointer = { x: event.clientX, y: event.clientY };
     const next = {
-      ...marquee,
-      currentX: Math.round(event.clientX),
-      currentY: Math.round(event.clientY),
+      ...active,
+      currentX: Math.round(pointer.x),
+      currentY: Math.round(pointer.y),
+      intent: updatePointerDrag(active.intent, pointer),
     };
     marqueeSession.current = next;
     setMarquee(next);
+    if (next.intent.phase !== 'dragging') return;
     const selection: Rectangle = {
       left: Math.min(next.startX, next.currentX),
       top: Math.min(next.startY, next.currentY),
@@ -198,38 +210,45 @@ export function DesktopSurface({
   };
 
   const pointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (!marquee || marquee.pointerId !== event.pointerId) return;
-    const distance = Math.hypot(
-      marquee.currentX - marquee.startX,
-      marquee.currentY - marquee.startY,
-    );
+    const active = marqueeSession.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    marqueeSession.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    marqueeSession.current = null;
     setMarquee(null);
     onInteractionChange(false);
-    if (distance < 4) onBackgroundClick();
+    if (releasePointerDrag(active.intent) === 'click') onBackgroundClick();
   };
 
   const pointerCancel = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (!marquee || marquee.pointerId !== event.pointerId) return;
+    const active = marqueeSession.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    marqueeSession.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    setMarquee(null);
+    onInteractionChange(false);
+  };
+
+  const lostPointerCapture = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const active = marqueeSession.current;
+    if (!active || active.pointerId !== event.pointerId) return;
     marqueeSession.current = null;
     setMarquee(null);
     onInteractionChange(false);
   };
 
-  const bounds = marquee
-    ? {
-        left: Math.min(marquee.startX, marquee.currentX),
-        top: Math.min(marquee.startY, marquee.currentY) - 24,
-        width: Math.abs(marquee.currentX - marquee.startX),
-        height: Math.abs(marquee.currentY - marquee.startY),
-      }
-    : null;
+  const bounds =
+    marquee?.intent.phase === 'dragging'
+      ? {
+          left: Math.min(marquee.startX, marquee.currentX),
+          top: Math.min(marquee.startY, marquee.currentY) - 24,
+          width: Math.abs(marquee.currentX - marquee.startX),
+          height: Math.abs(marquee.currentY - marquee.startY),
+        }
+      : null;
 
   return (
     <div
@@ -251,6 +270,7 @@ export function DesktopSurface({
       }}
       onDragOver={dragOver}
       onDrop={drop}
+      onLostPointerCapture={lostPointerCapture}
       onPointerCancel={pointerCancel}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}

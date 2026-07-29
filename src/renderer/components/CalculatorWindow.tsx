@@ -15,6 +15,12 @@ import {
   pressCalculatorKey,
   type CalculatorInput,
 } from '../model/calculator';
+import {
+  beginPointerDrag,
+  releasePointerDrag,
+  updatePointerDrag,
+  type PointerDragIntent,
+} from '../model/pointer-drag';
 
 interface CalculatorWindowProps {
   interactionCancelToken: number;
@@ -26,9 +32,9 @@ interface CalculatorWindowProps {
 interface DragSession {
   pointerId: number;
   captureTarget: HTMLDivElement;
-  pointerOrigin: Point;
   windowOrigin: Point;
   current: Point;
+  intent: PointerDragIntent;
 }
 
 interface CalculatorButton {
@@ -89,10 +95,10 @@ export function CalculatorWindow({
   useLayoutEffect(() => {
     const active = drag.current;
     if (!active) return;
+    drag.current = null;
     if (active.captureTarget.hasPointerCapture(active.pointerId)) {
       active.captureTarget.releasePointerCapture(active.pointerId);
     }
-    drag.current = null;
     setPreviewPosition(null);
     onInteractionChange(false);
   }, [interactionCancelToken, onInteractionChange]);
@@ -132,15 +138,20 @@ export function CalculatorWindow({
     drag.current = {
       pointerId: event.pointerId,
       captureTarget: event.currentTarget,
-      pointerOrigin: { x: event.clientX, y: event.clientY },
       windowOrigin: position,
       current: position,
+      intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
     };
   };
 
   const moveDrag = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const session = drag.current;
     if (!session || session.pointerId !== event.pointerId) return;
+    session.intent = updatePointerDrag(session.intent, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (session.intent.phase !== 'dragging') return;
     const surface = windowElement.current?.closest<HTMLElement>('.desktop-surface');
     const width = windowElement.current?.offsetWidth ?? 108;
     const height = windowElement.current?.offsetHeight ?? 172;
@@ -151,14 +162,14 @@ export function CalculatorWindow({
         0,
         Math.min(
           maximumX,
-          Math.round(session.windowOrigin.x + event.clientX - session.pointerOrigin.x),
+          Math.round(session.windowOrigin.x + event.clientX - session.intent.origin.x),
         ),
       ),
       y: Math.max(
         0,
         Math.min(
           maximumY,
-          Math.round(session.windowOrigin.y + event.clientY - session.pointerOrigin.y),
+          Math.round(session.windowOrigin.y + event.clientY - session.intent.origin.y),
         ),
       ),
     };
@@ -169,10 +180,20 @@ export function CalculatorWindow({
   const finishDrag = (event: ReactPointerEvent<HTMLDivElement>, commit: boolean): void => {
     const session = drag.current;
     if (!session || session.pointerId !== event.pointerId) return;
+    drag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    if (commit) setPosition(session.current);
+    if (commit && releasePointerDrag(session.intent) === 'drag') {
+      setPosition(session.current);
+    }
+    setPreviewPosition(null);
+    onInteractionChange(false);
+  };
+
+  const lostPointerCapture = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const session = drag.current;
+    if (!session || session.pointerId !== event.pointerId) return;
     drag.current = null;
     setPreviewPosition(null);
     onInteractionChange(false);
@@ -188,7 +209,7 @@ export function CalculatorWindow({
   return (
     <section
       aria-label="Calculator"
-      className="calculator-window"
+      className={`calculator-window ${previewPosition ? 'is-dragging' : ''}`.trim()}
       data-calculator-window="true"
       onPointerDown={() => windowElement.current?.focus()}
       ref={windowElement}
@@ -201,6 +222,7 @@ export function CalculatorWindow({
       <div
         className="calculator-titlebar"
         data-calculator-drag-handle="true"
+        onLostPointerCapture={lostPointerCapture}
         onPointerCancel={(event) => finishDrag(event, false)}
         onPointerDown={beginDrag}
         onPointerMove={moveDrag}

@@ -201,6 +201,46 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
+  const neutralCursors = (await window.webContents.executeJavaScript(
+    `(() => {
+      const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+      const titlebar = document.querySelector('[data-window-drag-handle="true"]');
+      const close = titlebar?.querySelector('button');
+      const grow = document.querySelector('.window-grow-box');
+      if (
+        !(disk instanceof HTMLElement) ||
+        !(titlebar instanceof HTMLElement) ||
+        !(close instanceof HTMLElement) ||
+        !(grow instanceof HTMLElement)
+      ) return null;
+      return {
+        body: getComputedStyle(document.body).cursor,
+        disk: getComputedStyle(disk).cursor,
+        titlebar: getComputedStyle(titlebar).cursor,
+        close: getComputedStyle(close).cursor,
+        grow: getComputedStyle(grow).cursor
+      };
+    })()`,
+    true,
+  )) as {
+    body: string;
+    disk: string;
+    titlebar: string;
+    close: string;
+    grow: string;
+  } | null;
+  if (
+    !neutralCursors ||
+    neutralCursors.body !== 'default' ||
+    neutralCursors.disk !== 'grab' ||
+    neutralCursors.titlebar !== 'grab' ||
+    neutralCursors.close !== 'default' ||
+    neutralCursors.grow !== 'nwse-resize' ||
+    Object.values(neutralCursors).some((cursor) => cursor.includes('url('))
+  ) {
+    throw new Error(`Neutral cursor bindings are incomplete: ${JSON.stringify(neutralCursors)}.`);
+  }
+
   const initialVfsCount = (await window.webContents.executeJavaScript(
     "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
     true,
@@ -265,6 +305,197 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     pointer: { x: number; y: number };
   } | null;
   if (!calculatorDragStart) throw new Error('Calculator title bar could not be located.');
+
+  const calculatorSubthresholdPoint = {
+    x: calculatorDragStart.pointer.x + 3,
+    y: calculatorDragStart.pointer.y,
+  };
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...calculatorDragStart.pointer });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...calculatorDragStart.pointer,
+  });
+  await pause(70);
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...calculatorSubthresholdPoint,
+  });
+  await pause(50);
+  const calculatorHeldBelowThreshold = (await window.webContents.executeJavaScript(
+    `(() => {
+      const calculator = document.querySelector('[data-calculator-window="true"]');
+      const handle = calculator?.querySelector('[data-calculator-drag-handle="true"]');
+      if (!(calculator instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
+      const rect = calculator.getBoundingClientRect();
+      return {
+        left: rect.left,
+        top: rect.top,
+        dragging: calculator.classList.contains('is-dragging'),
+        outlineVisible: calculator.querySelector('.calculator-drag-outline') !== null,
+        cursor: getComputedStyle(handle).cursor
+      };
+    })()`,
+    true,
+  )) as {
+    left: number;
+    top: number;
+    dragging: boolean;
+    outlineVisible: boolean;
+    cursor: string;
+  } | null;
+  if (
+    !calculatorHeldBelowThreshold ||
+    Math.abs(calculatorHeldBelowThreshold.left - calculatorDragStart.window.left) > 1 ||
+    Math.abs(calculatorHeldBelowThreshold.top - calculatorDragStart.window.top) > 1 ||
+    calculatorHeldBelowThreshold.dragging ||
+    calculatorHeldBelowThreshold.outlineVisible ||
+    calculatorHeldBelowThreshold.cursor !== 'grab'
+  ) {
+    throw new Error(
+      `Calculator began dragging below the movement threshold: ${JSON.stringify(calculatorHeldBelowThreshold)}.`,
+    );
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...calculatorSubthresholdPoint,
+  });
+  await pause(40);
+
+  await window.webContents.executeJavaScript(
+    `(() => {
+      document.body.dataset.macintoshSmokeBlurred = 'false';
+      window.addEventListener(
+        'blur',
+        () => { document.body.dataset.macintoshSmokeBlurred = 'true'; },
+        { once: true }
+      );
+    })()`,
+    true,
+  );
+  const calculatorFocusLossPoint = {
+    x: calculatorDragStart.pointer.x + 24,
+    y: calculatorDragStart.pointer.y + 14,
+  };
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...calculatorDragStart.pointer });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...calculatorDragStart.pointer,
+  });
+  for (let step = 1; step <= 3; step += 1) {
+    const progress = step / 3;
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: Math.round(
+        calculatorDragStart.pointer.x +
+          (calculatorFocusLossPoint.x - calculatorDragStart.pointer.x) * progress,
+      ),
+      y: Math.round(
+        calculatorDragStart.pointer.y +
+          (calculatorFocusLossPoint.y - calculatorDragStart.pointer.y) * progress,
+      ),
+    });
+    await pause(22);
+  }
+  const calculatorFocusLossPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const calculator = document.querySelector('[data-calculator-window="true"]');
+      const handle = calculator?.querySelector('[data-calculator-drag-handle="true"]');
+      if (!(calculator instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
+      return {
+        dragging: calculator.classList.contains('is-dragging'),
+        outlineVisible: calculator.querySelector('.calculator-drag-outline') !== null,
+        cursor: getComputedStyle(handle).cursor
+      };
+    })()`,
+    true,
+  )) as { dragging: boolean; outlineVisible: boolean; cursor: string } | null;
+  if (
+    !calculatorFocusLossPreview?.dragging ||
+    !calculatorFocusLossPreview.outlineVisible ||
+    calculatorFocusLossPreview.cursor !== 'grabbing'
+  ) {
+    throw new Error(
+      `Calculator did not enter the active drag state: ${JSON.stringify(calculatorFocusLossPreview)}.`,
+    );
+  }
+
+  window.blur();
+  let calculatorBlurCancelled = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    calculatorBlurCancelled = (await window.webContents.executeJavaScript(
+      `(() => {
+        const calculator = document.querySelector('[data-calculator-window="true"]');
+        if (!(calculator instanceof HTMLElement)) return false;
+        const rect = calculator.getBoundingClientRect();
+        return document.body.dataset.macintoshSmokeBlurred === 'true' &&
+          !calculator.classList.contains('is-dragging') &&
+          !calculator.querySelector('.calculator-drag-outline') &&
+          Math.abs(rect.left - ${calculatorDragStart.window.left}) <= 1 &&
+          Math.abs(rect.top - ${calculatorDragStart.window.top}) <= 1;
+      })()`,
+      true,
+    )) as boolean;
+    if (calculatorBlurCancelled) break;
+    await pause(25);
+  }
+  window.focus();
+  await pause(60);
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...calculatorFocusLossPoint,
+  });
+  await pause(40);
+  const calculatorAfterFocusLoss = (await window.webContents.executeJavaScript(
+    `(() => {
+      const calculator = document.querySelector('[data-calculator-window="true"]');
+      const handle = calculator?.querySelector('[data-calculator-drag-handle="true"]');
+      if (!(calculator instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
+      const rect = calculator.getBoundingClientRect();
+      return {
+        left: rect.left,
+        top: rect.top,
+        dragging: calculator.classList.contains('is-dragging'),
+        outlineVisible: calculator.querySelector('.calculator-drag-outline') !== null,
+        cursor: getComputedStyle(handle).cursor
+      };
+    })()`,
+    true,
+  )) as {
+    left: number;
+    top: number;
+    dragging: boolean;
+    outlineVisible: boolean;
+    cursor: string;
+  } | null;
+  if (
+    !calculatorBlurCancelled ||
+    !calculatorAfterFocusLoss ||
+    Math.abs(calculatorAfterFocusLoss.left - calculatorDragStart.window.left) > 1 ||
+    Math.abs(calculatorAfterFocusLoss.top - calculatorDragStart.window.top) > 1 ||
+    calculatorAfterFocusLoss.dragging ||
+    calculatorAfterFocusLoss.outlineVisible ||
+    calculatorAfterFocusLoss.cursor !== 'grab'
+  ) {
+    throw new Error(
+      `Calculator drag did not cancel cleanly on focus loss: ${JSON.stringify({
+        calculatorBlurCancelled,
+        calculatorAfterFocusLoss,
+      })}.`,
+    );
+  }
+
   const calculatorDragEnd = {
     x: calculatorDragStart.pointer.x + 48,
     y: calculatorDragStart.pointer.y + 32,
@@ -298,14 +529,23 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     `(() => {
       const calculator = document.querySelector('[data-calculator-window="true"]');
       const outline = calculator?.querySelector('.calculator-drag-outline');
-      if (!(calculator instanceof HTMLElement) || !(outline instanceof HTMLElement)) return null;
+      const handle = calculator?.querySelector('[data-calculator-drag-handle="true"]');
+      if (
+        !(calculator instanceof HTMLElement) ||
+        !(outline instanceof HTMLElement) ||
+        !(handle instanceof HTMLElement)
+      ) return null;
       const windowRect = calculator.getBoundingClientRect();
       const outlineRect = outline.getBoundingClientRect();
       return {
         windowLeft: windowRect.left,
         windowTop: windowRect.top,
         outlineLeft: outlineRect.left,
-        outlineTop: outlineRect.top
+        outlineTop: outlineRect.top,
+        cursor: getComputedStyle(handle).cursor,
+        pointerOutsideCommittedWindow:
+          document.elementFromPoint(${calculatorDragEnd.x}, ${calculatorDragEnd.y})
+            ?.closest('[data-calculator-window="true"]') === null
       };
     })()`,
     true,
@@ -314,13 +554,27 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     windowTop: number;
     outlineLeft: number;
     outlineTop: number;
+    cursor: string;
+    pointerOutsideCommittedWindow: boolean;
   } | null;
   if (
     !calculatorDragPreview ||
     Math.abs(calculatorDragPreview.windowLeft - calculatorDragStart.window.left) > 1 ||
     Math.abs(calculatorDragPreview.windowTop - calculatorDragStart.window.top) > 1 ||
     Math.abs(calculatorDragPreview.outlineLeft - (calculatorDragStart.window.left + 47)) > 2 ||
-    Math.abs(calculatorDragPreview.outlineTop - (calculatorDragStart.window.top + 31)) > 2
+    Math.abs(calculatorDragPreview.outlineTop - (calculatorDragStart.window.top + 31)) > 2 ||
+    Math.abs(
+      calculatorDragEnd.x -
+        (calculatorDragPreview.outlineLeft + 1) -
+        (calculatorDragStart.pointer.x - calculatorDragStart.window.left),
+    ) > 2 ||
+    Math.abs(
+      calculatorDragEnd.y -
+        (calculatorDragPreview.outlineTop + 1) -
+        (calculatorDragStart.pointer.y - calculatorDragStart.window.top),
+    ) > 2 ||
+    calculatorDragPreview.cursor !== 'grabbing' ||
+    !calculatorDragPreview.pointerOutsideCommittedWindow
   ) {
     throw new Error(
       `Calculator drag outline did not track correctly: ${JSON.stringify(calculatorDragPreview)}.`,

@@ -6,6 +6,12 @@ import {
 } from 'react';
 
 import type { Point } from '../../shared/state';
+import {
+  beginPointerDrag,
+  releasePointerDrag,
+  updatePointerDrag,
+  type PointerDragIntent,
+} from '../model/pointer-drag';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
 
 interface DesktopIconProps {
@@ -32,8 +38,7 @@ interface DragSession {
   pointerId: number;
   captureTarget: HTMLButtonElement;
   origin: Point;
-  pointerOrigin: Point;
-  hasMoved: boolean;
+  intent: PointerDragIntent;
 }
 
 export function DesktopIcon({
@@ -65,12 +70,14 @@ export function DesktopIcon({
   useLayoutEffect(() => {
     const active = session.current;
     if (!active) return;
+    session.current = null;
     if (active.captureTarget.hasPointerCapture(active.pointerId)) {
       active.captureTarget.releasePointerCapture(active.pointerId);
     }
-    session.current = null;
     cancellationHandlers.current.onInteractionChange(false);
-    if (active.hasMoved) cancellationHandlers.current.onDragCancel(id);
+    if (releasePointerDrag(active.intent) === 'drag') {
+      cancellationHandlers.current.onDragCancel(id);
+    }
   }, [id, interactionCancelToken]);
 
   const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>): void => {
@@ -82,21 +89,24 @@ export function DesktopIcon({
       pointerId: event.pointerId,
       captureTarget: event.currentTarget,
       origin: position,
-      pointerOrigin: { x: event.clientX, y: event.clientY },
-      hasMoved: false,
+      intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
     };
   };
 
   const pointerMove = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
-    const deltaX = event.clientX - active.pointerOrigin.x;
-    const deltaY = event.clientY - active.pointerOrigin.y;
-    if (!active.hasMoved && Math.hypot(deltaX, deltaY) >= 4) {
-      active.hasMoved = true;
+    const deltaX = event.clientX - active.intent.origin.x;
+    const deltaY = event.clientY - active.intent.origin.y;
+    const previousPhase = active.intent.phase;
+    active.intent = updatePointerDrag(active.intent, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (previousPhase === 'pressed' && active.intent.phase === 'dragging') {
       onDragStart(id, active.origin);
     }
-    if (!active.hasMoved) return;
+    if (active.intent.phase !== 'dragging') return;
     onDrag(
       id,
       { x: Math.round(active.origin.x + deltaX), y: Math.round(active.origin.y + deltaY) },
@@ -107,12 +117,12 @@ export function DesktopIcon({
   const pointerUp = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
+    session.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    session.current = null;
     onInteractionChange(false);
-    if (active.hasMoved) {
+    if (releasePointerDrag(active.intent) === 'drag') {
       onDragEnd(id, { x: event.clientX, y: event.clientY });
     } else {
       onSelect(id, event.shiftKey);
@@ -122,12 +132,20 @@ export function DesktopIcon({
   const pointerCancel = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
+    session.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    onInteractionChange(false);
+    if (releasePointerDrag(active.intent) === 'drag') onDragCancel(id);
+  };
+
+  const lostPointerCapture = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = session.current;
+    if (!active || active.pointerId !== event.pointerId) return;
     session.current = null;
     onInteractionChange(false);
-    if (active.hasMoved) onDragCancel(id);
+    if (releasePointerDrag(active.intent) === 'drag') onDragCancel(id);
   };
 
   const style = {
@@ -152,6 +170,7 @@ export function DesktopIcon({
       data-drop-destination={id}
       data-drop-mode={id === 'trash' ? 'internal' : undefined}
       onDoubleClick={() => onOpen(id)}
+      onLostPointerCapture={lostPointerCapture}
       onPointerCancel={pointerCancel}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}
