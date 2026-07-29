@@ -23,6 +23,7 @@ import { FinderWindow, type FinderItemDragContext } from './components/FinderWin
 import { MenuBar, type MenuDefinition, type MenuEntry } from './components/MenuBar';
 import { StartupScreen } from './components/StartupScreen';
 import { deriveFinderCommandContext, findMenuShortcutEntry } from './model/command-context';
+import { isTrashDropPoint } from './model/desktop-drop-target';
 import { translateFinderIconDrag } from './model/finder-icon-layout';
 import { resolveKeyboardOwner } from './model/input-owner';
 import {
@@ -488,16 +489,10 @@ export default function App() {
     selectDesktopIcon(id, false);
   };
 
-  const isTrashDropPoint = (pointer: Point): boolean => {
+  const pointerTargetsTrash = (pointer: Point): boolean => {
     const trash = document.querySelector<HTMLElement>('[data-desktop-icon="trash"]');
     if (!trash) return false;
-    const bounds = trash.getBoundingClientRect();
-    return (
-      pointer.x >= bounds.left - 8 &&
-      pointer.x <= bounds.right + 8 &&
-      pointer.y >= bounds.top - 8 &&
-      pointer.y <= bounds.bottom + 8
-    );
+    return isTrashDropPoint(pointer, trash);
   };
 
   const previewIconDrag = (id: DesktopIconId, position: Point, pointer: Point): void => {
@@ -508,7 +503,7 @@ export default function App() {
     setPreviewPositions((current) => ({ ...current, [id]: next }));
 
     if (id !== 'system-disk') return;
-    setTrashHover(isTrashDropPoint(pointer));
+    setTrashHover(pointerTargetsTrash(pointer));
   };
 
   const cancelIconDrag = (id: DesktopIconId): void => {
@@ -585,7 +580,7 @@ export default function App() {
 
   const finishIconDrag = (id: DesktopIconId, pointer: Point): void => {
     if (!state) return;
-    if (id === 'system-disk' && isTrashDropPoint(pointer)) {
+    if (id === 'system-disk' && pointerTargetsTrash(pointer)) {
       void ejectSystemDisk();
       return;
     }
@@ -610,6 +605,7 @@ export default function App() {
     });
     delete dragOrigins.current[id];
     setDraggingIcon(null);
+    setTrashHover(false);
   };
 
   const createFolder = useCallback((): void => {

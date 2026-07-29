@@ -8,6 +8,7 @@ import {
 } from 'react';
 
 import type { Point } from '../../shared/state';
+import { isTrashDropPoint } from '../model/desktop-drop-target';
 import { rectanglesOverlap, type Rectangle } from '../model/vfs';
 
 export interface FinderIconDropLocation {
@@ -76,15 +77,21 @@ export function DesktopSurface({
   const resolveDropTarget = (
     target: EventTarget | null,
     external: boolean,
+    pointer: Point,
   ): { destinationId: string; element: HTMLElement } | null => {
-    let element = target instanceof HTMLElement ? target : null;
+    let element = target instanceof Element ? target : null;
     while (element && surface.current?.contains(element)) {
-      const destinationId = element.dataset.dropDestination;
-      if (destinationId) {
-        if (external && element.dataset.dropMode === 'internal') return null;
-        return { destinationId, element };
+      if (element instanceof HTMLElement) {
+        const destinationId = element.dataset.dropDestination;
+        if (destinationId) {
+          if (external && element.dataset.dropMode === 'internal') return null;
+          if (element.dataset.desktopIcon === 'trash' && !isTrashDropPoint(pointer, element)) {
+            return null;
+          }
+          return { destinationId, element };
+        }
+        if (element.dataset.dropBlocked === 'true') return null;
       }
-      if (element.dataset.dropBlocked === 'true') return null;
       element = element.parentElement;
     }
     return null;
@@ -106,7 +113,10 @@ export function DesktopSurface({
     const external = !internal && event.dataTransfer.types.includes('Files');
     if (!external && !internal) return;
     onInteractionChange(true);
-    const target = resolveDropTarget(event.target, external);
+    const target = resolveDropTarget(event.target, external, {
+      x: event.clientX,
+      y: event.clientY,
+    });
     if (!target) {
       clearDropTarget();
       return;
@@ -124,7 +134,10 @@ export function DesktopSurface({
     onInteractionChange(false);
     const nodeIds = parseNodeIds(event.dataTransfer);
     const files = Array.from(event.dataTransfer.files);
-    const target = resolveDropTarget(event.target, nodeIds.length === 0 && files.length > 0);
+    const target = resolveDropTarget(event.target, nodeIds.length === 0 && files.length > 0, {
+      x: event.clientX,
+      y: event.clientY,
+    });
     clearDropTarget();
     if (!target || (nodeIds.length === 0 && files.length === 0)) return;
     event.preventDefault();

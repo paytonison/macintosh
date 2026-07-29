@@ -207,7 +207,10 @@ System Disk and Trash are freely repositionable. Their provisional positions fol
 System Disk drag is the eject gesture:
 
 - During drag, its preview follows the pointer while its committed position remains unchanged.
-- Trash becomes visibly full or highlighted when the pointer enters the valid drop region.
+- Trash becomes visibly full or highlighted when the pointer enters the valid drop region. That
+  region is the stable union of the rendered empty/full Trash artwork plus four CSS pixels of
+  tolerance; the label and the desktop button's distant transparent margins are excluded. The same
+  region governs internal Finder-item drops onto the desktop Trash icon.
 - Releasing away from Trash commits the disk's new desktop position.
 - Releasing on Trash begins ejection.
 - The disk's position immediately before the eject drag remains its durable position after ejection.

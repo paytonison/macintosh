@@ -1,7 +1,12 @@
 import { rasterizeOneBitBitmap, type PixelRun } from '../model/pixel-bitmap';
+import { TRASH_DROP_TOLERANCE_CSS_PX } from '../model/desktop-drop-target';
 
 export type PixelIconName =
   'computer' | 'disk' | 'trash' | 'trash-full' | 'folder' | 'document' | 'system-folder';
+
+// Stable painted-area union for the empty and full Trash drawings. Keeping one
+// box prevents the drop target from changing when hover swaps the bitmap.
+const trashArtworkBounds = { x: 3, y: 3, width: 22, height: 25 } as const;
 
 const drawings: Record<PixelIconName, PixelRun[]> = {
   computer: rasterizeOneBitBitmap({
@@ -211,6 +216,8 @@ interface PixelIconProps {
 }
 
 export function PixelIcon({ name, size = 48, className = '' }: PixelIconProps) {
+  const isTrash = name === 'trash' || name === 'trash-full';
+
   return (
     <svg
       aria-hidden="true"
@@ -221,6 +228,18 @@ export function PixelIcon({ name, size = 48, className = '' }: PixelIconProps) {
       viewBox="0 0 32 32"
       width={size}
     >
+      {isTrash ? (
+        <rect
+          data-trash-drop-bounds="true"
+          data-trash-drop-tolerance={TRASH_DROP_TOLERANCE_CSS_PX}
+          fill="none"
+          height={trashArtworkBounds.height}
+          pointerEvents="none"
+          width={trashArtworkBounds.width}
+          x={trashArtworkBounds.x}
+          y={trashArtworkBounds.y}
+        />
+      ) : null}
       {drawings[name].map((run, index) => (
         <rect
           fill={run.color === 'white' ? '#fff' : '#000'}

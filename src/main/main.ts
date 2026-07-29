@@ -1119,38 +1119,54 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     await writeFile(dragAfterCaptureDestination, image.toPNG());
   }
 
-  const coordinates = (await window.webContents.executeJavaScript(
-    `(() => {
+  type ClientBounds = { left: number; right: number; top: number; bottom: number };
+  type DesktopGeometry = {
+    disk: { x: number; y: number };
+    trash: { x: number; y: number };
+    trashGlyph: ClientBounds;
+    trashLabel: ClientBounds;
+    trashTolerance: number;
+    viewport: { width: number; height: number; devicePixelRatio: number };
+  };
+  const readDesktopGeometry = async (): Promise<DesktopGeometry | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
     const disk = document.querySelector('[data-desktop-icon="system-disk"]');
     const trash = document.querySelector('[data-desktop-icon="trash"]');
-    if (!(disk instanceof HTMLElement) || !(trash instanceof HTMLElement)) return null;
+    const glyph = trash?.querySelector('[data-trash-drop-bounds="true"]');
+    const label = trash?.querySelector('[data-desktop-icon-label="trash"]');
+    if (!(disk instanceof HTMLElement) || !(trash instanceof HTMLElement) || !(glyph instanceof Element) || !(label instanceof HTMLElement)) return null;
     const d = disk.getBoundingClientRect();
     const t = trash.getBoundingClientRect();
+    const g = glyph.getBoundingClientRect();
+    const l = label.getBoundingClientRect();
     return {
       disk: { x: Math.round(d.left + d.width / 2), y: Math.round(d.top + d.height / 2) },
-      trash: { x: Math.round(t.left + t.width / 2), y: Math.round(t.top + t.height / 2) }
+      trash: { x: Math.round(t.left + t.width / 2), y: Math.round(t.top + t.height / 2) },
+      trashGlyph: { left: g.left, right: g.right, top: g.top, bottom: g.bottom },
+      trashLabel: { left: l.left, right: l.right, top: l.top, bottom: l.bottom },
+      trashTolerance: Number(glyph.getAttribute('data-trash-drop-tolerance')),
+      viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio }
     };
   })()`,
-    true,
-  )) as { disk: { x: number; y: number }; trash: { x: number; y: number } } | null;
+      true,
+    )) as DesktopGeometry | null;
+
+  let desktopGeometry = await readDesktopGeometry();
+  const coordinates = desktopGeometry
+    ? { disk: desktopGeometry.disk, trash: desktopGeometry.trash }
+    : null;
 
   if (!coordinates) throw new Error('Smoke test could not locate desktop icons.');
 
-  const sendDrag = async (
+  const moveHeldPointer = async (
     from: { x: number; y: number },
     to: { x: number; y: number },
-    verifyFollowing: boolean,
+    steps: number,
+    verifyFollowing = false,
   ): Promise<void> => {
-    window.webContents.sendInputEvent({ type: 'mouseMove', ...from });
-    window.webContents.sendInputEvent({
-      type: 'mouseDown',
-      button: 'left',
-      clickCount: 1,
-      ...from,
-    });
-
-    for (let step = 1; step <= 12; step += 1) {
-      const progress = step / 12;
+    for (let step = 1; step <= steps; step += 1) {
+      const progress = step / steps;
       const pointer = {
         x: Math.round(from.x + (to.x - from.x) * progress),
         y: Math.round(from.y + (to.y - from.y) * progress),
@@ -1162,26 +1178,59 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         ...pointer,
       });
       await pause(22);
-      if (verifyFollowing && step === 6) {
-        const distance = (await window.webContents.executeJavaScript(
-          `(() => {
-            const disk = document.querySelector('[data-desktop-icon="system-disk"]');
-            if (!(disk instanceof HTMLElement)) return 9999;
-            const rect = disk.getBoundingClientRect();
-            return Math.hypot(rect.left + rect.width / 2 - ${pointer.x}, rect.top + rect.height / 2 - ${pointer.y});
-          })()`,
-          true,
-        )) as number;
+      if (verifyFollowing && step === Math.ceil(steps / 2)) {
+        let distance = Number.POSITIVE_INFINITY;
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          distance = (await window.webContents.executeJavaScript(
+            `(() => {
+              const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+              if (!(disk instanceof HTMLElement)) return 9999;
+              const rect = disk.getBoundingClientRect();
+              return Math.hypot(rect.left + rect.width / 2 - ${pointer.x}, rect.top + rect.height / 2 - ${pointer.y});
+            })()`,
+            true,
+          )) as number;
+          if (distance <= 12) break;
+          await pause(15);
+        }
         if (distance > 12) throw new Error('System Disk did not follow the pointer during drag.');
       }
     }
+  };
 
+  const beginDrag = async (
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    verifyFollowing: boolean,
+  ): Promise<void> => {
+    window.webContents.sendInputEvent({ type: 'mouseMove', ...from });
+    await pause(25);
+    window.webContents.sendInputEvent({
+      type: 'mouseDown',
+      button: 'left',
+      clickCount: 1,
+      ...from,
+    });
+    await pause(25);
+    await moveHeldPointer(from, to, 12, verifyFollowing);
+  };
+
+  const releaseDrag = (to: { x: number; y: number }): void => {
     window.webContents.sendInputEvent({
       type: 'mouseUp',
       button: 'left',
       clickCount: 1,
       ...to,
     });
+  };
+
+  const sendDrag = async (
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    verifyFollowing: boolean,
+  ): Promise<void> => {
+    await beginDrag(from, to, verifyFollowing);
+    releaseDrag(to);
   };
 
   await window.webContents.executeJavaScript(
@@ -1346,57 +1395,459 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   await pause(40);
 
-  const repositionTarget = { x: 137, y: 343 };
-  await sendDrag(coordinates.disk, repositionTarget, true);
-  await pause(260);
-  const diskPositionCommitted = await window.webContents.executeJavaScript(
-    `(() => {
-      const disk = document.querySelector('[data-desktop-icon="system-disk"]');
-      const trash = document.querySelector('[data-desktop-icon="trash"]');
-      if (!(disk instanceof HTMLElement) || !(trash instanceof HTMLElement)) return false;
-      const rect = disk.getBoundingClientRect();
-      const distance = Math.hypot(rect.left + rect.width / 2 - ${repositionTarget.x}, rect.top + rect.height / 2 - ${repositionTarget.y});
-      return distance <= 2 && !trash.classList.contains('is-drop-target');
-    })()`,
-    true,
-  );
-  if (!diskPositionCommitted) {
-    throw new Error('System Disk did not remain at its free desktop position.');
-  }
-  coordinates.disk = repositionTarget;
+  const waitForTrashHighlight = async (expected: boolean): Promise<void> => {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const highlighted = (await window.webContents.executeJavaScript(
+        "document.querySelector('[data-desktop-icon=\"trash\"]')?.classList.contains('is-drop-target') === true",
+        true,
+      )) as boolean;
+      if (highlighted === expected) return;
+      await pause(15);
+    }
+    throw new Error(`Trash highlight did not become ${expected ? 'active' : 'inactive'}.`);
+  };
 
-  window.webContents.sendInputEvent({ type: 'mouseMove', ...coordinates.disk });
+  const trashProbePoints = (geometry: DesktopGeometry) => ({
+    insideEdge: {
+      x: Math.floor(geometry.trashGlyph.right + geometry.trashTolerance - 1),
+      y: Math.round((geometry.trashGlyph.top + geometry.trashGlyph.bottom) / 2),
+    },
+    outsideEdge: {
+      x: Math.ceil(geometry.trashGlyph.right + geometry.trashTolerance + 1),
+      y: Math.round((geometry.trashGlyph.top + geometry.trashGlyph.bottom) / 2),
+    },
+    label: {
+      x: Math.round((geometry.trashLabel.left + geometry.trashLabel.right) / 2),
+      y: Math.round((geometry.trashLabel.top + geometry.trashLabel.bottom) / 2),
+    },
+  });
+
+  const assertRejectedDiskRelease = async (
+    expectedCenter: { x: number; y: number },
+    description: string,
+  ): Promise<void> => {
+    const geometry = await readDesktopGeometry();
+    const inactive = (await window.webContents.executeJavaScript(
+      `(() => {
+        const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+        const trash = document.querySelector('[data-desktop-icon="trash"]');
+        return disk instanceof HTMLElement && trash instanceof HTMLElement &&
+          !disk.classList.contains('is-ejecting') &&
+          !disk.classList.contains('is-dragging') &&
+          !trash.classList.contains('is-drop-target');
+      })()`,
+      true,
+    )) as boolean;
+    if (
+      !geometry ||
+      Math.hypot(geometry.disk.x - expectedCenter.x, geometry.disk.y - expectedCenter.y) > 2 ||
+      !inactive ||
+      quitRequested
+    ) {
+      throw new Error(`${description} incorrectly ejected System Disk.`);
+    }
+  };
+
+  const restoreDefaultDesktopLayout = async (): Promise<DesktopGeometry> => {
+    await window.webContents.executeJavaScript(
+      'document.querySelector(\'[data-menu="special"]\')?.click()',
+      true,
+    );
+    await window.webContents.executeJavaScript(
+      'document.querySelector(\'[data-menu-action="clean-desktop"]\')?.click()',
+      true,
+    );
+    await pause(260);
+    const geometry = await readDesktopGeometry();
+    if (!geometry) throw new Error('Clean Up Desktop did not restore measurable icon geometry.');
+    return geometry;
+  };
+
+  desktopGeometry = await readDesktopGeometry();
+  if (!desktopGeometry || desktopGeometry.trashTolerance !== 4) {
+    throw new Error('Trash artwork geometry or its documented tolerance is unavailable.');
+  }
+
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...desktopGeometry.disk });
   window.webContents.sendInputEvent({
     type: 'mouseDown',
     button: 'left',
     clickCount: 1,
-    ...coordinates.disk,
+    ...desktopGeometry.disk,
   });
-  for (let step = 1; step <= 12; step += 1) {
-    const progress = step / 12;
-    window.webContents.sendInputEvent({
-      type: 'mouseMove',
-      button: 'left',
-      modifiers: ['leftbuttondown'],
-      x: Math.round(coordinates.disk.x + (coordinates.trash.x - coordinates.disk.x) * progress),
-      y: Math.round(coordinates.disk.y + (coordinates.trash.y - coordinates.disk.y) * progress),
-    });
-    await pause(22);
-  }
-
-  await pause(100);
-  const trashIsActive = await window.webContents.executeJavaScript(
-    "document.querySelector('[data-desktop-icon=\"trash\"]')?.classList.contains('is-drop-target') === true",
+  releaseDrag(desktopGeometry.disk);
+  await pause(40);
+  const trashInitiallyUnselected = (await window.webContents.executeJavaScript(
+    "document.querySelector('[data-desktop-icon=\"trash\"]')?.classList.contains('is-selected') === false",
     true,
-  );
-  if (!trashIsActive) throw new Error('Trash did not enter its valid-drop hover state.');
+  )) as boolean;
+  if (!trashInitiallyUnselected) throw new Error('Trash selection precondition could not be set.');
 
+  const trashLabelCenter = trashProbePoints(desktopGeometry).label;
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...trashLabelCenter });
   window.webContents.sendInputEvent({
-    type: 'mouseUp',
+    type: 'mouseDown',
     button: 'left',
     clickCount: 1,
-    ...coordinates.trash,
+    ...trashLabelCenter,
   });
+  releaseDrag(trashLabelCenter);
+  await pause(50);
+  const trashSelected = (await window.webContents.executeJavaScript(
+    "document.querySelector('[data-desktop-icon=\"trash\"]')?.classList.contains('is-selected') === true",
+    true,
+  )) as boolean;
+  if (!trashSelected) throw new Error('Trash label no longer selects the desktop icon.');
+
+  const trashMoveTarget = { x: 520, y: 350 };
+  let probePoints = trashProbePoints(desktopGeometry);
+  await beginDrag(desktopGeometry.disk, probePoints.insideEdge, true);
+  await waitForTrashHighlight(true);
+  const trashHitboxCaptureDestination = process.env.MACINTOSH_SMOKE_TRASH_HITBOX_CAPTURE_PATH;
+  if (trashHitboxCaptureDestination) {
+    const image = await window.webContents.capturePage();
+    await mkdir(path.dirname(trashHitboxCaptureDestination), { recursive: true });
+    await writeFile(trashHitboxCaptureDestination, image.toPNG());
+  }
+  await moveHeldPointer(probePoints.insideEdge, probePoints.outsideEdge, 4);
+  await waitForTrashHighlight(false);
+  releaseDrag(probePoints.outsideEdge);
+  await pause(80);
+  await assertRejectedDiskRelease(probePoints.outsideEdge, 'The outside-edge release');
+
+  const safeDiskPoint = { x: 137, y: 343 };
+  const separatedTrashPoint = { x: 650, y: 430 };
+  desktopGeometry = await restoreDefaultDesktopLayout();
+
+  probePoints = trashProbePoints(desktopGeometry);
+  await beginDrag(desktopGeometry.disk, probePoints.insideEdge, true);
+  await waitForTrashHighlight(true);
+  await moveHeldPointer(probePoints.insideEdge, probePoints.label, 6);
+  await waitForTrashHighlight(false);
+  releaseDrag(probePoints.label);
+  await pause(80);
+  await assertRejectedDiskRelease(probePoints.label, 'The Trash-label release');
+
+  await restoreDefaultDesktopLayout();
+
+  const rejectedInternalTrashDrop = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="welcome"]'
+      );
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const label = trash?.querySelector('[data-desktop-icon-label="trash"]');
+      if (!(source instanceof HTMLElement) || !(trash instanceof HTMLElement) || !(label instanceof HTMLElement)) return null;
+      const sourceBounds = source.getBoundingClientRect();
+      const labelBounds = label.getBoundingClientRect();
+      const data = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', {
+        dataTransfer: data,
+        clientX: sourceBounds.left + sourceBounds.width / 2,
+        clientY: sourceBounds.top + sourceBounds.height / 2,
+        bubbles: true,
+        cancelable: true
+      }));
+      const point = {
+        x: labelBounds.left + labelBounds.width / 2,
+        y: labelBounds.top + labelBounds.height / 2
+      };
+      label.dispatchEvent(new DragEvent('dragover', {
+        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
+      }));
+      const highlighted = trash.classList.contains('is-file-drop-target');
+      label.dispatchEvent(new DragEvent('drop', {
+        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
+      }));
+      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
+      return { highlighted, payload: data.getData('application/x-macintosh-vfs-node-ids') };
+    })()`,
+    true,
+  )) as { highlighted: boolean; payload: string } | null;
+  await pause(100);
+  const rejectedInternalItemRemained = (await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-finder-window="window-system-disk"] [data-vfs-item="welcome"]'
+    ) !== null`,
+    true,
+  )) as boolean;
+  if (
+    !rejectedInternalTrashDrop?.payload ||
+    rejectedInternalTrashDrop.highlighted ||
+    !rejectedInternalItemRemained
+  ) {
+    throw new Error(
+      `The Trash label accepted an internal item: ${JSON.stringify(rejectedInternalTrashDrop)}.`,
+    );
+  }
+
+  const acceptedInternalTrashDrop = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="welcome"]'
+      );
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const glyph = trash?.querySelector('[data-trash-drop-bounds="true"]');
+      if (!(source instanceof HTMLElement) || !(trash instanceof HTMLElement) || !(glyph instanceof Element)) return null;
+      const sourceBounds = source.getBoundingClientRect();
+      const glyphBounds = glyph.getBoundingClientRect();
+      const data = new DataTransfer();
+      source.dispatchEvent(new DragEvent('dragstart', {
+        dataTransfer: data,
+        clientX: sourceBounds.left + sourceBounds.width / 2,
+        clientY: sourceBounds.top + sourceBounds.height / 2,
+        bubbles: true,
+        cancelable: true
+      }));
+      const point = {
+        x: glyphBounds.left + glyphBounds.width / 2,
+        y: glyphBounds.top + glyphBounds.height / 2
+      };
+      glyph.dispatchEvent(new DragEvent('dragover', {
+        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
+      }));
+      const highlighted = trash.classList.contains('is-file-drop-target');
+      glyph.dispatchEvent(new DragEvent('drop', {
+        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
+      }));
+      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
+      return { highlighted, payload: data.getData('application/x-macintosh-vfs-node-ids') };
+    })()`,
+    true,
+  )) as { highlighted: boolean; payload: string } | null;
+  await pause(120);
+  const acceptedInternalItemMoved = (await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-finder-window="window-system-disk"] [data-vfs-item="welcome"]'
+    ) === null`,
+    true,
+  )) as boolean;
+  if (
+    !acceptedInternalTrashDrop?.payload ||
+    !acceptedInternalTrashDrop.highlighted ||
+    !acceptedInternalItemMoved
+  ) {
+    throw new Error(
+      `The rendered Trash glyph rejected an internal item: ${JSON.stringify(acceptedInternalTrashDrop)}.`,
+    );
+  }
+
+  const trashWindowOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return false;
+      trash.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!trashWindowOpened) throw new Error('Trash could not be opened after an internal drop.');
+  await pause(80);
+  const trashWindowState = (await window.webContents.executeJavaScript(
+    `(() => ({
+      windows: document.querySelectorAll('[data-finder-window="window-trash"]').length,
+      containsWelcome:
+        document.querySelector(
+          '[data-finder-window="window-trash"] [data-vfs-item="welcome"]'
+        ) !== null,
+      ejecting:
+        document.querySelector('[data-desktop-icon="system-disk"]')
+          ?.classList.contains('is-ejecting') === true
+    }))()`,
+    true,
+  )) as { windows: number; containsWelcome: boolean; ejecting: boolean };
+  if (
+    trashWindowState.windows !== 1 ||
+    !trashWindowState.containsWelcome ||
+    trashWindowState.ejecting ||
+    quitRequested
+  ) {
+    throw new Error(
+      `Opening Trash crossed interaction behaviors: ${JSON.stringify(trashWindowState)}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[aria-label="Close Trash"]\')?.click()',
+    true,
+  );
+  await pause(50);
+
+  await window.webContents.executeJavaScript(
+    `document.querySelectorAll('[data-finder-window]').forEach((finder) => {
+      if (finder instanceof HTMLElement) finder.style.pointerEvents = 'none';
+    })`,
+    true,
+  );
+  await pause(50);
+  desktopGeometry = await readDesktopGeometry();
+  if (!desktopGeometry) throw new Error('Desktop geometry disappeared during hitbox isolation.');
+
+  await pause(260);
+  const nodesBeforeTrashMove = JSON.stringify((await loadState()).nodes);
+  const nodeCountBeforeTrashMove = (await window.webContents.executeJavaScript(
+    "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
+    true,
+  )) as number;
+  await sendDrag(desktopGeometry.trash, trashMoveTarget, false);
+  await pause(260);
+  desktopGeometry = await readDesktopGeometry();
+  const nodeCountAfterTrashMove = (await window.webContents.executeJavaScript(
+    "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
+    true,
+  )) as number;
+  const nodesAfterTrashMove = JSON.stringify((await loadState()).nodes);
+  if (
+    !desktopGeometry ||
+    Math.hypot(
+      desktopGeometry.trash.x - trashMoveTarget.x,
+      desktopGeometry.trash.y - trashMoveTarget.y,
+    ) > 2 ||
+    nodeCountAfterTrashMove !== nodeCountBeforeTrashMove ||
+    nodesAfterTrashMove !== nodesBeforeTrashMove ||
+    quitRequested
+  ) {
+    throw new Error('Moving Trash did not remain a distinct desktop-layout operation.');
+  }
+  await sendDrag(desktopGeometry.disk, safeDiskPoint, true);
+  await pause(80);
+
+  window.setContentSize(800, 560);
+  await pause(120);
+  desktopGeometry = await readDesktopGeometry();
+  if (
+    !desktopGeometry ||
+    desktopGeometry.viewport.width !== 800 ||
+    desktopGeometry.viewport.height !== 560
+  ) {
+    throw new Error(`Minimum-window geometry was not applied: ${JSON.stringify(desktopGeometry)}.`);
+  }
+  probePoints = trashProbePoints(desktopGeometry);
+  await beginDrag(desktopGeometry.disk, probePoints.insideEdge, true);
+  await waitForTrashHighlight(true);
+  await moveHeldPointer(probePoints.insideEdge, probePoints.outsideEdge, 4);
+  await waitForTrashHighlight(false);
+  releaseDrag(probePoints.outsideEdge);
+  await pause(80);
+  await assertRejectedDiskRelease(probePoints.outsideEdge, 'The minimum-window outside edge');
+
+  desktopGeometry = await readDesktopGeometry();
+  if (!desktopGeometry) throw new Error('Desktop geometry disappeared at minimum window size.');
+  await sendDrag(desktopGeometry.trash, separatedTrashPoint, false);
+  await pause(80);
+  desktopGeometry = await readDesktopGeometry();
+  if (!desktopGeometry) throw new Error('Trash did not move away at minimum window size.');
+  await sendDrag(desktopGeometry.disk, { x: 120, y: 280 }, true);
+  await pause(80);
+  desktopGeometry = await readDesktopGeometry();
+  if (!desktopGeometry) throw new Error('Desktop geometry disappeared while restoring Trash.');
+  await sendDrag(desktopGeometry.trash, trashMoveTarget, false);
+  await pause(80);
+
+  desktopGeometry = await readDesktopGeometry();
+  if (!desktopGeometry) throw new Error('Unscaled desktop geometry could not be measured.');
+  const unscaledViewport = desktopGeometry.viewport;
+  window.webContents.setZoomFactor(1.25);
+  await pause(120);
+  const scaledDropProbe = (await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const glyph = trash?.querySelector('[data-trash-drop-bounds="true"]');
+      const label = trash?.querySelector('[data-desktop-icon-label="trash"]');
+      const surface = document.querySelector('.desktop-surface');
+      if (!(trash instanceof HTMLElement) || !(glyph instanceof Element) || !(label instanceof HTMLElement) || !(surface instanceof HTMLElement)) return null;
+      const glyphBounds = glyph.getBoundingClientRect();
+      const labelBounds = label.getBoundingClientRect();
+      const tolerance = Number(glyph.getAttribute('data-trash-drop-tolerance'));
+      const data = new DataTransfer();
+      data.setData('application/x-macintosh-vfs-node-ids', JSON.stringify(['read-me']));
+      const dragOver = (target, point) => target.dispatchEvent(new DragEvent('dragover', {
+        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
+      }));
+      const inside = {
+        x: glyphBounds.right + tolerance - 1,
+        y: (glyphBounds.top + glyphBounds.bottom) / 2
+      };
+      const outside = { x: glyphBounds.right + tolerance + 1, y: inside.y };
+      const labelPoint = {
+        x: labelBounds.left + labelBounds.width / 2,
+        y: labelBounds.top + labelBounds.height / 2
+      };
+      dragOver(glyph, inside);
+      const insideHighlighted = trash.classList.contains('is-file-drop-target');
+      dragOver(glyph, outside);
+      const outsideRejected = !trash.classList.contains('is-file-drop-target');
+      dragOver(label, labelPoint);
+      const labelRejected = !trash.classList.contains('is-file-drop-target');
+      dragOver(glyph, inside);
+      const dropCommitted = !glyph.dispatchEvent(new DragEvent('drop', {
+        dataTransfer: data, clientX: inside.x, clientY: inside.y, bubbles: true, cancelable: true
+      }));
+      surface.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
+      return {
+        insideHighlighted,
+        outsideRejected,
+        labelRejected,
+        dropCommitted,
+        glyphVisible:
+          glyphBounds.left >= 0 && glyphBounds.right <= window.innerWidth &&
+          glyphBounds.top >= 0 && glyphBounds.bottom <= window.innerHeight,
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio
+        }
+      };
+    })()`,
+    true,
+  )) as {
+    insideHighlighted: boolean;
+    outsideRejected: boolean;
+    labelRejected: boolean;
+    dropCommitted: boolean;
+    glyphVisible: boolean;
+    viewport: { width: number; height: number; devicePixelRatio: number };
+  } | null;
+  if (
+    window.webContents.getZoomFactor() !== 1.25 ||
+    !scaledDropProbe?.insideHighlighted ||
+    !scaledDropProbe.outsideRejected ||
+    !scaledDropProbe.labelRejected ||
+    !scaledDropProbe.dropCommitted ||
+    !scaledDropProbe.glyphVisible ||
+    scaledDropProbe.viewport.width >= unscaledViewport.width ||
+    scaledDropProbe.viewport.height >= unscaledViewport.height
+  ) {
+    throw new Error(`Scaled Trash coordinates failed: ${JSON.stringify(scaledDropProbe)}.`);
+  }
+  await pause(320);
+  const scaledDropPersisted = (await loadState()).nodes.some(
+    (node) => node.id === 'read-me' && node.parentId === 'trash',
+  );
+  if (!scaledDropPersisted) throw new Error('The scaled Trash drop did not commit its VFS move.');
+
+  window.webContents.setZoomFactor(1);
+  window.setContentSize(1152, 768);
+  await pause(140);
+  desktopGeometry = await readDesktopGeometry();
+  if (!desktopGeometry) throw new Error('Desktop geometry did not recover after scaled testing.');
+
+  const repositionTarget = { x: 137, y: 343 };
+  await sendDrag(desktopGeometry.disk, repositionTarget, true);
+  await pause(260);
+  await assertRejectedDiskRelease(repositionTarget, 'The free desktop release');
+  await window.webContents.executeJavaScript(
+    `document.querySelectorAll('[data-finder-window]').forEach((finder) => {
+      if (finder instanceof HTMLElement) finder.style.removeProperty('pointer-events');
+    })`,
+    true,
+  );
+
+  desktopGeometry = await readDesktopGeometry();
+  if (!desktopGeometry) throw new Error('Desktop geometry disappeared before ejection.');
+  const ejectPoint = trashProbePoints(desktopGeometry).insideEdge;
+  await beginDrag(desktopGeometry.disk, ejectPoint, true);
+  await waitForTrashHighlight(true);
+  releaseDrag(ejectPoint);
 
   await pause(55);
   const ejectAnimationStarted = await window.webContents.executeJavaScript(
