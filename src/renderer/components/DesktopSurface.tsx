@@ -14,11 +14,13 @@ import {
   updatePointerDrag,
   type PointerDragIntent,
 } from '../model/pointer-drag';
-import { rectanglesOverlap, type Rectangle } from '../model/vfs';
+import { desktopIconIdsInRectangle } from '../model/desktop-icon-layout';
+import type { Rectangle } from '../model/vfs';
 
-export interface FinderIconDropLocation {
+export interface IconDropLocation {
   parentId: string;
   point: Point;
+  surfaceSize: { width: number; height: number };
 }
 
 export interface DesktopDropTarget {
@@ -30,6 +32,7 @@ export const resolveDesktopDropTarget = (
   surface: HTMLElement | null,
   target: EventTarget | null,
   external: boolean,
+  ignoredNodeIds: ReadonlySet<string> = new Set(),
 ): DesktopDropTarget | null => {
   let element =
     target instanceof HTMLElement
@@ -38,8 +41,17 @@ export const resolveDesktopDropTarget = (
         ? target.parentElement
         : null;
   while (element && surface?.contains(element)) {
+    const nodeId = element.dataset.vfsNodeId;
+    if (nodeId && ignoredNodeIds.has(nodeId)) {
+      element = element.parentElement;
+      continue;
+    }
     const destinationId = element.dataset.dropDestination;
     if (destinationId) {
+      if (ignoredNodeIds.has(destinationId)) {
+        element = element.parentElement;
+        continue;
+      }
       if (external && element.dataset.dropMode === 'internal') return null;
       return { destinationId, element };
     }
@@ -54,12 +66,12 @@ interface DesktopSurfaceProps {
   interactionCancelToken: number;
   vfsCount: number;
   onBackgroundClick: () => void;
-  onMarquee: (ids: Array<'system-disk' | 'trash'>) => void;
+  onMarquee: (ids: string[]) => void;
   onDropItems: (
     destinationId: string,
     nodeIds: string[],
     files: File[],
-    iconLocation: FinderIconDropLocation | null,
+    iconLocation: IconDropLocation | null,
   ) => void;
   onInteractionChange: (active: boolean) => void;
 }
@@ -144,6 +156,10 @@ export function DesktopSurface({
               x: Math.round(event.clientX - bounds.left),
               y: Math.round(event.clientY - bounds.top),
             },
+            surfaceSize: {
+              width: Math.round(bounds.width),
+              height: Math.round(bounds.height),
+            },
           }
         : null,
     );
@@ -186,22 +202,25 @@ export function DesktopSurface({
       right: Math.max(next.startX, next.currentX),
       bottom: Math.max(next.startY, next.currentY),
     };
-    const ids: Array<'system-disk' | 'trash'> = [];
-    surface.current?.querySelectorAll<HTMLElement>('[data-desktop-icon]').forEach((element) => {
+    const icons = [
+      ...(surface.current?.querySelectorAll<HTMLElement>('[data-desktop-icon]') ?? []),
+    ].flatMap((element) => {
+      const id = element.dataset.desktopIcon;
+      if (!id) return [];
       const bounds = element.getBoundingClientRect();
-      if (
-        rectanglesOverlap(selection, {
-          left: bounds.left,
-          top: bounds.top,
-          right: bounds.right,
-          bottom: bounds.bottom,
-        })
-      ) {
-        const id = element.dataset.desktopIcon;
-        if (id === 'system-disk' || id === 'trash') ids.push(id);
-      }
+      return [
+        {
+          id,
+          bounds: {
+            left: bounds.left,
+            top: bounds.top,
+            right: bounds.right,
+            bottom: bounds.bottom,
+          },
+        },
+      ];
     });
-    onMarquee(ids);
+    onMarquee(desktopIconIdsInRectangle(selection, icons));
   };
 
   const pointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
@@ -248,7 +267,8 @@ export function DesktopSurface({
   return (
     <div
       className="desktop-surface"
-      data-drop-destination="system-disk"
+      data-drop-destination="desktop"
+      data-icon-layout-parent="desktop"
       data-vfs-count={vfsCount}
       onDragEnd={() => {
         clearDropTarget();

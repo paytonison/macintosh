@@ -1,7 +1,12 @@
 import type { ImportedEntry } from '../../shared/contracts';
-import type { FinderViewMode, MacintoshState, Point, VfsNode } from '../../shared/state';
+import {
+  MAX_VFS_NODES,
+  type FinderViewMode,
+  type MacintoshState,
+  type Point,
+  type VfsNode,
+} from '../../shared/state';
 
-const MAX_VFS_NODES = 512;
 const MAX_VFS_CONTENT = 192 * 1024;
 
 export interface VfsMutationResult {
@@ -58,7 +63,10 @@ export const descendantsOf = (nodes: VfsNode[], parentId: string): Set<string> =
 };
 
 const isContainer = (node: VfsNode | undefined): boolean =>
-  node?.kind === 'disk' || node?.kind === 'folder' || node?.kind === 'trash';
+  node?.kind === 'desktop' ||
+  node?.kind === 'disk' ||
+  node?.kind === 'folder' ||
+  node?.kind === 'trash';
 
 const cleanName = (value: string): string =>
   value.replaceAll('\0', '').replaceAll('/', ':').trim().slice(0, 96) || 'untitled';
@@ -99,7 +107,14 @@ const topLevelSelection = (nodes: VfsNode[], ids: Iterable<string>): VfsNode[] =
   const selected = new Set(ids);
   const byId = new Map(nodes.map((node) => [node.id, node]));
   return nodes.filter((node) => {
-    if (!selected.has(node.id) || node.id === 'system-disk' || node.id === 'trash') return false;
+    if (
+      !selected.has(node.id) ||
+      node.id === 'desktop' ||
+      node.id === 'system-disk' ||
+      node.id === 'trash'
+    ) {
+      return false;
+    }
     let parentId = node.parentId;
     while (parentId) {
       if (selected.has(parentId)) return false;
@@ -339,6 +354,8 @@ export const addFolder = (
   parentId: string,
   timestamp = new Date().toISOString(),
 ): MacintoshState => {
+  if (!isContainer(state.nodes.find((node) => node.id === parentId))) return state;
+  if (state.nodes.length >= MAX_VFS_NODES) return state;
   const siblings = state.nodes.filter((node) => node.parentId === parentId);
   const names = new Set(siblings.map((node) => node.name));
   let name = 'untitled folder';

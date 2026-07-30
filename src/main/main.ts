@@ -186,23 +186,6 @@ const expectItemCursor = async (
   phase: SmokeCursorPhase,
   label: string,
 ): Promise<void> => {
-  const state = (await window.webContents.executeJavaScript(
-    `(() => {
-      const source = document.querySelector(${JSON.stringify(sourceSelector)});
-      const root = document.querySelector('.macintosh');
-      const target = document.elementFromPoint(${point.x}, ${point.y});
-      if (!(source instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
-      return [
-        getComputedStyle(source).cursor,
-        target instanceof Element ? getComputedStyle(target).cursor : '',
-        target?.closest(${JSON.stringify(sourceSelector)}) === source,
-        source.classList.contains('is-pointer-pressed'),
-        root.classList.contains('is-item-dragging'),
-        root.dataset.itemDragging ?? null
-      ];
-    })()`,
-    true,
-  )) as SmokeCursorState | null;
   const phaseValues = {
     idle: [expected.pointing, expected.pointing, true, false, false, null],
     pressed: [expected.open, expected.open, true, true, false, null],
@@ -210,19 +193,40 @@ const expectItemCursor = async (
     'off-dragging': [expected.closed, expected.closed, false, false, true, 'true'],
     'off-idle': [expected.pointing, expected.arrow, false, false, false, null],
   } satisfies Record<SmokeCursorPhase, SmokeCursorState>;
-  if (!state || phaseValues[phase].some((value, index) => state[index] !== value)) {
-    throw new Error(
-      `${label} cursor state was incorrect: ${JSON.stringify(
-        state
-          ? [
-              smokeCursorName(state[0], expected),
-              smokeCursorName(state[1], expected),
-              ...state.slice(2),
-            ]
-          : null,
-      )}.`,
-    );
+  const deadline = Date.now() + 300;
+  let state: SmokeCursorState | null = null;
+  while (Date.now() < deadline) {
+    state = (await window.webContents.executeJavaScript(
+      `(() => {
+        const source = document.querySelector(${JSON.stringify(sourceSelector)});
+        const root = document.querySelector('.macintosh');
+        const target = document.elementFromPoint(${point.x}, ${point.y});
+        if (!(source instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+        return [
+          getComputedStyle(source).cursor,
+          target instanceof Element ? getComputedStyle(target).cursor : '',
+          target?.closest(${JSON.stringify(sourceSelector)}) === source,
+          source.classList.contains('is-pointer-pressed'),
+          root.classList.contains('is-item-dragging'),
+          root.dataset.itemDragging ?? null
+        ];
+      })()`,
+      true,
+    )) as SmokeCursorState | null;
+    if (state && phaseValues[phase].every((value, index) => state?.[index] === value)) return;
+    await pause(10);
   }
+  throw new Error(
+    `${label} cursor state was incorrect: ${JSON.stringify(
+      state
+        ? [
+            smokeCursorName(state[0], expected),
+            smokeCursorName(state[1], expected),
+            ...state.slice(2),
+          ]
+        : null,
+    )}.`,
+  );
 };
 
 const runFinderItemCursorProbe = async (
@@ -1330,17 +1334,17 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error('Command-N did not use the New Folder menu action.');
   }
 
+  const desktopImportPoint = { x: 121, y: 591 };
   const importDropPoint = (await window.webContents.executeJavaScript(
     `(() => {
-      const content = document.querySelector(
-        '[data-finder-window="window-system-disk"] .window-content'
-      );
-      if (!(content instanceof HTMLElement)) return null;
-      const rect = content.getBoundingClientRect();
-      return {
-        x: Math.round(rect.left + rect.width * 0.82),
-        y: Math.round(rect.top + rect.height * 0.82)
+      const surface = document.querySelector('.desktop-surface');
+      if (!(surface instanceof HTMLElement)) return null;
+      const rect = surface.getBoundingClientRect();
+      const point = {
+        x: Math.round(rect.left + ${desktopImportPoint.x}),
+        y: Math.round(rect.top + ${desktopImportPoint.y})
       };
+      return document.elementFromPoint(point.x, point.y) === surface ? point : null;
     })()`,
     true,
   )) as { x: number; y: number } | null;
@@ -1386,21 +1390,302 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   const externalImport = (await window.webContents.executeJavaScript(
     `(() => {
-      const items = [...document.querySelectorAll('[data-vfs-item]')];
-      const names = items.map((item) => item.textContent?.trim() ?? '');
+      const documentItem = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+      );
+      const folderItem = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Drop Folder"]'
+      );
+      if (!(documentItem instanceof HTMLElement) || !(folderItem instanceof HTMLElement)) {
+        return null;
+      }
       return {
-        documentVisible: names.some((name) => name.includes('Dropped Note.txt')),
-        folderVisible: names.some((name) => name.includes('Drop Folder')),
+        documentPosition: {
+          x: Number(documentItem.dataset.iconX),
+          y: Number(documentItem.dataset.iconY)
+        },
+        folderPosition: {
+          x: Number(folderItem.dataset.iconX),
+          y: Number(folderItem.dataset.iconY)
+        },
         notice: document.querySelector('[data-transfer-notice="true"]')?.textContent?.trim() ?? ''
       };
     })()`,
     true,
-  )) as { documentVisible: boolean; folderVisible: boolean; notice: string };
-  if (!externalImport.documentVisible || !externalImport.folderVisible) {
+  )) as {
+    documentPosition: SmokePoint;
+    folderPosition: SmokePoint;
+    notice: string;
+  } | null;
+  if (
+    !externalImport ||
+    externalImport.documentPosition.x !== desktopImportPoint.x ||
+    externalImport.documentPosition.y !== desktopImportPoint.y ||
+    externalImport.folderPosition.x !== desktopImportPoint.x + 94 ||
+    externalImport.folderPosition.y !== desktopImportPoint.y
+  ) {
     throw new Error(`External file/folder drop failed: ${JSON.stringify(externalImport)}.`);
   }
-  if (!externalImport.notice.startsWith('Copied 3 items to System Disk.')) {
+  if (!externalImport.notice.startsWith('Copied 3 items to Desktop.')) {
     throw new Error(`External drop did not report its result: ${externalImport.notice}.`);
+  }
+
+  const desktopDocumentPoint = (await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+      );
+      if (!(item instanceof HTMLElement)) return null;
+      const bounds = item.getBoundingClientRect();
+      return {
+        x: Math.round(bounds.left + bounds.width / 2),
+        y: Math.round(bounds.top + bounds.height / 2)
+      };
+    })()`,
+    true,
+  )) as SmokePoint | null;
+  if (!desktopDocumentPoint) throw new Error('Imported Desktop document could not be located.');
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...desktopDocumentPoint });
+  window.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', ...desktopDocumentPoint });
+  window.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', ...desktopDocumentPoint });
+  await pause(40);
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'I', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'I', modifiers: ['meta'] });
+  await pause(60);
+  const desktopInfoOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const dialog = document.querySelector('[aria-label="Dropped Note.txt Info"]');
+      return dialog instanceof HTMLElement && dialog.textContent?.includes('Desktop');
+    })()`,
+    true,
+  );
+  if (!desktopInfoOpened) throw new Error('Get Info did not use the selected Desktop document.');
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Dropped Note.txt Info"] .classic-default-button')?.click()`,
+    true,
+  );
+
+  const desktopFolderOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const folder = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Drop Folder"]'
+      );
+      if (!(folder instanceof HTMLElement)) return false;
+      folder.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!desktopFolderOpened) throw new Error('Imported Desktop folder could not be opened.');
+  await pause(80);
+  const desktopFolderHierarchyVisible = await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Drop Folder window"] [data-vfs-item]')
+      ?.textContent?.includes('Nested Note.txt') === true`,
+    true,
+  );
+  if (!desktopFolderHierarchyVisible) {
+    throw new Error('The imported Desktop folder did not preserve its hierarchy.');
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Close Drop Folder"]')?.click()`,
+    true,
+  );
+  await pause(40);
+
+  const systemDiskDropPoint = (await window.webContents.executeJavaScript(
+    `(() => {
+      const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+      if (!(disk instanceof HTMLElement)) return null;
+      const bounds = disk.getBoundingClientRect();
+      return {
+        x: Math.round(bounds.left + bounds.width / 2),
+        y: Math.round(bounds.top + bounds.height / 2)
+      };
+    })()`,
+    true,
+  )) as SmokePoint | null;
+  if (!systemDiskDropPoint) throw new Error('System Disk could not be located for direct import.');
+  window.webContents.debugger.attach('1.3');
+  try {
+    const dragData = { items: [], files: [importDocument], dragOperationsMask: 1 };
+    for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      await window.webContents.debugger.sendCommand('Input.dispatchDragEvent', {
+        type,
+        ...systemDiskDropPoint,
+        data: dragData,
+      });
+    }
+  } finally {
+    window.webContents.debugger.detach();
+  }
+  await pause(220);
+  const directSystemDiskImport = (await window.webContents.executeJavaScript(
+    `(() => ({
+      visible: [...document.querySelectorAll(
+        '[data-finder-window="window-system-disk"] [data-vfs-item]'
+      )].some((item) => item.textContent?.includes('Dropped Note.txt')),
+      notice: document.querySelector('[data-transfer-notice="true"]')?.textContent?.trim() ?? ''
+    }))()`,
+    true,
+  )) as { visible: boolean; notice: string };
+  if (
+    !directSystemDiskImport.visible ||
+    !directSystemDiskImport.notice.startsWith('Copied 1 item to System Disk.')
+  ) {
+    throw new Error(`Direct System Disk import failed: ${JSON.stringify(directSystemDiskImport)}.`);
+  }
+
+  const documentBlockCoordinates = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]'
+      );
+      const target = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+      );
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(source instanceof HTMLElement) || !(target instanceof HTMLElement) || !(root instanceof HTMLElement)) {
+        return null;
+      }
+      const center = (element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          x: Math.round(bounds.left + bounds.width / 2),
+          y: Math.round(bounds.top + bounds.height / 2)
+        };
+      };
+      return {
+        source: center(source),
+        destination: center(target),
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
+    })()`,
+    true,
+  )) as { source: SmokePoint; destination: SmokePoint; vfsCount: number } | null;
+  if (!documentBlockCoordinates) {
+    throw new Error('Desktop document drop-block coordinates were unavailable.');
+  }
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...documentBlockCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...documentBlockCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: documentBlockCoordinates.source.x + offset,
+      y: documentBlockCoordinates.source.y,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...documentBlockCoordinates.destination,
+  });
+  await pause(40);
+  const documentDropPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const documentItem = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+      );
+      const surface = document.querySelector('.desktop-surface');
+      const root = document.querySelector('.macintosh');
+      if (!(documentItem instanceof HTMLElement) || !(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) {
+        return null;
+      }
+      return {
+        highlighted:
+          documentItem.classList.contains('is-file-drop-target') ||
+          surface.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(documentItem).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...documentBlockCoordinates.destination,
+  });
+  await pause(80);
+  const documentDropStayedPut = await window.webContents.executeJavaScript(
+    `(() => {
+      const root = document.querySelector('[data-vfs-count]');
+      return root instanceof HTMLElement &&
+        Number(root.dataset.vfsCount || 0) === ${documentBlockCoordinates.vfsCount} &&
+        document.querySelector(
+          '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]'
+        ) !== null &&
+        document.querySelector('[data-desktop-vfs-item="applications"]') === null;
+    })()`,
+    true,
+  );
+  if (
+    !documentDropPreview?.pointerOwned ||
+    documentDropPreview.cursor !== cursorBindings.expected.closed ||
+    documentDropPreview.highlighted ||
+    !documentDropStayedPut
+  ) {
+    throw new Error(
+      `A Desktop document did not block an active internal drop: ${JSON.stringify(documentDropPreview)}.`,
+    );
+  }
+
+  const hostTrashProbe = (await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(trash instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      const bounds = trash.getBoundingClientRect();
+      return {
+        point: {
+          x: Math.round(bounds.left + bounds.width / 2),
+          y: Math.round(bounds.top + bounds.height / 2)
+        },
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
+    })()`,
+    true,
+  )) as { point: SmokePoint; vfsCount: number } | null;
+  if (!hostTrashProbe) throw new Error('Trash could not be located for the host-drop probe.');
+  let hostTrashHighlighted: boolean;
+  window.webContents.debugger.attach('1.3');
+  try {
+    const dragData = { items: [], files: [importDocument], dragOperationsMask: 1 };
+    for (const type of ['dragEnter', 'dragOver']) {
+      await window.webContents.debugger.sendCommand('Input.dispatchDragEvent', {
+        type,
+        ...hostTrashProbe.point,
+        data: dragData,
+      });
+    }
+    await pause(40);
+    hostTrashHighlighted = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-desktop-icon="trash"]')
+        ?.classList.contains('is-file-drop-target') === true`,
+      true,
+    )) as boolean;
+    await window.webContents.debugger.sendCommand('Input.dispatchDragEvent', {
+      type: 'drop',
+      ...hostTrashProbe.point,
+      data: dragData,
+    });
+  } finally {
+    window.webContents.debugger.detach();
+  }
+  await pause(100);
+  const hostTrashVfsCount = (await window.webContents.executeJavaScript(
+    `Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)`,
+    true,
+  )) as number;
+  if (hostTrashHighlighted || hostTrashVfsCount !== hostTrashProbe.vfsCount) {
+    throw new Error('Trash accepted a host-file drop.');
   }
 
   const clipboardPasteHandled = await window.webContents.executeJavaScript(
@@ -1418,7 +1703,9 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   const selectedImport = await window.webContents.executeJavaScript(
     `(() => {
-      const item = [...document.querySelectorAll('[data-vfs-item]')].find(
+      const item = [...document.querySelectorAll(
+        '[data-finder-window="window-system-disk"] [data-vfs-item]'
+      )].find(
         (candidate) => candidate.textContent?.includes('Dropped Note.txt')
       );
       if (!(item instanceof HTMLElement)) return false;
@@ -1610,6 +1897,222 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error('Returning to icon view did not restore the free Finder position.');
   }
 
+  const desktopInternalInitial = { x: 713, y: 627 };
+  const finderToDesktopCoordinates = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="utilities"]'
+      );
+      const surface = document.querySelector('.desktop-surface');
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(source instanceof HTMLElement) || !(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) {
+        return null;
+      }
+      const sourceBounds = source.getBoundingClientRect();
+      const surfaceBounds = surface.getBoundingClientRect();
+      const hotspot = { x: 29, y: 17 };
+      const destination = {
+        x: Math.round(surfaceBounds.left + ${desktopInternalInitial.x} + hotspot.x),
+        y: Math.round(surfaceBounds.top + ${desktopInternalInitial.y} + hotspot.y)
+      };
+      if (document.elementFromPoint(destination.x, destination.y) !== surface) return null;
+      return {
+        source: {
+          x: Math.round(sourceBounds.left + hotspot.x),
+          y: Math.round(sourceBounds.top + hotspot.y)
+        },
+        destination,
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
+    })()`,
+    true,
+  )) as { source: SmokePoint; destination: SmokePoint; vfsCount: number } | null;
+  if (!finderToDesktopCoordinates) {
+    throw new Error('Finder-to-Desktop drag coordinates were unavailable.');
+  }
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...finderToDesktopCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...finderToDesktopCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: finderToDesktopCoordinates.source.x + offset,
+      y: finderToDesktopCoordinates.source.y,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...finderToDesktopCoordinates.destination,
+  });
+  await pause(40);
+  const finderToDesktopPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const surface = document.querySelector('.desktop-surface');
+      const root = document.querySelector('.macintosh');
+      if (!(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: surface.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(surface).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...finderToDesktopCoordinates.destination,
+  });
+  if (
+    !finderToDesktopPreview?.highlighted ||
+    !finderToDesktopPreview.pointerOwned ||
+    finderToDesktopPreview.cursor !== cursorBindings.expected.closed
+  ) {
+    throw new Error(
+      `Finder-to-Desktop drag did not retain pointer ownership: ${JSON.stringify(finderToDesktopPreview)}.`,
+    );
+  }
+  await pause(120);
+  const movedDesktopItem = (await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector('[data-desktop-vfs-item="utilities"]');
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(item instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        x: Number(item.dataset.iconX),
+        y: Number(item.dataset.iconY),
+        vfsCount: Number(root.dataset.vfsCount || 0),
+        notice: document.querySelector('[data-transfer-notice="true"]')?.textContent?.trim() ?? ''
+      };
+    })()`,
+    true,
+  )) as { x: number; y: number; vfsCount: number; notice: string } | null;
+  if (
+    !movedDesktopItem ||
+    movedDesktopItem.x !== desktopInternalInitial.x ||
+    movedDesktopItem.y !== desktopInternalInitial.y ||
+    movedDesktopItem.vfsCount !== finderToDesktopCoordinates.vfsCount ||
+    !movedDesktopItem.notice.startsWith('Moved 1 item to Desktop.')
+  ) {
+    throw new Error(
+      `Finder item did not become a positioned Desktop child: ${JSON.stringify(movedDesktopItem)}.`,
+    );
+  }
+
+  const desktopInternalFinal = { x: 593, y: 649 };
+  const desktopRepositionCoordinates = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector('[data-desktop-vfs-item="utilities"]');
+      const surface = document.querySelector('.desktop-surface');
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(source instanceof HTMLElement) || !(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) {
+        return null;
+      }
+      const sourceBounds = source.getBoundingClientRect();
+      const surfaceBounds = surface.getBoundingClientRect();
+      const hotspot = { x: 23, y: 15 };
+      const destination = {
+        x: Math.round(surfaceBounds.left + ${desktopInternalFinal.x} + hotspot.x),
+        y: Math.round(surfaceBounds.top + ${desktopInternalFinal.y} + hotspot.y)
+      };
+      if (document.elementFromPoint(destination.x, destination.y) !== surface) return null;
+      return {
+        source: {
+          x: Math.round(sourceBounds.left + hotspot.x),
+          y: Math.round(sourceBounds.top + hotspot.y)
+        },
+        destination,
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
+    })()`,
+    true,
+  )) as { source: SmokePoint; destination: SmokePoint; vfsCount: number } | null;
+  if (!desktopRepositionCoordinates) {
+    throw new Error('Desktop reposition coordinates were unavailable.');
+  }
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...desktopRepositionCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...desktopRepositionCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: desktopRepositionCoordinates.source.x + offset,
+      y: desktopRepositionCoordinates.source.y,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...desktopRepositionCoordinates.destination,
+  });
+  await pause(40);
+  const desktopRepositionPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const surface = document.querySelector('.desktop-surface');
+      const root = document.querySelector('.macintosh');
+      if (!(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: surface.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(surface).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...desktopRepositionCoordinates.destination,
+  });
+  if (
+    !desktopRepositionPreview?.highlighted ||
+    !desktopRepositionPreview.pointerOwned ||
+    desktopRepositionPreview.cursor !== cursorBindings.expected.closed
+  ) {
+    throw new Error(
+      `Desktop reposition did not retain pointer ownership: ${JSON.stringify(desktopRepositionPreview)}.`,
+    );
+  }
+  await pause(100);
+  const repositionedDesktopItem = (await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector('[data-desktop-vfs-item="utilities"]');
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(item instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        x: Number(item.dataset.iconX),
+        y: Number(item.dataset.iconY),
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
+    })()`,
+    true,
+  )) as { x: number; y: number; vfsCount: number } | null;
+  if (
+    !repositionedDesktopItem ||
+    repositionedDesktopItem.x !== desktopInternalFinal.x ||
+    repositionedDesktopItem.y !== desktopInternalFinal.y ||
+    repositionedDesktopItem.vfsCount !== desktopRepositionCoordinates.vfsCount
+  ) {
+    throw new Error(
+      `Desktop item did not commit its free reposition: ${JSON.stringify(repositionedDesktopItem)}.`,
+    );
+  }
+
   const importCaptureDestination = process.env.MACINTOSH_SMOKE_IMPORT_CAPTURE_PATH;
   if (importCaptureDestination) {
     const image = await window.webContents.capturePage();
@@ -1619,9 +2122,12 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   const internalFolderCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
-      const items = [...document.querySelectorAll('[data-vfs-item]')];
-      const source = items.find((item) => item.textContent?.includes('Drop Folder'));
-      const destination = document.querySelector('[data-vfs-item="documents"]');
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="system-folder"]'
+      );
+      const destination = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="documents"]'
+      );
       if (!(source instanceof HTMLElement) || !(destination instanceof HTMLElement)) return null;
       const center = (element) => {
         const bounds = element.getBoundingClientRect();
@@ -1665,9 +2171,12 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   await pause(40);
   const internalFolderPreview = (await window.webContents.executeJavaScript(
     `(() => {
-      const items = [...document.querySelectorAll('[data-vfs-item]')];
-      const source = items.find((item) => item.textContent?.includes('Drop Folder'));
-      const destination = document.querySelector('[data-vfs-item="documents"]');
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="system-folder"]'
+      );
+      const destination = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="documents"]'
+      );
       const root = document.querySelector('.macintosh');
       if (!(source instanceof HTMLElement) || !(destination instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
       return {
@@ -1694,12 +2203,106 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }
   await pause(120);
   const movedFolderHidden = await window.webContents.executeJavaScript(
-    `![...document.querySelectorAll('[data-vfs-item]')].some(
-      (item) => item.textContent?.includes('Drop Folder')
-    )`,
+    `document.querySelector(
+      '[data-finder-window="window-system-disk"] [data-vfs-item="system-folder"]'
+    ) === null`,
     true,
   );
   if (!movedFolderHidden) throw new Error('Internal folder drop did not move the folder.');
+
+  const internalTrashCoordinates = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="welcome"]'
+      );
+      const destination = document.querySelector('[data-desktop-icon="trash"]');
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(source instanceof HTMLElement) || !(destination instanceof HTMLElement) || !(root instanceof HTMLElement)) {
+        return null;
+      }
+      const center = (element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          x: Math.round(bounds.left + bounds.width / 2),
+          y: Math.round(bounds.top + bounds.height / 2)
+        };
+      };
+      return {
+        source: center(source),
+        destination: center(destination),
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
+    })()`,
+    true,
+  )) as { source: SmokePoint; destination: SmokePoint; vfsCount: number } | null;
+  if (!internalTrashCoordinates) {
+    throw new Error('Internal Trash drag coordinates were unavailable.');
+  }
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...internalTrashCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...internalTrashCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: internalTrashCoordinates.source.x + offset,
+      y: internalTrashCoordinates.source.y,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...internalTrashCoordinates.destination,
+  });
+  await pause(40);
+  const internalTrashPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const root = document.querySelector('.macintosh');
+      if (!(trash instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: trash.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(trash).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...internalTrashCoordinates.destination,
+  });
+  if (
+    !internalTrashPreview?.highlighted ||
+    !internalTrashPreview.pointerOwned ||
+    internalTrashPreview.cursor !== cursorBindings.expected.closed
+  ) {
+    throw new Error(
+      `Internal Trash drop did not retain pointer ownership: ${JSON.stringify(internalTrashPreview)}.`,
+    );
+  }
+  await pause(100);
+  const internalTrashMove = (await window.webContents.executeJavaScript(
+    `(() => {
+      const root = document.querySelector('[data-vfs-count]');
+      return root instanceof HTMLElement &&
+        Number(root.dataset.vfsCount || 0) === ${internalTrashCoordinates.vfsCount} &&
+        document.querySelector(
+          '[data-finder-window="window-system-disk"] [data-vfs-item="welcome"]'
+        ) === null &&
+        (document.querySelector('[data-transfer-notice="true"]')?.textContent?.trim() ?? '')
+          .startsWith('Moved 1 item to Trash.');
+    })()`,
+    true,
+  )) as boolean;
+  if (!internalTrashMove) throw new Error('Internal document drop did not move into Trash.');
 
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['meta'] });
   window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['meta'] });
@@ -2238,11 +2841,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   await pause(260);
   smokeSaveFailuresRemaining = 1;
   await window.webContents.executeJavaScript(
-    'document.querySelector(\'[data-menu="special"]\')?.click()',
+    'document.querySelector(\'[data-menu="view"]\')?.click()',
     true,
   );
   await window.webContents.executeJavaScript(
-    'document.querySelector(\'[data-menu-action="clean-desktop"]\')?.click()',
+    'document.querySelector(\'[data-menu-action="view-list"]\')?.click()',
     true,
   );
   await pause(20);
@@ -2310,6 +2913,15 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }
   await window.webContents.executeJavaScript(
     'document.querySelector(\'[aria-label="Persistence error"] button\')?.click()',
+    true,
+  );
+  await pause(40);
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu="view"]\')?.click()',
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu-action="view-icons"]\')?.click()',
     true,
   );
   await pause(40);
@@ -2383,13 +2995,28 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
 const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
   await waitForRenderer(window);
-  const proof = await window.webContents.executeJavaScript(
+  const geometryProof = (await window.webContents.executeJavaScript(
     `(() => {
     const disk = document.querySelector('[data-desktop-icon="system-disk"]');
     const root = document.querySelector('[data-vfs-count]');
     const finder = document.querySelector('[data-finder-window="window-applications"]');
     const applications = document.querySelector('[data-vfs-item="applications"]');
-    if (!(disk instanceof HTMLElement) || !(root instanceof HTMLElement) || !(finder instanceof HTMLElement) || !(applications instanceof HTMLElement)) return null;
+    const desktopDocument = document.querySelector(
+      '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+    );
+    const desktopFolder = document.querySelector(
+      '[data-desktop-vfs-item][aria-label="Drop Folder"]'
+    );
+    const desktopUtilities = document.querySelector('[data-desktop-vfs-item="utilities"]');
+    if (
+      !(disk instanceof HTMLElement) ||
+      !(root instanceof HTMLElement) ||
+      !(finder instanceof HTMLElement) ||
+      !(applications instanceof HTMLElement) ||
+      !(desktopDocument instanceof HTMLElement) ||
+      !(desktopFolder instanceof HTMLElement) ||
+      !(desktopUtilities instanceof HTMLElement)
+    ) return null;
     const rect = disk.getBoundingClientRect();
     return {
       loaded: document.body.dataset.stateLoaded === 'true',
@@ -2399,13 +3026,91 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
       diskY: Number.parseFloat(disk.style.getPropertyValue('--icon-y')),
       applicationsX: Number(applications.dataset.iconX),
       applicationsY: Number(applications.dataset.iconY),
+      desktopDocumentX: Number(desktopDocument.dataset.iconX),
+      desktopDocumentY: Number(desktopDocument.dataset.iconY),
+      desktopFolderX: Number(desktopFolder.dataset.iconX),
+      desktopFolderY: Number(desktopFolder.dataset.iconY),
+      desktopUtilitiesX: Number(desktopUtilities.dataset.iconX),
+      desktopUtilitiesY: Number(desktopUtilities.dataset.iconY),
       vfsCount: Number(root.dataset.vfsCount || 0),
       windowLeft: Number.parseFloat(finder.style.left),
       windowTop: Number.parseFloat(finder.style.top)
     };
   })()`,
     true,
+  )) as Record<string, unknown> | null;
+
+  const desktopDocumentOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+      );
+      if (!(item instanceof HTMLElement)) return false;
+      item.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
   );
+  await pause(80);
+  const desktopDocumentContent = desktopDocumentOpened
+    ? await window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Dropped Note.txt window"] .document-sheet')
+          ?.textContent ?? null`,
+        true,
+      )
+    : null;
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Close Dropped Note.txt"]')?.click()`,
+    true,
+  );
+  await pause(40);
+
+  const desktopFolderOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Drop Folder"]'
+      );
+      if (!(item instanceof HTMLElement)) return false;
+      item.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
+  );
+  await pause(80);
+  const desktopFolderNestedVisible = desktopFolderOpened
+    ? await window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Drop Folder window"] [data-vfs-item]')
+          ?.textContent?.includes('Nested Note.txt') === true`,
+        true,
+      )
+    : false;
+  const desktopNestedDocumentOpened = desktopFolderNestedVisible
+    ? await window.webContents.executeJavaScript(
+        `(() => {
+          const item = document.querySelector(
+            '[aria-label="Drop Folder window"] [data-vfs-item]'
+          );
+          if (!(item instanceof HTMLElement)) return false;
+          item.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+          return true;
+        })()`,
+        true,
+      )
+    : false;
+  await pause(80);
+  const desktopNestedDocumentContent = desktopNestedDocumentOpened
+    ? await window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Nested Note.txt window"] .document-sheet')
+          ?.textContent ?? null`,
+        true,
+      )
+    : null;
+  const proof = {
+    ...geometryProof,
+    desktopDocumentContent,
+    desktopFolderNestedVisible,
+    desktopNestedDocumentContent,
+  };
 
   const destination = path.join(app.getPath('userData'), PROBE_FILE_NAME);
   await writeFile(destination, `${JSON.stringify(proof, null, 2)}\n`, { mode: 0o600 });

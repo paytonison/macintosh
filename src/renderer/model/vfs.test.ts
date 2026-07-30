@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createDefaultState } from '../../shared/state';
+import { createDefaultState, MAX_VFS_NODES, type VfsNode } from '../../shared/state';
+import { placeImportedDesktopRoots } from './desktop-icon-layout';
 import {
   addFolder,
   duplicateNodes,
@@ -156,6 +157,45 @@ describe('virtual Finder helpers', () => {
     expect(refused.affectedIds).toEqual([]);
   });
 
+  it('moves a System Disk child to the first-class Desktop root', () => {
+    const state = createDefaultState();
+    const moved = moveNodes(state, ['applications'], 'desktop', '2026-07-22T12:00:00.000Z');
+
+    expect(moved.affectedIds).toEqual(['applications']);
+    expect(moved.state.nodes.find((node) => node.id === 'applications')).toMatchObject({
+      parentId: 'desktop',
+      modifiedAt: '2026-07-22T12:00:00.000Z',
+    });
+  });
+
+  it('resolves case-insensitive name collisions on Desktop without overwriting', () => {
+    const state = createDefaultState();
+    const documents = state.nodes.find((node) => node.id === 'documents');
+    const applications = state.nodes.find((node) => node.id === 'applications');
+    if (!documents || !applications) throw new Error('Missing collision fixtures.');
+    documents.parentId = 'desktop';
+    documents.name = 'Applications';
+
+    const moved = moveNodes(state, ['applications'], 'desktop');
+
+    expect(moved.state.nodes.find((node) => node.id === 'documents')?.name).toBe('Applications');
+    expect(moved.state.nodes.find((node) => node.id === 'applications')).toMatchObject({
+      parentId: 'desktop',
+      name: 'Applications copy',
+    });
+  });
+
+  it('keeps every required root immovable', () => {
+    const state = createDefaultState();
+    const moved = moveNodes(state, ['desktop', 'system-disk', 'trash'], 'desktop');
+    const duplicated = duplicateNodes(state, ['desktop', 'system-disk', 'trash'], 'desktop');
+
+    expect(moved.state).toBe(state);
+    expect(moved.affectedIds).toEqual([]);
+    expect(duplicated.state).toBe(state);
+    expect(duplicated.affectedIds).toEqual([]);
+  });
+
   it('places icons freely without changing filesystem metadata', () => {
     const state = createDefaultState();
     const before = state.nodes.find((node) => node.id === 'applications');
@@ -168,6 +208,72 @@ describe('virtual Finder helpers', () => {
     expect(after?.parentId).toBe('system-disk');
     expect(after?.modifiedAt).toBe(before?.modifiedAt);
     expect(positioned.nodes).toHaveLength(state.nodes.length);
+  });
+
+  it('repositions an item within Desktop without changing its parent or timestamps', () => {
+    const state = createDefaultState();
+    const applications = state.nodes.find((node) => node.id === 'applications');
+    if (!applications) throw new Error('Missing Desktop placement fixture.');
+    applications.parentId = 'desktop';
+    applications.iconPosition = { x: 83, y: 47 };
+    const before = { ...applications };
+
+    const positioned = placeFinderIcons(state, 'desktop', [
+      { nodeId: 'applications', position: { x: 173, y: 119 } },
+    ]);
+
+    expect(positioned.nodes.find((node) => node.id === 'applications')).toEqual({
+      ...before,
+      iconPosition: { x: 173, y: 119 },
+    });
+  });
+
+  it('positions imported Desktop roots while leaving their nested hierarchy intact', () => {
+    const imported = mergeImportedEntries(
+      createDefaultState(),
+      [
+        {
+          name: 'Drop Folder',
+          kind: 'folder',
+          createdAt: '2026-07-22T12:00:00.000Z',
+          modifiedAt: '2026-07-22T12:00:00.000Z',
+          children: [
+            {
+              name: 'Nested Note.txt',
+              kind: 'document',
+              content: 'nested',
+              createdAt: '2026-07-22T12:00:00.000Z',
+              modifiedAt: '2026-07-22T12:00:00.000Z',
+            },
+          ],
+        },
+        {
+          name: 'Dropped Note.txt',
+          kind: 'document',
+          content: 'top level',
+          createdAt: '2026-07-22T12:00:00.000Z',
+          modifiedAt: '2026-07-22T12:00:00.000Z',
+        },
+      ],
+      'desktop',
+    );
+    const positioned = placeFinderIcons(
+      imported.state,
+      'desktop',
+      placeImportedDesktopRoots(
+        imported.affectedIds,
+        { x: 173, y: 119 },
+        { width: 800, height: 538 },
+      ),
+    );
+    const folder = positioned.nodes.find((node) => node.name === 'Drop Folder');
+    const document = positioned.nodes.find((node) => node.name === 'Dropped Note.txt');
+    const nested = positioned.nodes.find((node) => node.parentId === folder?.id);
+
+    expect(folder).toMatchObject({ parentId: 'desktop', iconPosition: { x: 173, y: 119 } });
+    expect(document).toMatchObject({ parentId: 'desktop', iconPosition: { x: 267, y: 119 } });
+    expect(nested).toMatchObject({ name: 'Nested Note.txt', content: 'nested' });
+    expect(nested?.iconPosition).toBeUndefined();
   });
 
   it('moves a root without carrying its old parent-relative position', () => {
@@ -193,6 +299,55 @@ describe('virtual Finder helpers', () => {
     expect(
       moved.state.nodes.find((node) => node.id === 'sample-application')?.iconPosition,
     ).toEqual({ x: 91, y: 77 });
+  });
+
+  it('clears a Desktop-relative root position when moving to another container', () => {
+    const state = createDefaultState();
+    const applications = state.nodes.find((node) => node.id === 'applications');
+    if (!applications) throw new Error('Missing Desktop move fixture.');
+    applications.parentId = 'desktop';
+    applications.iconPosition = { x: 173, y: 119 };
+
+    const moved = moveNodes(state, ['applications'], 'system-disk', '2026-07-22T12:00:00.000Z');
+
+    expect(moved.state.nodes.find((node) => node.id === 'applications')).toMatchObject({
+      parentId: 'system-disk',
+      modifiedAt: '2026-07-22T12:00:00.000Z',
+    });
+    expect(
+      moved.state.nodes.find((node) => node.id === 'applications')?.iconPosition,
+    ).toBeUndefined();
+  });
+
+  it('creates folders on Desktop but refuses non-container parents', () => {
+    const state = createDefaultState();
+    const onDesktop = addFolder(state, 'desktop', '2026-07-22T12:00:00.000Z');
+    const inDocument = addFolder(state, 'welcome', '2026-07-22T12:00:00.000Z');
+
+    expect(onDesktop.nodes.at(-1)).toMatchObject({
+      parentId: 'desktop',
+      name: 'untitled folder',
+    });
+    expect(inDocument).toBe(state);
+  });
+
+  it('refuses to create a transient folder beyond the durable node cap', () => {
+    const state = createDefaultState();
+    const timestamp = '2026-07-22T12:00:00.000Z';
+    const fillers = Array.from(
+      { length: MAX_VFS_NODES - state.nodes.length },
+      (_, index): VfsNode => ({
+        id: `capacity-${index}`,
+        parentId: 'system-disk',
+        name: `Capacity ${index}`,
+        kind: 'document',
+        createdAt: timestamp,
+        modifiedAt: timestamp,
+      }),
+    );
+    const full = { ...state, nodes: [...state.nodes, ...fillers] };
+
+    expect(addFolder(full, 'desktop', timestamp)).toBe(full);
   });
 
   it('duplicates selected documents with their contents', () => {

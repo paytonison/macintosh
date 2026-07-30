@@ -272,7 +272,8 @@ export function InfoDialog({
   node,
   onClose,
   onInteractionChange,
-}: MovableDialogProps & { node: VfsNode }) {
+  where,
+}: MovableDialogProps & { node: VfsNode; where: string }) {
   return (
     <ClassicDialog
       interactionCancelToken={interactionCancelToken}
@@ -293,7 +294,7 @@ export function InfoDialog({
           </div>
           <div>
             <dt>Where:</dt>
-            <dd>System Disk</dd>
+            <dd>{where}</dd>
           </div>
           <div>
             <dt>Created:</dt>

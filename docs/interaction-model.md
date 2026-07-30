@@ -58,7 +58,7 @@ A higher-priority context must prevent the same event from also triggering a low
 
 Authored pointer-session drags remain a press until movement reaches the shared four-pixel Euclidean threshold. Releasing before that threshold is a click; crossing it begins the drag and latches that state until release or cancellation. Pointer capture keeps the session owned when the pointer leaves its source element. Pointer cancellation or losing application focus clears transient interaction state so a later interaction starts cleanly.
 
-Cursor feedback mirrors that ownership without changing gesture semantics. Every authored cursor uses a white interior with a crisp black outline. The normal cursor is a 1-bit System 1-style arrow. Finder files and folders, together with the current desktop items System Disk and Trash, show a 1-bit pointing finger while any part of their icon-and-label region is hovered. A primary-button press changes immediately to an open hand and keeps it until the shared drag threshold is crossed. An active item drag uses a closed fist latched for the entire pointer-captured drag, including after the pointer leaves its source. Pointer-up, pointer cancellation, lost pointer capture, or application-focus cancellation clears the pressed or dragging state immediately and restores the pointing finger when the pointer remains over an eligible item or the arrow otherwise. Native drag-and-drop remains reserved for explicit host-file imports; internal Finder item movement uses the authored pointer session so platform drag feedback cannot replace the closed-fist cursor.
+Cursor feedback mirrors that ownership without changing gesture semantics. Every authored cursor uses a white interior with a crisp black outline. The normal cursor is a 1-bit System 1-style arrow. Finder and desktop files and folders, together with System Disk and Trash, show a 1-bit pointing finger while any part of their icon-and-label region is hovered. A primary-button press changes immediately to an open hand and keeps it until the shared drag threshold is crossed. An active item drag uses a closed fist latched for the entire pointer-captured drag, including after the pointer leaves its source. Pointer-up, pointer cancellation, lost pointer capture, or application-focus cancellation clears the pressed or dragging state immediately and restores the pointing finger when the pointer remains over an eligible item or the arrow otherwise. Native drag-and-drop remains reserved for explicit host-file imports; internal virtual-filesystem item movement uses the authored pointer session so platform drag feedback cannot replace the closed-fist cursor.
 
 Opening a menu temporarily owns pointer interaction inside the menu bar. Clicking outside closes the menu; the underlying click may proceed only when doing so is intentional and tested.
 
@@ -204,7 +204,21 @@ Icon view begins with an orderly deterministic arrangement, but it does not cons
 
 ## Desktop icons and drag behavior
 
-The desktop contains System Disk and Trash.
+The desktop contains System Disk, Trash, and the visible children of a reserved Desktop virtual-filesystem root. The Desktop root is a durable container, not a visible icon or an openable Finder window.
+
+Desktop files and folders use the same selection, Open, and Get Info commands as Finder items. Double-clicking a desktop item opens it. Desktop marquee selection includes every overlapping visible desktop icon, including ordinary files and folders.
+
+Internal desktop movement uses the authored pointer session:
+
+- Dragging onto bare desktop space moves a Finder item into Desktop or repositions an item already there.
+- A same-parent drag changes only the item's parent-scoped desktop position; it does not alter its timestamp, name, contents, or descendants.
+- Dragging multiple selected items applies one bounded shared delta so their relative arrangement remains intact.
+- Dropping onto a desktop folder, System Disk, or Trash performs the corresponding virtual-filesystem move instead of a bare-desktop placement.
+- A desktop document consumes the drop without accepting it; it must not allow the event to fall through to bare Desktop.
+- An item and its descendants are invalid destinations for that item's drag.
+- Cancellation or release outside a valid destination changes neither layout nor filesystem state.
+
+An explicit host drop onto bare desktop space imports bounded virtual copies into Desktop and places the imported roots at and near the drop point. Multiple roots use a deterministic bounded, non-overlapping layout while space remains available. A direct drop onto a folder or System Disk imports into that explicit target instead. Host drops onto Trash remain rejected.
 
 System Disk and Trash are freely repositionable. Their provisional positions follow the pointer during drag and become durable when the drag commits.
 
@@ -226,7 +240,7 @@ Ejection is a transaction:
 
 If saving fails, Macintosh Workbench must not quit. It must report the failure, leave durable state recoverable, and return System Disk to its origin.
 
-Repositioning either desktop icon has no hidden filesystem effect.
+Repositioning System Disk or Trash has no hidden filesystem effect.
 
 ## Dialogs and alerts
 
@@ -244,7 +258,7 @@ The virtual filesystem is local application state. A user may copy host files or
 that state through an explicit drop or paste, but the imported nodes are bounded virtual copies,
 not live references to host paths.
 
-Each node has a stable identifier, parent identifier, name, kind, and timestamps. Non-root nodes may also carry bounded Finder icon coordinates. Documents may contain bounded text content. System Disk and Trash are required roots.
+Each node has a stable identifier, parent identifier, name, kind, and timestamps. Non-root nodes may also carry bounded parent-scoped icon coordinates. Documents may contain bounded text content. System Disk, Trash, and the hidden Desktop container are required roots.
 
 Finder commands operate on the virtual tree only. Host import paths may come only from
 browser-granted `File` objects and must be inspected behind the existing narrow main-process
@@ -255,10 +269,10 @@ Opening, selecting, changing view mode, moving a window, and repositioning icons
 
 ## Persistence boundary
 
-The following state is durable in schema version 2:
+The following state is durable in schema version 3:
 
 - System Disk and Trash positions;
-- Finder icon positions within disks, folders, and Trash;
+- icon positions within Desktop, disks, folders, and Trash;
 - Finder window identity, geometry, and stack order;
 - Finder view mode;
 - virtual filesystem nodes and document content;
@@ -277,7 +291,7 @@ The following state is transient:
 
 Renderer state is sanitized before persistence and again in the main process. Writes are serialized and atomic. A relaunch must never observe a partially written state file.
 
-Schema version 1 states migrate to version 2 without resetting the desktop or virtual disk. Nodes without a saved icon position use the deterministic initial arrangement until the user moves them.
+Schema version 1 and 2 states migrate to version 3 without resetting the desktop or virtual disk. Migration adds the hidden Desktop root when needed. Desktop children without a saved icon position receive a stable, bounded position derived from their node identity; other nodes continue to use their deterministic parent layout until the user moves them.
 
 Adding durable fields requires all of the following:
 
