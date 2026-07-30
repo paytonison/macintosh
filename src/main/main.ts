@@ -160,6 +160,23 @@ interface SmokePoint {
   y: number;
 }
 
+interface SmokeWindowAnimation {
+  phase: 'opening' | 'closing';
+  animationName: string;
+  duration: string;
+  timingFunction: string;
+  keyframeTransforms: string[];
+  transformOrigin: string;
+  expectedTransformOrigin: string;
+  offsetX: string;
+  offsetY: string;
+  expectedOffsetX: string;
+  expectedOffsetY: string;
+  boxShadow: string;
+  mounted: boolean;
+  endedWhileMounted: boolean;
+}
+
 interface SmokeCursorValues {
   arrow: string;
   pointing: string;
@@ -607,6 +624,173 @@ const waitForRenderer = async (window: BrowserWindow): Promise<void> => {
     await pause(50);
   }
   throw new Error('Renderer did not become ready in time.');
+};
+
+const observeFinderWindowAnimation = async (
+  window: BrowserWindow,
+  windowLabel: string,
+  sourceSelector: string,
+  phase: SmokeWindowAnimation['phase'],
+  run: () => void | Promise<void>,
+): Promise<SmokeWindowAnimation | null> => {
+  await window.webContents.executeJavaScript(
+    `(() => {
+      window.__macintoshSmokeWindowAnimation = new Promise((resolve) => {
+        const surface = document.querySelector('.desktop-surface');
+        if (!(surface instanceof HTMLElement)) {
+          resolve(null);
+          return;
+        }
+        const animationAttribute = ${JSON.stringify(`data-${phase}`)};
+        const expectedAnimationName = ${JSON.stringify(
+          phase === 'opening' ? 'finder-window-open' : 'finder-window-close',
+        )};
+        let settled = false;
+        let animationElement = null;
+        let animationEndHandler = null;
+        let timeoutId;
+        const settle = (value) => {
+          if (settled) return;
+          settled = true;
+          observer.disconnect();
+          clearTimeout(timeoutId);
+          animationElement?.removeEventListener('animationend', animationEndHandler);
+          resolve(value);
+        };
+        const inspect = () => {
+          const finder = [...document.querySelectorAll('[data-finder-window]')].find(
+            (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
+          );
+          const source = document.querySelector(${JSON.stringify(sourceSelector)});
+          if (
+            !(finder instanceof HTMLElement) ||
+            !(source instanceof HTMLElement) ||
+            finder.getAttribute(animationAttribute) !== 'true'
+          ) return false;
+          observer.disconnect();
+          const style = getComputedStyle(finder);
+          const activeAnimation = finder.getAnimations().find(
+            (animation) => animation.animationName === expectedAnimationName
+          );
+          const effect = activeAnimation?.effect;
+          const keyframes = effect && typeof effect.getKeyframes === 'function'
+            ? effect.getKeyframes()
+            : [];
+          const sourceBounds = source.getBoundingClientRect();
+          const surfaceBounds = surface.getBoundingClientRect();
+          const originX = Math.round(
+            sourceBounds.left + sourceBounds.width / 2 - surfaceBounds.left
+          );
+          const originY = Math.round(
+            sourceBounds.top + sourceBounds.height / 2 - surfaceBounds.top
+          );
+          const snapshot = {
+            phase: ${JSON.stringify(phase)},
+            animationName: style.animationName,
+            duration: style.animationDuration,
+            timingFunction: style.animationTimingFunction,
+            keyframeTransforms: keyframes.map((keyframe) => String(keyframe.transform ?? '')),
+            transformOrigin: style.transformOrigin,
+            expectedTransformOrigin: finder.offsetWidth / 2 + 'px ' + finder.offsetHeight / 2 + 'px',
+            offsetX: style.getPropertyValue('--window-animation-offset-x').trim(),
+            offsetY: style.getPropertyValue('--window-animation-offset-y').trim(),
+            expectedOffsetX: Math.round(
+              originX - (finder.offsetLeft + finder.offsetWidth / 2)
+            ) + 'px',
+            expectedOffsetY: Math.round(
+              originY - (finder.offsetTop + finder.offsetHeight / 2)
+            ) + 'px',
+            boxShadow: style.boxShadow,
+            mounted: finder.isConnected
+          };
+          animationElement = finder;
+          animationEndHandler = (event) => {
+            if (event.target !== finder || event.animationName !== expectedAnimationName) return;
+            settle({ ...snapshot, endedWhileMounted: finder.isConnected });
+          };
+          finder.addEventListener('animationend', animationEndHandler);
+          return true;
+        };
+        const observer = new MutationObserver(() => inspect());
+        observer.observe(surface, {
+          attributes: true,
+          attributeFilter: ['class', 'data-opening', 'data-closing'],
+          childList: true,
+          subtree: true
+        });
+        if (inspect()) return;
+        timeoutId = setTimeout(() => settle(null), 500);
+      });
+    })()`,
+    true,
+  );
+  await run();
+  return window.webContents.executeJavaScript(
+    'window.__macintoshSmokeWindowAnimation',
+    true,
+  ) as Promise<SmokeWindowAnimation | null>;
+};
+
+const assertFinderWindowAnimation = (
+  animation: SmokeWindowAnimation | null,
+  phase: SmokeWindowAnimation['phase'],
+  label: string,
+): void => {
+  const expectedName = phase === 'opening' ? 'finder-window-open' : 'finder-window-close';
+  const expectedFirstScale = phase === 'opening' ? 'scale(0.12)' : 'scale(1)';
+  const expectedLastScale = phase === 'opening' ? 'scale(1)' : 'scale(0.12)';
+  const firstTransform = animation?.keyframeTransforms.at(0) ?? '';
+  const lastTransform = animation?.keyframeTransforms.at(-1) ?? '';
+  const originTransform = phase === 'opening' ? firstTransform : lastTransform;
+  const fullFrameTransform = phase === 'opening' ? lastTransform : firstTransform;
+  const expectedOriginTranslation = animation
+    ? `translate3d(${animation.expectedOffsetX}, ${animation.expectedOffsetY}, 0px)`
+    : '';
+  if (
+    animation?.phase !== phase ||
+    animation.animationName !== expectedName ||
+    animation.duration !== '0.02s' ||
+    !['steps(6)', 'steps(6, end)'].includes(animation.timingFunction) ||
+    !firstTransform.includes(expectedFirstScale) ||
+    !lastTransform.includes(expectedLastScale) ||
+    originTransform !== `${expectedOriginTranslation} scale(0.12)` ||
+    fullFrameTransform !== 'translate(0px) scale(1)' ||
+    animation.transformOrigin !== animation.expectedTransformOrigin ||
+    animation.offsetX !== animation.expectedOffsetX ||
+    animation.offsetY !== animation.expectedOffsetY ||
+    (animation.offsetX === '0px' && animation.offsetY === '0px') ||
+    !animation.boxShadow.startsWith('rgb(0, 0, 0) ') ||
+    !animation.boxShadow.endsWith(' 3px 3px 0px 0px') ||
+    !animation.mounted ||
+    !animation.endedWhileMounted
+  ) {
+    throw new Error(`${label} animation was incorrect: ${JSON.stringify(animation)}.`);
+  }
+};
+
+const waitForFinderWindowState = async (
+  window: BrowserWindow,
+  windowLabel: string,
+  expected: 'settled' | 'absent',
+): Promise<void> => {
+  const deadline = Date.now() + 800;
+  while (Date.now() < deadline) {
+    const reached = await window.webContents.executeJavaScript(
+      `(() => {
+        const finder = [...document.querySelectorAll('[data-finder-window]')].find(
+          (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
+        );
+        return ${JSON.stringify(expected)} === 'absent'
+          ? finder === undefined
+          : finder instanceof HTMLElement &&
+              finder.dataset.opening !== 'true' && finder.dataset.closing !== 'true';
+      })()`,
+      true,
+    );
+    if (reached) return;
+    await pause(10);
+  }
+  throw new Error(`${windowLabel} did not reach its expected ${expected} state.`);
 };
 
 const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
@@ -1465,19 +1649,21 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
 
-  const desktopFolderOpened = await window.webContents.executeJavaScript(
-    `(() => {
-      const folder = document.querySelector(
-        '[data-desktop-vfs-item][aria-label="Drop Folder"]'
-      );
-      if (!(folder instanceof HTMLElement)) return false;
-      folder.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
-      return true;
-    })()`,
-    true,
+  const desktopFolderSelector = '[data-desktop-vfs-item][aria-label="Drop Folder"]';
+  const desktopFolderOpenAnimation = await observeFinderWindowAnimation(
+    window,
+    'Drop Folder window',
+    desktopFolderSelector,
+    'opening',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(desktopFolderSelector)})
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
   );
-  if (!desktopFolderOpened) throw new Error('Imported Desktop folder could not be opened.');
-  await pause(80);
+  assertFinderWindowAnimation(desktopFolderOpenAnimation, 'opening', 'Desktop folder opening');
+  await waitForFinderWindowState(window, 'Drop Folder window', 'settled');
   const desktopFolderHierarchyVisible = await window.webContents.executeJavaScript(
     `document.querySelector('[aria-label="Drop Folder window"] [data-vfs-item]')
       ?.textContent?.includes('Nested Note.txt') === true`,
@@ -1486,11 +1672,130 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   if (!desktopFolderHierarchyVisible) {
     throw new Error('The imported Desktop folder did not preserve its hierarchy.');
   }
-  await window.webContents.executeJavaScript(
-    `document.querySelector('[aria-label="Close Drop Folder"]')?.click()`,
-    true,
+
+  const nestedDocumentSelector = '[aria-label="Drop Folder window"] [data-vfs-item]';
+  const nestedDocumentOpenAnimation = await observeFinderWindowAnimation(
+    window,
+    'Nested Note.txt window',
+    nestedDocumentSelector,
+    'opening',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(nestedDocumentSelector)})
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
   );
-  await pause(40);
+  assertFinderWindowAnimation(
+    nestedDocumentOpenAnimation,
+    'opening',
+    'Nested Finder document opening',
+  );
+  await waitForFinderWindowState(window, 'Nested Note.txt window', 'settled');
+  const nestedDocumentCloseAnimation = await observeFinderWindowAnimation(
+    window,
+    'Nested Note.txt window',
+    nestedDocumentSelector,
+    'closing',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Close Nested Note.txt"]')?.click()`,
+        true,
+      ),
+  );
+  assertFinderWindowAnimation(
+    nestedDocumentCloseAnimation,
+    'closing',
+    'Nested Finder document closing',
+  );
+  await waitForFinderWindowState(window, 'Nested Note.txt window', 'absent');
+
+  const closeCancellationState = (await window.webContents.executeJavaScript(
+    `(async () => {
+      const close = document.querySelector('[aria-label="Close Drop Folder"]');
+      const source = document.querySelector(${JSON.stringify(desktopFolderSelector)});
+      const originalWindow = document.querySelector('[aria-label="Drop Folder window"]');
+      if (
+        !(close instanceof HTMLElement) ||
+        !(source instanceof HTMLElement) ||
+        !(originalWindow instanceof HTMLElement)
+      ) return null;
+      const closingStarted = new Promise((resolve) => {
+        let settled = false;
+        const settle = (value) => {
+          if (settled) return;
+          settled = true;
+          observer.disconnect();
+          clearTimeout(timeoutId);
+          resolve(value);
+        };
+        const observer = new MutationObserver(() => {
+          if (originalWindow.dataset.closing === 'true') settle(true);
+        });
+        observer.observe(originalWindow, {
+          attributes: true,
+          attributeFilter: ['data-closing']
+        });
+        const timeoutId = setTimeout(() => settle(false), 200);
+      });
+      close.click();
+      const sawClosing = await closingStarted;
+      if (!sawClosing) return null;
+      let replayedOpening = false;
+      const reopenObserver = new MutationObserver(() => {
+        if (originalWindow.dataset.opening === 'true') replayedOpening = true;
+      });
+      reopenObserver.observe(originalWindow, {
+        attributes: true,
+        attributeFilter: ['data-opening']
+      });
+      source.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      reopenObserver.disconnect();
+      const windows = [...document.querySelectorAll('[data-finder-window]')].filter(
+        (candidate) => candidate.getAttribute('aria-label') === 'Drop Folder window'
+      );
+      return {
+        count: windows.length,
+        sameElement: windows[0] === originalWindow && originalWindow.isConnected,
+        replayedOpening,
+        opening: originalWindow.dataset.opening === 'true',
+        closing: originalWindow.dataset.closing === 'true'
+      };
+    })()`,
+    true,
+  )) as {
+    count: number;
+    sameElement: boolean;
+    replayedOpening: boolean;
+    opening: boolean;
+    closing: boolean;
+  } | null;
+  if (
+    closeCancellationState?.count !== 1 ||
+    !closeCancellationState.sameElement ||
+    closeCancellationState.replayedOpening ||
+    closeCancellationState.opening ||
+    closeCancellationState.closing
+  ) {
+    throw new Error(
+      `Reopening did not cancel the pending Finder close: ${JSON.stringify(closeCancellationState)}.`,
+    );
+  }
+
+  const desktopFolderCloseAnimation = await observeFinderWindowAnimation(
+    window,
+    'Drop Folder window',
+    desktopFolderSelector,
+    'closing',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Close Drop Folder"]')?.click()`,
+        true,
+      ),
+  );
+  assertFinderWindowAnimation(desktopFolderCloseAnimation, 'closing', 'Desktop folder closing');
+  await waitForFinderWindowState(window, 'Drop Folder window', 'absent');
 
   const systemDiskDropPoint = (await window.webContents.executeJavaScript(
     `(() => {

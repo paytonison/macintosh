@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { initialDesktopIconPosition } from '../shared/desktop-icon-position';
 import {
@@ -21,7 +21,11 @@ import {
   type IconDropLocation,
 } from './components/DesktopSurface';
 import { DesktopVfsIcon } from './components/DesktopVfsIcon';
-import { FinderWindow, type FinderItemDragContext } from './components/FinderWindow';
+import {
+  FinderWindow,
+  type FinderItemDragContext,
+  type FinderWindowAnimation,
+} from './components/FinderWindow';
 import { MenuBar, type MenuDefinition, type MenuEntry } from './components/MenuBar';
 import { StartupScreen } from './components/StartupScreen';
 import { deriveFinderCommandContext, findMenuShortcutEntry } from './model/command-context';
@@ -48,6 +52,7 @@ type SpecialDesktopIconId = 'system-disk' | 'trash';
 type DialogState =
   { type: 'about' } | { type: 'info'; node: VfsNode } | { type: 'eject-tip' } | null;
 type TransferNotice = { message: string; error: boolean } | null;
+type WindowAnimationSource = HTMLElement | null;
 
 const pause = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -70,6 +75,28 @@ const canContainItems = (node: VfsNode | undefined): node is VfsNode =>
 
 const plural = (count: number, singular: string, pluralValue = `${singular}s`): string =>
   count === 1 ? singular : pluralValue;
+
+const resolveWindowAnimationOrigin = (
+  source: WindowAnimationSource,
+  windowState: FinderWindowState,
+): Point => {
+  const surfaceBounds = source?.closest<HTMLElement>('.desktop-surface')?.getBoundingClientRect();
+  const sourceBounds = source?.getBoundingClientRect();
+  return surfaceBounds && sourceBounds
+    ? {
+        x: Math.round(sourceBounds.left + sourceBounds.width / 2 - surfaceBounds.left),
+        y: Math.round(sourceBounds.top + sourceBounds.height / 2 - surfaceBounds.top),
+      }
+    : {
+        x: Math.round(windowState.x + windowState.width / 2),
+        y: Math.round(windowState.y + windowState.height / 2),
+      };
+};
+
+const findNodeAnimationSource = (nodeId: string): HTMLElement | null =>
+  [...document.querySelectorAll<HTMLElement>('[data-vfs-node-id], [data-vfs-item]')].find(
+    (element) => element.dataset.vfsNodeId === nodeId || element.dataset.vfsItem === nodeId,
+  ) ?? null;
 
 export default function App() {
   const automation = useMemo(
@@ -95,6 +122,11 @@ export default function App() {
   const [interactionCancelToken, setInteractionCancelToken] = useState(0);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
+  const [windowAnimations, setWindowAnimations] = useState<Record<string, FinderWindowAnimation>>(
+    {},
+  );
+  const windowAnimationsRef = useRef<Record<string, FinderWindowAnimation>>({});
+  const windowAnimationToken = useRef(0);
   const dragOrigins = useRef<Partial<Record<SpecialDesktopIconId, Point>>>({});
   const vfsItemDrag = useRef<FinderItemDragContext | null>(null);
   const vfsItemInvalidTargets = useRef<Set<string>>(new Set());
@@ -139,6 +171,28 @@ export default function App() {
 
   useEffect(() => {
     stateRef.current = state;
+  }, [state]);
+
+  useLayoutEffect(() => {
+    windowAnimationsRef.current = windowAnimations;
+  }, [windowAnimations]);
+
+  useEffect(() => {
+    if (!state) return;
+    const nodeIds = new Set(state.nodes.map((node) => node.id));
+    const renderedWindowIds = new Set(
+      state.desktop.windows
+        .filter((windowState) => nodeIds.has(windowState.nodeId))
+        .map((windowState) => windowState.id),
+    );
+    const staleWindowIds = Object.keys(windowAnimationsRef.current).filter(
+      (windowId) => !renderedWindowIds.has(windowId),
+    );
+    if (staleWindowIds.length === 0) return;
+    const nextAnimations = { ...windowAnimationsRef.current };
+    for (const windowId of staleWindowIds) delete nextAnimations[windowId];
+    windowAnimationsRef.current = nextAnimations;
+    setWindowAnimations(nextAnimations);
   }, [state]);
 
   useEffect(
@@ -319,49 +373,96 @@ export default function App() {
     });
   }, []);
 
-  const openNode = useCallback((nodeId: string): void => {
-    setState((current) => {
-      if (!current) return current;
-      const node = current.nodes.find((item) => item.id === nodeId);
-      if (!node || node.kind === 'desktop') return current;
-      const windowId = `window-${nodeId}`;
-      const existing = current.desktop.windows.find((item) => item.id === windowId);
-      const remaining = current.desktop.windows.filter((item) => item.id !== windowId);
-      const cascade = remaining.length % 5;
-      const nextWindow: FinderWindowState =
-        existing ??
-        ({
-          id: windowId,
-          nodeId,
-          x: 170 + cascade * 28,
-          y: 70 + cascade * 24,
-          width: node.kind === 'document' ? 520 : 640,
-          height: node.kind === 'document' ? 390 : 420,
-        } satisfies FinderWindowState);
-      return {
-        ...current,
-        desktop: { ...current.desktop, windows: [...remaining, nextWindow] },
+  const openNode = useCallback((nodeId: string, source: WindowAnimationSource = null): void => {
+    const current = stateRef.current;
+    const node = current?.nodes.find((item) => item.id === nodeId);
+    if (!current || !node || node.kind === 'desktop') return;
+    const windowId = `window-${nodeId}`;
+    const existing = current.desktop.windows.find((item) => item.id === windowId);
+    const remaining = current.desktop.windows.filter((item) => item.id !== windowId);
+    const cascade = remaining.length % 5;
+    const nextWindow: FinderWindowState =
+      existing ??
+      ({
+        id: windowId,
+        nodeId,
+        x: 170 + cascade * 28,
+        y: 70 + cascade * 24,
+        width: node.kind === 'document' ? 520 : 640,
+        height: node.kind === 'document' ? 390 : 420,
+      } satisfies FinderWindowState);
+
+    const currentAnimations = windowAnimationsRef.current;
+    if (!existing) {
+      const nextAnimations = {
+        ...currentAnimations,
+        [windowId]: {
+          phase: 'opening',
+          origin: resolveWindowAnimationOrigin(source, nextWindow),
+          token: (windowAnimationToken.current += 1),
+        } satisfies FinderWindowAnimation,
       };
-    });
+      windowAnimationsRef.current = nextAnimations;
+      setWindowAnimations(nextAnimations);
+    } else if (currentAnimations[windowId]?.phase === 'closing') {
+      const nextAnimations = { ...currentAnimations };
+      delete nextAnimations[windowId];
+      windowAnimationsRef.current = nextAnimations;
+      setWindowAnimations(nextAnimations);
+    }
+
+    const nextState = {
+      ...current,
+      desktop: { ...current.desktop, windows: [...remaining, nextWindow] },
+    };
+    stateRef.current = nextState;
+    setState(nextState);
     setFinderSelection(new Set());
     setDesktopSelection(new Set());
   }, []);
 
   const closeWindow = useCallback((windowId: string): void => {
-    zoomRestore.current.delete(windowId);
-    setState((current) =>
-      current
-        ? {
-            ...current,
-            desktop: {
-              ...current.desktop,
-              windows: current.desktop.windows.filter((item) => item.id !== windowId),
-            },
-          }
-        : current,
-    );
+    const current = stateRef.current;
+    const target = current?.desktop.windows.find((item) => item.id === windowId);
+    if (!current || !target || windowAnimationsRef.current[windowId]?.phase === 'closing') return;
+    const nextAnimations = {
+      ...windowAnimationsRef.current,
+      [windowId]: {
+        phase: 'closing',
+        origin: resolveWindowAnimationOrigin(findNodeAnimationSource(target.nodeId), target),
+        token: (windowAnimationToken.current += 1),
+      } satisfies FinderWindowAnimation,
+    };
+    windowAnimationsRef.current = nextAnimations;
+    setWindowAnimations(nextAnimations);
     setFinderSelection(new Set());
   }, []);
+
+  const finishWindowAnimation = useCallback(
+    (windowId: string, phase: FinderWindowAnimation['phase'], token: number): void => {
+      const activeAnimation = windowAnimationsRef.current[windowId];
+      if (activeAnimation?.phase !== phase || activeAnimation.token !== token) return;
+      const nextAnimations = { ...windowAnimationsRef.current };
+      delete nextAnimations[windowId];
+      windowAnimationsRef.current = nextAnimations;
+      setWindowAnimations(nextAnimations);
+      if (phase !== 'closing') return;
+      zoomRestore.current.delete(windowId);
+      setState((current) => {
+        if (!current) return current;
+        const nextState = {
+          ...current,
+          desktop: {
+            ...current.desktop,
+            windows: current.desktop.windows.filter((item) => item.id !== windowId),
+          },
+        };
+        stateRef.current = nextState;
+        return nextState;
+      });
+    },
+    [],
+  );
 
   const setWindowGeometry = useCallback((windowId: string, geometry: WindowGeometry): void => {
     const surface = document.querySelector<HTMLElement>('.desktop-surface');
@@ -1155,7 +1256,13 @@ export default function App() {
   return (
     <main
       aria-label="The Macintosh desktop"
-      className={`macintosh ${itemDragging ? 'is-item-dragging' : ''}`.trim()}
+      className={[
+        'macintosh',
+        automation ? 'is-automation' : '',
+        itemDragging ? 'is-item-dragging' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
       data-item-dragging={itemDragging ? 'true' : undefined}
     >
       <MenuBar
@@ -1186,11 +1293,13 @@ export default function App() {
           return (
             <FinderWindow
               active={!calculatorOpen && activeWindowId === windowState.id}
+              animation={windowAnimations[windowState.id]}
               interactionCancelToken={interactionCancelToken}
               items={items}
               key={windowState.id}
               node={node}
               onActivate={activateWindow}
+              onAnimationComplete={finishWindowAnimation}
               onClose={closeWindow}
               onGeometry={setWindowGeometry}
               onItemDragCancel={cancelVfsItemDrag}

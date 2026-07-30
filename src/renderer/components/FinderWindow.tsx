@@ -28,6 +28,12 @@ import {
 } from '../model/pointer-drag';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
 
+export interface FinderWindowAnimation {
+  phase: 'opening' | 'closing';
+  origin: Point;
+  token: number;
+}
+
 export interface FinderItemDragContext {
   parentId: string;
   nodeIds: string[];
@@ -43,12 +49,14 @@ interface FinderWindowProps {
   viewMode: FinderViewMode;
   selectedIds: Set<string>;
   stackIndex: number;
+  animation?: FinderWindowAnimation;
   onActivate: (id: string) => void;
+  onAnimationComplete: (id: string, phase: FinderWindowAnimation['phase'], token: number) => void;
   onClose: (id: string) => void;
   onGeometry: (id: string, geometry: WindowGeometry) => void;
   onZoom: (id: string) => void;
   onItemSelect: (id: string, additive: boolean) => void;
-  onItemOpen: (id: string) => void;
+  onItemOpen: (id: string, source: HTMLElement) => void;
   onItemDragStart: (id: string, context: FinderItemDragContext) => void;
   onItemDragMove: (pointer: Point) => void;
   onItemDragEnd: (pointer: Point) => void;
@@ -87,7 +95,9 @@ export function FinderWindow({
   viewMode,
   selectedIds,
   stackIndex,
+  animation,
   onActivate,
+  onAnimationComplete,
   onClose,
   onGeometry,
   onZoom,
@@ -110,6 +120,18 @@ export function FinderWindow({
   const suppressedItemClick = useRef<string | null>(null);
   const suppressedItemClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancellationHandlers = useRef({ onGeometry, onItemDragCancel, onInteractionChange });
+
+  useEffect(() => {
+    if (!animation) return;
+    const completesImmediately =
+      Boolean(windowElement.current?.closest('.macintosh.is-automation')) ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const timer = window.setTimeout(
+      () => onAnimationComplete(windowState.id, animation.phase, animation.token),
+      completesImmediately ? 40 : 260,
+    );
+    return () => window.clearTimeout(timer);
+  }, [animation, onAnimationComplete, windowState.id]);
 
   const clearPressedItem = useCallback((): void => {
     pressedItem.current?.classList.remove('is-pointer-pressed');
@@ -343,6 +365,16 @@ export function FinderWindow({
     width: windowState.width,
     height: windowState.height,
     zIndex: 300 + stackIndex,
+    ...(animation
+      ? {
+          '--window-animation-offset-x': `${Math.round(
+            animation.origin.x - (windowState.x + windowState.width / 2),
+          )}px`,
+          '--window-animation-offset-y': `${Math.round(
+            animation.origin.y - (windowState.y + windowState.height / 2),
+          )}px`,
+        }
+      : {}),
   } as CSSProperties;
 
   const isDocument = node.kind === 'document';
@@ -465,9 +497,27 @@ export function FinderWindow({
   return (
     <section
       aria-label={`${node.name} window`}
-      className={`finder-window ${active ? 'is-active' : 'is-inactive'}`}
+      className={[
+        'finder-window',
+        active ? 'is-active' : 'is-inactive',
+        animation ? `is-${animation.phase}` : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      data-closing={animation?.phase === 'closing' ? 'true' : undefined}
       data-drop-blocked="true"
       data-finder-window={windowState.id}
+      data-opening={animation?.phase === 'opening' ? 'true' : undefined}
+      onAnimationEnd={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const phase =
+          event.animationName === 'finder-window-open'
+            ? 'opening'
+            : event.animationName === 'finder-window-close'
+              ? 'closing'
+              : null;
+        if (phase && animation) onAnimationComplete(windowState.id, phase, animation.token);
+      }}
       onPointerDown={() => onActivate(windowState.id)}
       ref={windowElement}
       style={style}
@@ -544,7 +594,7 @@ export function FinderWindow({
                   data-vfs-item={item.id}
                   key={item.id}
                   onClick={(event) => selectItem(event, item.id)}
-                  onDoubleClick={() => onItemOpen(item.id)}
+                  onDoubleClick={(event) => onItemOpen(item.id, event.currentTarget)}
                   onLostPointerCapture={loseItemPointerCapture}
                   onPointerCancel={(event) => finishItemPointer(event, false)}
                   onPointerDown={(event) => beginItemPress(event, item, position)}
@@ -567,7 +617,7 @@ export function FinderWindow({
                   data-vfs-item={item.id}
                   key={item.id}
                   onClick={(event) => selectItem(event, item.id)}
-                  onDoubleClick={() => onItemOpen(item.id)}
+                  onDoubleClick={(event) => onItemOpen(item.id, event.currentTarget)}
                   onLostPointerCapture={loseItemPointerCapture}
                   onPointerCancel={(event) => finishItemPointer(event, false)}
                   onPointerDown={(event) => beginItemPress(event, item)}
