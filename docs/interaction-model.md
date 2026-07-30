@@ -58,6 +58,8 @@ A higher-priority context must prevent the same event from also triggering a low
 
 Authored pointer-session drags remain a press until movement reaches the shared four-pixel Euclidean threshold. Releasing before that threshold is a click; crossing it begins the drag and latches that state until release or cancellation. Pointer capture keeps the session owned when the pointer leaves its source element. Pointer cancellation or losing application focus clears transient interaction state so a later interaction starts cleanly.
 
+Cursor feedback mirrors that ownership without changing gesture semantics. Every authored cursor uses a white interior with a crisp black outline. The normal cursor is a 1-bit System 1-style arrow. Finder files and folders, together with the current desktop items System Disk and Trash, show a 1-bit pointing finger while any part of their icon-and-label region is hovered. A primary-button press changes immediately to an open hand and keeps it until the shared drag threshold is crossed. An active item drag uses a closed fist latched for the entire pointer-captured drag, including after the pointer leaves its source. Pointer-up, pointer cancellation, lost pointer capture, or application-focus cancellation clears the pressed or dragging state immediately and restores the pointing finger when the pointer remains over an eligible item or the arrow otherwise. Native drag-and-drop remains reserved for explicit host-file imports; internal Finder item movement uses the authored pointer session so platform drag feedback cannot replace the closed-fist cursor.
+
 Opening a menu temporarily owns pointer interaction inside the menu bar. Clicking outside closes the menu; the underlying click may proceed only when doing so is intentional and tested.
 
 ## Startup and hydration
@@ -294,6 +296,7 @@ Visual feedback must communicate state, not decorate latency.
 - Selected items must remain legible under inverse or patterned treatment.
 - Drag outlines must be crisp and aligned to integer pixels.
 - Hover treatment appears only for a meaningful target.
+- Cursor artwork and hotspots must remain crisp, integer-aligned 1-bit bitmaps so changing pointer states does not create an apparent positional jump.
 - Animation should be stepped or restrained when that better fits the 1-bit language.
 - System sounds are synthesized or original and remain local to the application.
 

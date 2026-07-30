@@ -21,6 +21,34 @@ export interface FinderIconDropLocation {
   point: Point;
 }
 
+export interface DesktopDropTarget {
+  destinationId: string;
+  element: HTMLElement;
+}
+
+export const resolveDesktopDropTarget = (
+  surface: HTMLElement | null,
+  target: EventTarget | null,
+  external: boolean,
+): DesktopDropTarget | null => {
+  let element =
+    target instanceof HTMLElement
+      ? target
+      : target instanceof Element
+        ? target.parentElement
+        : null;
+  while (element && surface?.contains(element)) {
+    const destinationId = element.dataset.dropDestination;
+    if (destinationId) {
+      if (external && element.dataset.dropMode === 'internal') return null;
+      return { destinationId, element };
+    }
+    if (element.dataset.dropBlocked === 'true') return null;
+    element = element.parentElement;
+  }
+  return null;
+};
+
 interface DesktopSurfaceProps {
   children: ReactNode;
   interactionCancelToken: number;
@@ -35,8 +63,6 @@ interface DesktopSurfaceProps {
   ) => void;
   onInteractionChange: (active: boolean) => void;
 }
-
-export const VFS_DRAG_TYPE = 'application/x-macintosh-vfs-node-ids';
 
 interface MarqueeState {
   pointerId: number;
@@ -80,46 +106,16 @@ export function DesktopSurface({
     highlightedDropTarget.current = null;
   };
 
-  const resolveDropTarget = (
-    target: EventTarget | null,
-    external: boolean,
-  ): { destinationId: string; element: HTMLElement } | null => {
-    let element = target instanceof HTMLElement ? target : null;
-    while (element && surface.current?.contains(element)) {
-      const destinationId = element.dataset.dropDestination;
-      if (destinationId) {
-        if (external && element.dataset.dropMode === 'internal') return null;
-        return { destinationId, element };
-      }
-      if (element.dataset.dropBlocked === 'true') return null;
-      element = element.parentElement;
-    }
-    return null;
-  };
-
-  const parseNodeIds = (dataTransfer: DataTransfer): string[] => {
-    try {
-      const value = JSON.parse(dataTransfer.getData(VFS_DRAG_TYPE)) as unknown;
-      return Array.isArray(value)
-        ? value.filter((item): item is string => typeof item === 'string').slice(0, 512)
-        : [];
-    } catch {
-      return [];
-    }
-  };
-
   const dragOver = (event: ReactDragEvent<HTMLDivElement>): void => {
-    const internal = event.dataTransfer.types.includes(VFS_DRAG_TYPE);
-    const external = !internal && event.dataTransfer.types.includes('Files');
-    if (!external && !internal) return;
+    if (!event.dataTransfer.types.includes('Files')) return;
     onInteractionChange(true);
-    const target = resolveDropTarget(event.target, external);
+    const target = resolveDesktopDropTarget(surface.current, event.target, true);
     if (!target) {
       clearDropTarget();
       return;
     }
     event.preventDefault();
-    event.dataTransfer.dropEffect = external ? 'copy' : 'move';
+    event.dataTransfer.dropEffect = 'copy';
     if (highlightedDropTarget.current !== target.element) {
       clearDropTarget();
       highlightedDropTarget.current = target.element;
@@ -129,18 +125,17 @@ export function DesktopSurface({
 
   const drop = (event: ReactDragEvent<HTMLDivElement>): void => {
     onInteractionChange(false);
-    const nodeIds = parseNodeIds(event.dataTransfer);
     const files = Array.from(event.dataTransfer.files);
-    const target = resolveDropTarget(event.target, nodeIds.length === 0 && files.length > 0);
+    const target = resolveDesktopDropTarget(surface.current, event.target, true);
     clearDropTarget();
-    if (!target || (nodeIds.length === 0 && files.length === 0)) return;
+    if (!target || files.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
     const layoutParent = target.element.dataset.iconLayoutParent;
     const bounds = layoutParent ? target.element.getBoundingClientRect() : null;
     onDropItems(
       target.destinationId,
-      nodeIds,
+      [],
       files,
       layoutParent && bounds
         ? {

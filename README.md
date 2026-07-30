@@ -20,6 +20,7 @@ npm run dev
 ## Controls
 
 - Click, Shift-click, or drag a marquee to select desktop icons.
+- The authored white-filled, black-outlined 1-bit pointer uses a System 1-style arrow normally. Finder files and folders, plus the complete System Disk and Trash icon-and-label regions, use a pointing finger on hover, an open hand while the primary button is held before dragging begins, and a closed fist for the full active drag. Release, cancellation, or lost pointer capture restores the pointing finger over an item and the arrow elsewhere.
 - Drag System Disk or Trash to reposition it.
 - Double-click System Disk, Trash, folders, or documents to open Finder windows.
 - In icon view, drag one or more selected Finder items to any pixel position in the open window. Dropping them onto a folder still moves them into that folder.
@@ -40,7 +41,7 @@ npm run smoke
 
 `npm run check` runs formatting verification, ESLint, strict TypeScript checks for both renderer and Electron, Vitest, and the production build.
 
-`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; checks neutral system cursor bindings, thresholded click-hold and drag behavior, off-center pointer alignment, and focus-loss cleanup; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; freely repositions Finder and desktop icons; moves a folder internally; exercises Calculator button and keyboard input, modal dialog precedence, drag-session input ownership, save-failure cancellation, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled Trash movement, disk pointer following, the live Trash drop-target state, and eject animation; observes the renderer-to-main quit request; checks the resulting state file; and relaunches Electron to prove the icon layout, disk, and virtual filesystem reload.
+`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; checks the authored 1-bit cursor bindings, hover, press, thresholded drag, reset transitions, and native closed-fist continuity through Electron cursor-change events; verifies off-center pointer alignment and focus-loss cleanup; imports a disk-backed file and nested folder through Electron drag-and-drop; pastes and duplicates documents; freely repositions Finder and desktop icons; moves a folder internally; exercises Calculator button and keyboard input, modal dialog precedence, drag-session input ownership, save-failure cancellation, and a Finder command through both its menu item and keyboard shortcut; verifies cancelled Trash movement, disk pointer following, the live Trash drop-target state, and eject animation; observes the renderer-to-main quit request; checks the resulting state file; and relaunches Electron to prove the icon layout, disk, and virtual filesystem reload.
 
 ## Architecture and security
 

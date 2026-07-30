@@ -32,7 +32,7 @@ body,
 
 body {
   -webkit-font-smoothing: none;
-  cursor: default;
+  cursor: var(--system-arrow-cursor), default;
   user-select: none;
 }
 
@@ -44,7 +44,7 @@ textarea {
 }
 
 button {
-  cursor: default;
+  cursor: var(--system-arrow-cursor), default;
 }
 
 button:focus {
@@ -217,7 +217,7 @@ button:focus-visible {
   padding: 2px 2px 4px;
   border: 0;
   background: transparent;
-  cursor: grab;
+  cursor: var(--pointing-hand-cursor), default;
   touch-action: none;
 }
 
@@ -226,9 +226,13 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+.desktop-icon.is-pointer-pressed {
+  cursor: var(--open-hand-cursor), default;
+}
+
 .desktop-icon.is-dragging {
   z-index: 4000;
-  cursor: grabbing;
+  cursor: var(--closed-fist-cursor), default;
   filter: drop-shadow(3px 3px 0 #fff) drop-shadow(1px 1px 0 #000);
 }
 
@@ -380,7 +384,7 @@ button:focus-visible {
 .window-titlebar > button,
 .dialog-titlebar > button,
 .calculator-titlebar > button {
-  cursor: default;
+  cursor: var(--system-arrow-cursor), default;
 }
 
 .classic-dialog.is-dragging .dialog-titlebar {
@@ -509,9 +513,21 @@ button:focus-visible {
   background: #fff;
 }
 
-.finder-item[draggable='true'],
-.finder-list-row[draggable='true'] {
-  cursor: grab;
+.finder-item,
+.finder-list-row {
+  cursor: var(--pointing-hand-cursor), default;
+}
+
+.finder-item.is-pointer-pressed,
+.finder-list-row.is-pointer-pressed {
+  cursor: var(--open-hand-cursor), default;
+}
+
+html.is-item-dragging,
+html.is-item-dragging *,
+.macintosh.is-item-dragging,
+.macintosh.is-item-dragging * {
+  cursor: var(--closed-fist-cursor), default !important;
 }
 
 .finder-item span {

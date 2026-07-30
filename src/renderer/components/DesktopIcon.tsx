@@ -71,6 +71,7 @@ export function DesktopIcon({
     const active = session.current;
     if (!active) return;
     session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
     if (active.captureTarget.hasPointerCapture(active.pointerId)) {
       active.captureTarget.releasePointerCapture(active.pointerId);
     }
@@ -84,6 +85,7 @@ export function DesktopIcon({
     if (event.button !== 0 || ejecting) return;
     event.stopPropagation();
     onInteractionChange(true);
+    event.currentTarget.classList.add('is-pointer-pressed');
     event.currentTarget.setPointerCapture(event.pointerId);
     session.current = {
       pointerId: event.pointerId,
@@ -104,6 +106,7 @@ export function DesktopIcon({
       y: event.clientY,
     });
     if (previousPhase === 'pressed' && active.intent.phase === 'dragging') {
+      active.captureTarget.classList.remove('is-pointer-pressed');
       onDragStart(id, active.origin);
     }
     if (active.intent.phase !== 'dragging') return;
@@ -118,6 +121,7 @@ export function DesktopIcon({
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
     session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -133,6 +137,7 @@ export function DesktopIcon({
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
     session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -144,6 +149,7 @@ export function DesktopIcon({
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
     session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
     onInteractionChange(false);
     if (releasePointerDrag(active.intent) === 'drag') onDragCancel(id);
   };

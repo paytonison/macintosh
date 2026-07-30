@@ -16,7 +16,7 @@ import { AboutDialog, EjectTipDialog, InfoDialog, PersistenceAlert } from './com
 import { DesktopIcon } from './components/DesktopIcon';
 import {
   DesktopSurface,
-  VFS_DRAG_TYPE,
+  resolveDesktopDropTarget,
   type FinderIconDropLocation,
 } from './components/DesktopSurface';
 import { FinderWindow, type FinderItemDragContext } from './components/FinderWindow';
@@ -76,6 +76,7 @@ export default function App() {
     {},
   );
   const [draggingIcon, setDraggingIcon] = useState<DesktopIconId | null>(null);
+  const [finderItemDragging, setFinderItemDragging] = useState(false);
   const [snappingIcon, setSnappingIcon] = useState<DesktopIconId | null>(null);
   const [trashHover, setTrashHover] = useState(false);
   const [ejecting, setEjecting] = useState(false);
@@ -88,6 +89,8 @@ export default function App() {
   const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
   const dragOrigins = useRef<Partial<Record<DesktopIconId, Point>>>({});
   const finderItemDrag = useRef<FinderItemDragContext | null>(null);
+  const finderItemDraggingRef = useRef(false);
+  const finderItemDropTarget = useRef<HTMLElement | null>(null);
   const zoomRestore = useRef<Map<string, WindowGeometry>>(new Map());
   const stateRef = useRef<MacintoshState | null>(null);
   const clipboardNodeIds = useRef<string[]>([]);
@@ -101,21 +104,36 @@ export default function App() {
     setPointerSessionActive(active);
   }, []);
 
+  const setFinderItemDragActive = useCallback((active: boolean): void => {
+    finderItemDraggingRef.current = active;
+    document.documentElement.classList.toggle('is-item-dragging', active);
+    setFinderItemDragging(active);
+  }, []);
+
+  const clearFinderItemDropTarget = useCallback((): void => {
+    finderItemDropTarget.current?.classList.remove('is-file-drop-target');
+    finderItemDropTarget.current = null;
+  }, []);
+
   const cancelPointerInteractions = useCallback((): void => {
-    if (!pointerSessionActiveRef.current && !finderItemDrag.current) return;
+    if (
+      !pointerSessionActiveRef.current &&
+      !finderItemDrag.current &&
+      !finderItemDraggingRef.current
+    ) {
+      return;
+    }
     pointerSessionActiveRef.current = false;
     finderItemDrag.current = null;
+    clearFinderItemDropTarget();
     setPointerSessionActive(false);
+    setFinderItemDragActive(false);
     setInteractionCancelToken((current) => current + 1);
-  }, []);
+  }, [clearFinderItemDropTarget, setFinderItemDragActive]);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-
-  useEffect(() => {
-    finderItemDrag.current = null;
-  }, [interactionCancelToken]);
 
   useEffect(
     () => () => {
@@ -142,13 +160,19 @@ export default function App() {
     [],
   );
 
-  const reportPersistenceError = useCallback((message: string): void => {
-    setOpenMenu(null);
-    pointerSessionActiveRef.current = false;
-    setPointerSessionActive(false);
-    setInteractionCancelToken((current) => current + 1);
-    setPersistenceError(message);
-  }, []);
+  const reportPersistenceError = useCallback(
+    (message: string): void => {
+      setOpenMenu(null);
+      pointerSessionActiveRef.current = false;
+      finderItemDrag.current = null;
+      clearFinderItemDropTarget();
+      setPointerSessionActive(false);
+      setFinderItemDragActive(false);
+      setInteractionCancelToken((current) => current + 1);
+      setPersistenceError(message);
+    },
+    [clearFinderItemDropTarget, setFinderItemDragActive],
+  );
 
   const pasteDestinationId = useCallback((current: MacintoshState): string => {
     const active = current.desktop.windows.at(-1);
@@ -395,25 +419,53 @@ export default function App() {
     });
   };
 
-  const startFinderItemDrag = (
-    id: string,
-    dataTransfer: DataTransfer,
-    context: FinderItemDragContext,
-  ): void => {
-    if (!state) return;
+  const startFinderItemDrag = (id: string, context: FinderItemDragContext): void => {
+    if (!stateRef.current) return;
     finderItemDrag.current = context;
+    setFinderItemDragActive(true);
     setPointerInteractionActive(true);
     const nodeIds = context.nodeIds.length > 0 ? context.nodeIds : [id];
     setFinderSelection(new Set(nodeIds));
     setDesktopSelection(new Set());
-    const names = nodeIds.flatMap((nodeId) => {
-      const node = state.nodes.find((item) => item.id === nodeId);
-      return node ? [node.name] : [];
-    });
-    dataTransfer.effectAllowed = 'copyMove';
-    dataTransfer.setData(VFS_DRAG_TYPE, JSON.stringify(nodeIds));
-    dataTransfer.setData('text/plain', names.join('\n'));
   };
+
+  const resolveFinderItemDrop = useCallback((pointer: Point) => {
+    const surface = document.querySelector<HTMLElement>('.desktop-surface');
+    if (!surface) return null;
+    const target = resolveDesktopDropTarget(
+      surface,
+      document.elementFromPoint(pointer.x, pointer.y),
+      false,
+    );
+    if (!target) return null;
+    const layoutParent = target.element.dataset.iconLayoutParent;
+    const bounds = layoutParent ? target.element.getBoundingClientRect() : null;
+    return {
+      ...target,
+      iconLocation:
+        layoutParent && bounds
+          ? {
+              parentId: layoutParent,
+              point: {
+                x: Math.round(pointer.x - bounds.left),
+                y: Math.round(pointer.y - bounds.top),
+              },
+            }
+          : null,
+    };
+  }, []);
+
+  const previewFinderItemDrag = useCallback(
+    (pointer: Point): void => {
+      const target = resolveFinderItemDrop(pointer);
+      if (finderItemDropTarget.current === target?.element) return;
+      clearFinderItemDropTarget();
+      if (!target) return;
+      finderItemDropTarget.current = target.element;
+      target.element.classList.add('is-file-drop-target');
+    },
+    [clearFinderItemDropTarget, resolveFinderItemDrop],
+  );
 
   const importHostFiles = useCallback(
     async (files: File[], destinationId: string): Promise<void> => {
@@ -451,9 +503,9 @@ export default function App() {
       iconLocation: FinderIconDropLocation | null,
     ): void => {
       if (nodeIds.length > 0) {
+        const dragContext = finderItemDrag.current;
         const current = stateRef.current;
         if (!current) return;
-        const dragContext = finderItemDrag.current;
         const translatedPositions =
           iconLocation && iconLocation.parentId === destinationId && dragContext?.layout
             ? translateFinderIconDrag(dragContext.layout, iconLocation.point)
@@ -491,10 +543,24 @@ export default function App() {
     [commitVfsMutation, importHostFiles],
   );
 
-  const finishFinderItemDrag = (): void => {
+  const finishFinderItemDrag = (pointer: Point): void => {
+    const context = finderItemDrag.current;
+    const target = resolveFinderItemDrop(pointer);
+    clearFinderItemDropTarget();
+    if (context && target) {
+      dropItems(target.destinationId, context.nodeIds, [], target.iconLocation);
+    }
     finderItemDrag.current = null;
+    setFinderItemDragActive(false);
     setPointerInteractionActive(false);
   };
+
+  const cancelFinderItemDrag = useCallback((): void => {
+    finderItemDrag.current = null;
+    clearFinderItemDropTarget();
+    setFinderItemDragActive(false);
+    setPointerInteractionActive(false);
+  }, [clearFinderItemDropTarget, setFinderItemDragActive, setPointerInteractionActive]);
 
   const startIconDrag = (id: DesktopIconId, origin: Point): void => {
     dragOrigins.current[id] = origin;
@@ -964,9 +1030,14 @@ export default function App() {
   const diskPosition = previewPositions['system-disk'] ?? state.desktop.diskPosition;
   const trashPosition = previewPositions.trash ?? state.desktop.trashPosition;
   const activeWindowId = state.desktop.windows.at(-1)?.id ?? null;
+  const itemDragging = draggingIcon !== null || finderItemDragging;
 
   return (
-    <main className="macintosh" aria-label="The Macintosh desktop">
+    <main
+      aria-label="The Macintosh desktop"
+      className={`macintosh ${itemDragging ? 'is-item-dragging' : ''}`.trim()}
+      data-item-dragging={itemDragging ? 'true' : undefined}
+    >
       <MenuBar
         clock={clock}
         menus={menus}
@@ -1002,6 +1073,8 @@ export default function App() {
               onActivate={activateWindow}
               onClose={closeWindow}
               onGeometry={setWindowGeometry}
+              onItemDragCancel={cancelFinderItemDrag}
+              onItemDragMove={previewFinderItemDrag}
               onItemDragStart={startFinderItemDrag}
               onItemDragEnd={finishFinderItemDrag}
               onItemOpen={openNode}

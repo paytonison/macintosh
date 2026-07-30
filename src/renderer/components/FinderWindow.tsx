@@ -1,9 +1,10 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   type CSSProperties,
-  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 
@@ -48,8 +49,10 @@ interface FinderWindowProps {
   onZoom: (id: string) => void;
   onItemSelect: (id: string, additive: boolean) => void;
   onItemOpen: (id: string) => void;
-  onItemDragStart: (id: string, dataTransfer: DataTransfer, context: FinderItemDragContext) => void;
-  onItemDragEnd: () => void;
+  onItemDragStart: (id: string, context: FinderItemDragContext) => void;
+  onItemDragMove: (pointer: Point) => void;
+  onItemDragEnd: (pointer: Point) => void;
+  onItemDragCancel: () => void;
   onInteractionChange: (active: boolean) => void;
 }
 
@@ -58,6 +61,14 @@ interface GeometrySession {
   captureTarget: HTMLElement;
   original: WindowGeometry;
   current: WindowGeometry;
+  intent: PointerDragIntent;
+}
+
+interface ItemDragSession {
+  pointerId: number;
+  captureTarget: HTMLButtonElement;
+  itemId: string;
+  context: FinderItemDragContext;
   intent: PointerDragIntent;
 }
 
@@ -83,20 +94,40 @@ export function FinderWindow({
   onItemSelect,
   onItemOpen,
   onItemDragStart,
+  onItemDragMove,
   onItemDragEnd,
+  onItemDragCancel,
   onInteractionChange,
 }: FinderWindowProps) {
   const drag = useRef<GeometrySession | null>(null);
   const resize = useRef<GeometrySession | null>(null);
+  const itemDrag = useRef<ItemDragSession | null>(null);
   const content = useRef<HTMLDivElement>(null);
   const windowElement = useRef<HTMLElement>(null);
   const dragShadow = useRef<HTMLDivElement>(null);
   const dragReleaseCleanup = useRef<(() => void) | null>(null);
-  const cancellationHandlers = useRef({ onGeometry, onInteractionChange });
+  const pressedItem = useRef<HTMLButtonElement | null>(null);
+  const suppressedItemClick = useRef<string | null>(null);
+  const suppressedItemClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancellationHandlers = useRef({ onGeometry, onItemDragCancel, onInteractionChange });
+
+  const clearPressedItem = useCallback((): void => {
+    pressedItem.current?.classList.remove('is-pointer-pressed');
+    pressedItem.current = null;
+  }, []);
 
   useLayoutEffect(() => {
-    cancellationHandlers.current = { onGeometry, onInteractionChange };
-  }, [onGeometry, onInteractionChange]);
+    cancellationHandlers.current = { onGeometry, onItemDragCancel, onInteractionChange };
+  }, [onGeometry, onItemDragCancel, onInteractionChange]);
+
+  useLayoutEffect(() => {
+    const active = itemDrag.current;
+    itemDrag.current = null;
+    clearPressedItem();
+    if (active?.captureTarget.hasPointerCapture(active.pointerId)) {
+      active.captureTarget.releasePointerCapture(active.pointerId);
+    }
+  }, [clearPressedItem, interactionCancelToken]);
 
   useLayoutEffect(() => {
     const moveSession = drag.current;
@@ -170,9 +201,20 @@ export function FinderWindow({
     () => () => {
       dragReleaseCleanup.current?.();
       dragReleaseCleanup.current = null;
-      if (drag.current || resize.current) onInteractionChange(false);
+      if (suppressedItemClickTimer.current) clearTimeout(suppressedItemClickTimer.current);
+      const activeItem = itemDrag.current;
+      itemDrag.current = null;
+      clearPressedItem();
+      if (activeItem?.captureTarget.hasPointerCapture(activeItem.pointerId)) {
+        activeItem.captureTarget.releasePointerCapture(activeItem.pointerId);
+      }
+      if (activeItem?.intent.phase === 'dragging') {
+        cancellationHandlers.current.onItemDragCancel();
+      } else if (activeItem || drag.current || resize.current) {
+        cancellationHandlers.current.onInteractionChange(false);
+      }
     },
-    [onInteractionChange],
+    [clearPressedItem],
   );
 
   const beginGeometry = (
@@ -310,16 +352,18 @@ export function FinderWindow({
   }));
   const iconCanvasSize = finderIconCanvasSize(iconItems.map(({ position }) => position));
 
-  const beginItemDrag = (
-    event: ReactDragEvent<HTMLButtonElement>,
+  const beginItemPress = (
+    event: ReactPointerEvent<HTMLButtonElement>,
     item: VfsNode,
     position?: Point,
   ): void => {
+    if (event.button !== 0) return;
+    clearPressedItem();
     const draggedItems = selectedIds.has(item.id)
       ? iconItems.filter(({ item: candidate }) => selectedIds.has(candidate.id))
       : iconItems.filter(({ item: candidate }) => candidate.id === item.id);
     const bounds = event.currentTarget.getBoundingClientRect();
-    onItemDragStart(item.id, event.dataTransfer, {
+    const context = {
       parentId: node.id,
       nodeIds: draggedItems.map(({ item: candidate }) => candidate.id),
       layout: position
@@ -337,7 +381,85 @@ export function FinderWindow({
             ),
           }
         : null,
+    } satisfies FinderItemDragContext;
+    onInteractionChange(true);
+    pressedItem.current = event.currentTarget;
+    event.currentTarget.classList.add('is-pointer-pressed');
+    event.currentTarget.setPointerCapture(event.pointerId);
+    itemDrag.current = {
+      pointerId: event.pointerId,
+      captureTarget: event.currentTarget,
+      itemId: item.id,
+      context,
+      intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
+    };
+  };
+
+  const moveItem = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = itemDrag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    const previousPhase = active.intent.phase;
+    active.intent = updatePointerDrag(active.intent, {
+      x: event.clientX,
+      y: event.clientY,
     });
+    if (previousPhase === 'pressed' && active.intent.phase === 'dragging') {
+      clearPressedItem();
+      onItemDragStart(active.itemId, active.context);
+    }
+    if (active.intent.phase !== 'dragging') return;
+    event.preventDefault();
+    onItemDragMove({ x: event.clientX, y: event.clientY });
+  };
+
+  const suppressItemClick = (itemId: string): void => {
+    suppressedItemClick.current = itemId;
+    if (suppressedItemClickTimer.current) clearTimeout(suppressedItemClickTimer.current);
+    suppressedItemClickTimer.current = setTimeout(() => {
+      if (suppressedItemClick.current === itemId) suppressedItemClick.current = null;
+      suppressedItemClickTimer.current = null;
+    }, 0);
+  };
+
+  const finishItemPointer = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    commit: boolean,
+  ): void => {
+    const active = itemDrag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    itemDrag.current = null;
+    clearPressedItem();
+    if (active.captureTarget.hasPointerCapture(active.pointerId)) {
+      active.captureTarget.releasePointerCapture(active.pointerId);
+    }
+    if (releasePointerDrag(active.intent) === 'click') {
+      onInteractionChange(false);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    suppressItemClick(active.itemId);
+    if (commit) onItemDragEnd({ x: event.clientX, y: event.clientY });
+    else onItemDragCancel();
+  };
+
+  const loseItemPointerCapture = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = itemDrag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    itemDrag.current = null;
+    clearPressedItem();
+    if (releasePointerDrag(active.intent) === 'drag') onItemDragCancel();
+    else onInteractionChange(false);
+  };
+
+  const selectItem = (event: ReactMouseEvent<HTMLButtonElement>, itemId: string): void => {
+    if (suppressedItemClick.current === itemId) {
+      suppressedItemClick.current = null;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    onItemSelect(itemId, event.shiftKey);
   };
 
   return (
@@ -420,14 +542,14 @@ export function FinderWindow({
                   data-icon-x={position.x}
                   data-icon-y={position.y}
                   data-vfs-item={item.id}
-                  draggable
                   key={item.id}
-                  onClick={(event) => onItemSelect(item.id, event.shiftKey)}
+                  onClick={(event) => selectItem(event, item.id)}
                   onDoubleClick={() => onItemOpen(item.id)}
-                  onDragStart={(event: ReactDragEvent<HTMLButtonElement>) =>
-                    beginItemDrag(event, item, position)
-                  }
-                  onDragEnd={onItemDragEnd}
+                  onLostPointerCapture={loseItemPointerCapture}
+                  onPointerCancel={(event) => finishItemPointer(event, false)}
+                  onPointerDown={(event) => beginItemPress(event, item, position)}
+                  onPointerMove={moveItem}
+                  onPointerUp={(event) => finishItemPointer(event, true)}
                   style={{ left: position.x, top: position.y }}
                   type="button"
                 >
@@ -443,14 +565,14 @@ export function FinderWindow({
                   className={`finder-list-row ${selectedIds.has(item.id) ? 'is-selected' : ''}`}
                   data-drop-destination={item.kind === 'folder' ? item.id : undefined}
                   data-vfs-item={item.id}
-                  draggable
                   key={item.id}
-                  onClick={(event) => onItemSelect(item.id, event.shiftKey)}
+                  onClick={(event) => selectItem(event, item.id)}
                   onDoubleClick={() => onItemOpen(item.id)}
-                  onDragStart={(event: ReactDragEvent<HTMLButtonElement>) =>
-                    beginItemDrag(event, item)
-                  }
-                  onDragEnd={onItemDragEnd}
+                  onLostPointerCapture={loseItemPointerCapture}
+                  onPointerCancel={(event) => finishItemPointer(event, false)}
+                  onPointerDown={(event) => beginItemPress(event, item)}
+                  onPointerMove={moveItem}
+                  onPointerUp={(event) => finishItemPointer(event, true)}
                   role="listitem"
                   type="button"
                 >
