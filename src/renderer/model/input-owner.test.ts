@@ -4,6 +4,7 @@ import { resolveKeyboardOwner, type KeyboardContext } from './input-owner';
 
 const context = (overrides: Partial<KeyboardContext> = {}): KeyboardContext => ({
   persistenceAlertOpen: false,
+  normalQuitInProgress: false,
   dialogOpen: false,
   ejectionInProgress: false,
   pointerSessionActive: false,
@@ -31,6 +32,7 @@ describe('keyboard input ownership', () => {
   it('gives system transactions and modal surfaces precedence', () => {
     const occupied = context({
       persistenceAlertOpen: true,
+      normalQuitInProgress: true,
       dialogOpen: true,
       ejectionInProgress: true,
       pointerSessionActive: true,
@@ -40,14 +42,27 @@ describe('keyboard input ownership', () => {
     });
 
     expect(resolveKeyboardOwner(occupied)).toBe('persistence-alert');
-    expect(resolveKeyboardOwner({ ...occupied, persistenceAlertOpen: false })).toBe('dialog');
+    expect(resolveKeyboardOwner({ ...occupied, persistenceAlertOpen: false })).toBe('normal-quit');
     expect(
-      resolveKeyboardOwner({ ...occupied, persistenceAlertOpen: false, dialogOpen: false }),
+      resolveKeyboardOwner({
+        ...occupied,
+        persistenceAlertOpen: false,
+        normalQuitInProgress: false,
+      }),
+    ).toBe('dialog');
+    expect(
+      resolveKeyboardOwner({
+        ...occupied,
+        persistenceAlertOpen: false,
+        normalQuitInProgress: false,
+        dialogOpen: false,
+      }),
     ).toBe('ejection');
     expect(
       resolveKeyboardOwner({
         ...occupied,
         persistenceAlertOpen: false,
+        normalQuitInProgress: false,
         dialogOpen: false,
         ejectionInProgress: false,
       }),

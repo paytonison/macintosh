@@ -3,6 +3,8 @@ export const IPC_CHANNELS = {
   saveState: 'macintosh:state:save',
   importFiles: 'macintosh:files:import',
   requestPaste: 'macintosh:clipboard:paste',
+  normalQuitRequested: 'macintosh:app:normal-quit-requested',
+  flushStateAndQuit: 'macintosh:app:flush-state-and-quit',
   quitAfterEject: 'macintosh:app:quit-after-eject',
 } as const;
 
@@ -38,5 +40,7 @@ export interface MacintoshAPI {
   saveState: (state: import('./state').MacintoshState) => Promise<SaveResult>;
   importFiles: (files: readonly unknown[]) => Promise<ImportFilesResult>;
   requestPaste: () => Promise<PasteResult>;
+  onNormalQuitRequested: (listener: () => void) => () => void;
+  flushStateAndQuit: (state: import('./state').MacintoshState | null) => Promise<QuitResult>;
   quitAfterEject: () => Promise<QuitResult>;
 }

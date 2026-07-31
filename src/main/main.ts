@@ -15,6 +15,7 @@ import path from 'node:path';
 import { IPC_CHANNELS } from '../shared/contracts';
 import { createDefaultState, sanitizeState, type MacintoshState } from '../shared/state';
 import { inspectImportPaths } from './import-files';
+import { createNormalQuitCoordinator } from './normal-quit';
 import { createSerializedStateWriter } from './state-save-queue';
 
 const STATE_FILE_NAME = 'macintosh-state.json';
@@ -23,12 +24,14 @@ const APP_NAME = 'The Macintosh';
 const APP_ICON_PATH = path.join(app.getAppPath(), 'assets', 'the-macintosh-icon.png');
 const smokeMode = process.argv.includes('--smoke-test');
 const persistenceProbeMode = process.argv.includes('--persistence-probe');
+const normalQuitProbeMode = process.argv.includes('--normal-quit-probe');
 const captureAboutMode = process.argv.includes('--capture-about');
 const captureCalculatorMode = process.argv.includes('--capture-calculator');
 const captureStartupArgument = process.argv.find((value) => value.startsWith('--capture-startup='));
 const automationMode =
   smokeMode ||
   persistenceProbeMode ||
+  normalQuitProbeMode ||
   process.argv.some((value) => value.startsWith('--capture-screen='));
 const captureArgument = process.argv.find((value) => value.startsWith('--capture-screen='));
 
@@ -107,6 +110,35 @@ const writeStateAtomically = async (state: MacintoshState): Promise<void> => {
 
 const saveState = createSerializedStateWriter(writeStateAtomically);
 
+const persistRendererState = async (value: unknown): Promise<void> => {
+  if ((smokeMode || normalQuitProbeMode) && smokeSaveFailuresRemaining > 0) {
+    smokeSaveFailuresRemaining -= 1;
+    throw new Error('Injected smoke-test save failure.');
+  }
+  await saveState(sanitizeState(value));
+};
+
+const normalQuit = createNormalQuitCoordinator<MacintoshState>({
+  requestRendererFlush: () => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+      throw new Error('The renderer is unavailable for a final state flush.');
+    }
+    mainWindow.webContents.send(IPC_CHANNELS.normalQuitRequested);
+  },
+  persistFinalState: async (state) => {
+    if (state) await persistRendererState(state);
+  },
+  quitApplication: () => setTimeout(() => app.quit(), 0),
+});
+
+const requestNormalQuit = (): void => {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    normalQuit.quitWithoutFlush();
+    return;
+  }
+  normalQuit.requestQuit();
+};
+
 const assertTrustedRenderer = (event: IpcMainInvokeEvent): void => {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
     throw new Error('Rejected IPC from an unknown renderer.');
@@ -125,11 +157,7 @@ const registerIpc = (): void => {
 
   ipcMain.handle(IPC_CHANNELS.saveState, async (event, value: unknown) => {
     assertTrustedRenderer(event);
-    if (smokeMode && smokeSaveFailuresRemaining > 0) {
-      smokeSaveFailuresRemaining -= 1;
-      throw new Error('Injected smoke-test save failure.');
-    }
-    await saveState(sanitizeState(value));
+    await persistRendererState(value);
     return { ok: true as const };
   });
 
@@ -144,10 +172,17 @@ const registerIpc = (): void => {
     return { accepted: true as const };
   });
 
+  ipcMain.handle(IPC_CHANNELS.flushStateAndQuit, async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    const finalState = value === null ? null : sanitizeState(value);
+    await normalQuit.flushAndQuit(finalState);
+    return { accepted: true as const };
+  });
+
   ipcMain.handle(IPC_CHANNELS.quitAfterEject, (event) => {
     assertTrustedRenderer(event);
     quitRequested = true;
-    setTimeout(() => app.quit(), 80);
+    setTimeout(() => normalQuit.quitWithoutFlush(), 80);
     return { accepted: true as const };
   });
 };
@@ -3419,7 +3454,92 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
 
   const destination = path.join(app.getPath('userData'), PROBE_FILE_NAME);
   await writeFile(destination, `${JSON.stringify(proof, null, 2)}\n`, { mode: 0o600 });
+  normalQuit.quitWithoutFlush();
+};
+
+const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
+  await waitForRenderer(window);
+
+  smokeSaveFailuresRemaining = 1;
+  window.close();
+
+  const failureDeadline = Date.now() + 2_000;
+  let saveFailureAlert: { message: string; pending: boolean } | null = null;
+  while (Date.now() < failureDeadline) {
+    saveFailureAlert = (await window.webContents.executeJavaScript(
+      `(() => {
+        const alert = document.querySelector('[aria-label="Persistence error"]');
+        const root = document.querySelector('.macintosh');
+        if (!(alert instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+        return {
+          message: alert.textContent?.trim() ?? '',
+          pending: root.dataset.normalQuitPending === 'true'
+        };
+      })()`,
+      true,
+    )) as { message: string; pending: boolean } | null;
+    if (saveFailureAlert) break;
+    await pause(20);
+  }
+  if (
+    !saveFailureAlert ||
+    !saveFailureAlert.message.includes('could not quit') ||
+    saveFailureAlert.pending
+  ) {
+    throw new Error(
+      `Normal quit save failure was not recoverable: ${JSON.stringify(saveFailureAlert)}.`,
+    );
+  }
+
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[aria-label="Persistence error"] button\')?.click()',
+    true,
+  );
+  await pause(30);
+
+  const initialVfsCount = (await window.webContents.executeJavaScript(
+    "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
+    true,
+  )) as number;
+  const mutationStartedAt = Date.now();
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu="file"]\')?.click()',
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu-action="new-folder"]\')?.click()',
+    true,
+  );
+
+  const mutationDeadline = mutationStartedAt + 210;
+  let finalVfsCount = initialVfsCount;
+  while (Date.now() < mutationDeadline) {
+    finalVfsCount = (await window.webContents.executeJavaScript(
+      "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
+      true,
+    )) as number;
+    if (finalVfsCount === initialVfsCount + 1) break;
+    await pause(5);
+  }
+  const quitDelay = Date.now() - mutationStartedAt;
+  if (finalVfsCount !== initialVfsCount + 1 || quitDelay >= 220) {
+    throw new Error(
+      `Normal quit mutation missed the persistence debounce window: ${JSON.stringify({
+        initialVfsCount,
+        finalVfsCount,
+        quitDelay,
+      })}.`,
+    );
+  }
+
   app.quit();
+  app.quit();
+  setTimeout(() => {
+    if (!window.isDestroyed()) {
+      console.error('Normal quit did not complete after the final state flush.');
+      app.exit(1);
+    }
+  }, 8_000);
 };
 
 const captureScreen = async (window: BrowserWindow, destination: string): Promise<void> => {
@@ -3459,7 +3579,7 @@ const captureScreen = async (window: BrowserWindow, destination: string): Promis
   const image = await window.webContents.capturePage();
   await mkdir(path.dirname(destination), { recursive: true });
   await writeFile(destination, image.toPNG());
-  app.quit();
+  normalQuit.quitWithoutFlush();
 };
 
 const captureStartup = async (window: BrowserWindow, destination: string): Promise<void> => {
@@ -3467,7 +3587,7 @@ const captureStartup = async (window: BrowserWindow, destination: string): Promi
   const image = await window.webContents.capturePage();
   await mkdir(path.dirname(destination), { recursive: true });
   await writeFile(destination, image.toPNG());
-  app.quit();
+  normalQuit.quitWithoutFlush();
 };
 
 const createWindow = async (): Promise<void> => {
@@ -3495,6 +3615,11 @@ const createWindow = async (): Promise<void> => {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.on('close', (event) => {
+    if (!normalQuit.shouldPreventQuit()) return;
+    event.preventDefault();
+    requestNormalQuit();
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -3514,6 +3639,11 @@ const createWindow = async (): Promise<void> => {
       console.error(error);
       app.exit(1);
     });
+  } else if (normalQuitProbeMode) {
+    void runNormalQuitProbe(mainWindow).catch((error) => {
+      console.error(error);
+      app.exit(1);
+    });
   } else if (captureArgument) {
     const destination = path.resolve(captureArgument.slice('--capture-screen='.length));
     void captureScreen(mainWindow, destination).catch((error) => {
@@ -3528,6 +3658,12 @@ const createWindow = async (): Promise<void> => {
     });
   }
 };
+
+app.on('before-quit', (event) => {
+  if (!normalQuit.shouldPreventQuit()) return;
+  event.preventDefault();
+  requestNormalQuit();
+});
 
 app.whenReady().then(async () => {
   const icon = getApplicationIcon();

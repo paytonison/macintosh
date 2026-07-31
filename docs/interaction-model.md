@@ -47,12 +47,13 @@ The current implementation is the baseline. A rule in this document may also ide
 Input has one owner. The following precedence applies from highest to lowest:
 
 1. A save or fatal-state alert that requires acknowledgement.
-2. An open modal dialog.
-3. An active drag or resize session.
-4. An open menu.
-5. The active desk accessory or application window.
-6. The active Finder window.
-7. The desktop surface.
+2. A normal-quit final-save transaction.
+3. An open modal dialog.
+4. An active drag or resize session.
+5. An open menu.
+6. The active desk accessory or application window.
+7. The active Finder window.
+8. The desktop surface.
 
 A higher-priority context must prevent the same event from also triggering a lower-priority action. Components should use pointer capture, propagation control, and explicit keyboard routing rather than relying on incidental DOM focus.
 
@@ -297,6 +298,14 @@ The following state is transient:
 - temporary errors after acknowledgement.
 
 Renderer state is sanitized before persistence and again in the main process. Writes are serialized and atomic. A relaunch must never observe a partially written state file.
+
+Normal application quit is a persistence transaction. Command-Q, the native Quit item, and closing
+the last application window request one final renderer snapshot, stop further interaction, and enqueue
+that snapshot behind any save already in flight. Electron may exit only after the final write succeeds.
+Repeated quit requests join the same transaction. If the write fails, the application remains open,
+interaction resumes behind a visible persistence alert, and the user may retry. Explicit automation
+shutdown and forced process termination remain separate escape paths and must not be mistaken for a
+successful normal save-and-quit.
 
 Schema version 1 and 2 states migrate to version 3 without resetting the desktop or virtual disk. Migration adds the hidden Desktop root when needed. Desktop children without a saved icon position receive a stable, bounded position derived from their node identity; other nodes continue to use their deterministic parent layout until the user moves them.
 

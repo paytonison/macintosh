@@ -121,6 +121,7 @@ export default function App() {
   const [pointerSessionActive, setPointerSessionActive] = useState(false);
   const [interactionCancelToken, setInteractionCancelToken] = useState(0);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [normalQuitPending, setNormalQuitPending] = useState(false);
   const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
   const [windowAnimations, setWindowAnimations] = useState<Record<string, FinderWindowAnimation>>(
     {},
@@ -135,6 +136,8 @@ export default function App() {
   const zoomRestore = useRef<Map<string, WindowGeometry>>(new Map());
   const stateRef = useRef<MacintoshState | null>(null);
   const clipboardNodeIds = useRef<string[]>([]);
+  const persistenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const normalQuitFlush = useRef<Promise<void> | null>(null);
   const transferNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hydrated = useRef(false);
   const pointerSessionActiveRef = useRef(false);
@@ -169,7 +172,7 @@ export default function App() {
     setInteractionCancelToken((current) => current + 1);
   }, [clearVfsItemDropTarget, setVfsItemDragActive]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     stateRef.current = state;
   }, [state]);
 
@@ -219,6 +222,11 @@ export default function App() {
     (nextState: MacintoshState) => window.macintosh.saveState(sanitizeState(nextState)),
     [],
   );
+
+  const setNormalQuitInteraction = useCallback((active: boolean): void => {
+    document.documentElement.classList.toggle('is-normal-quit-pending', active);
+    setNormalQuitPending(active);
+  }, []);
 
   const reportPersistenceError = useCallback(
     (message: string): void => {
@@ -312,15 +320,50 @@ export default function App() {
   }, [reportPersistenceError]);
 
   useEffect(() => {
-    if (!state || !hydrated.current || ejecting) return;
+    if (!state || !hydrated.current || ejecting || normalQuitPending) return;
     const timer = setTimeout(() => {
+      if (persistenceTimer.current === timer) persistenceTimer.current = null;
       void persistState(state).catch((error: unknown) => {
         console.error(error);
         reportPersistenceError('The desktop could not be saved.');
       });
     }, 220);
-    return () => clearTimeout(timer);
-  }, [state, ejecting, persistState, reportPersistenceError]);
+    persistenceTimer.current = timer;
+    return () => {
+      clearTimeout(timer);
+      if (persistenceTimer.current === timer) persistenceTimer.current = null;
+    };
+  }, [state, ejecting, normalQuitPending, persistState, reportPersistenceError]);
+
+  useEffect(() => {
+    const removeListener = window.macintosh.onNormalQuitRequested(() => {
+      if (normalQuitFlush.current) return;
+      if (persistenceTimer.current) {
+        clearTimeout(persistenceTimer.current);
+        persistenceTimer.current = null;
+      }
+      cancelPointerInteractions();
+      setOpenMenu(null);
+      setNormalQuitInteraction(true);
+      const finalState = stateRef.current ? sanitizeState(stateRef.current) : null;
+      const flush = (async (): Promise<void> => {
+        try {
+          await window.macintosh.flushStateAndQuit(finalState);
+        } catch (error) {
+          console.error(error);
+          setNormalQuitInteraction(false);
+          reportPersistenceError('The Macintosh could not quit because the desktop was not saved.');
+        } finally {
+          normalQuitFlush.current = null;
+        }
+      })();
+      normalQuitFlush.current = flush;
+    });
+    return () => {
+      removeListener();
+      document.documentElement.classList.remove('is-normal-quit-pending');
+    };
+  }, [cancelPointerInteractions, reportPersistenceError, setNormalQuitInteraction]);
 
   const ready = Boolean(state && startupComplete);
   useEffect(() => {
@@ -345,6 +388,7 @@ export default function App() {
   );
   const keyboardOwner = resolveKeyboardOwner({
     persistenceAlertOpen: persistenceError !== null,
+    normalQuitInProgress: normalQuitPending,
     dialogOpen: dialog !== null,
     ejectionInProgress: ejecting,
     pointerSessionActive,
@@ -354,6 +398,7 @@ export default function App() {
   });
   const systemInputBlocked =
     keyboardOwner === 'persistence-alert' ||
+    keyboardOwner === 'normal-quit' ||
     keyboardOwner === 'dialog' ||
     keyboardOwner === 'ejection' ||
     keyboardOwner === 'pointer-session';
@@ -1256,14 +1301,17 @@ export default function App() {
   return (
     <main
       aria-label="The Macintosh desktop"
+      aria-busy={normalQuitPending}
       className={[
         'macintosh',
         automation ? 'is-automation' : '',
         itemDragging ? 'is-item-dragging' : '',
+        normalQuitPending ? 'is-normal-quit-pending' : '',
       ]
         .filter(Boolean)
         .join(' ')}
       data-item-dragging={itemDragging ? 'true' : undefined}
+      data-normal-quit-pending={normalQuitPending ? 'true' : undefined}
     >
       <MenuBar
         clock={clock}

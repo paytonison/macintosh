@@ -10,6 +10,8 @@ const IPC_CHANNELS = {
   saveState: 'macintosh:state:save',
   importFiles: 'macintosh:files:import',
   requestPaste: 'macintosh:clipboard:paste',
+  normalQuitRequested: 'macintosh:app:normal-quit-requested',
+  flushStateAndQuit: 'macintosh:app:flush-state-and-quit',
   quitAfterEject: 'macintosh:app:quit-after-eject',
 } as const;
 
@@ -32,6 +34,13 @@ const api: MacintoshAPI = Object.freeze({
     return ipcRenderer.invoke(IPC_CHANNELS.importFiles, paths) as Promise<ImportFilesResult>;
   },
   requestPaste: () => ipcRenderer.invoke(IPC_CHANNELS.requestPaste),
+  onNormalQuitRequested: (listener: () => void) => {
+    const handleRequest = (): void => listener();
+    ipcRenderer.on(IPC_CHANNELS.normalQuitRequested, handleRequest);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.normalQuitRequested, handleRequest);
+  },
+  flushStateAndQuit: (state: MacintoshState | null) =>
+    ipcRenderer.invoke(IPC_CHANNELS.flushStateAndQuit, state),
   quitAfterEject: () => ipcRenderer.invoke(IPC_CHANNELS.quitAfterEject),
 });
 

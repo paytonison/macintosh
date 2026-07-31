@@ -147,12 +147,22 @@ try {
     );
   }
 
+  await runElectron('--normal-quit-probe');
+  const normalQuitState = JSON.parse(
+    await readFile(path.join(userData, 'macintosh-state.json'), 'utf8'),
+  );
+  if (normalQuitState.nodes.length !== state.nodes.length + 1) {
+    throw new Error(
+      'Normal quit did not persist the mutation made inside the 220 ms debounce window.',
+    );
+  }
+
   await runElectron('--persistence-probe');
   const proof = JSON.parse(await readFile(path.join(userData, 'persistence-proof.json'), 'utf8'));
   if (!proof?.loaded || !proof.diskVisible || proof.diskLabel !== 'System Disk') {
     throw new Error(`Persistence relaunch probe failed: ${JSON.stringify(proof)}`);
   }
-  if (!Number.isFinite(proof.vfsCount) || proof.vfsCount !== state.nodes.length) {
+  if (!Number.isFinite(proof.vfsCount) || proof.vfsCount !== normalQuitState.nodes.length) {
     throw new Error('The persisted virtual filesystem was not loaded by the renderer.');
   }
   if (proof.windowLeft !== savedWindow.x || proof.windowTop !== savedWindow.y) {
@@ -191,10 +201,10 @@ try {
   }
 
   console.log(
-    'Electron smoke passed: native The Macintosh identity/icon, System 1 bitmap cursor bindings, native closed-fist drag continuity, file/folder pointer transitions, thresholded click-hold/drag, off-center pointer alignment, focus-loss cleanup, host file/folder Desktop placement, Desktop selection/info/stepped folder and document opening and closing, direct System Disk import, blocked document fall-through, external Trash rejection, Finder-to-Desktop move and free reposition, document paste and duplication, free Finder icon placement, direct folder and Trash moves, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled Trash drag, free System Disk placement, disk pointer-follow, Trash hover, eject animation, persisted quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, System 1 bitmap cursor bindings, native closed-fist drag continuity, file/folder pointer transitions, thresholded click-hold/drag, off-center pointer alignment, focus-loss cleanup, host file/folder Desktop placement, Desktop selection/info/stepped folder and document opening and closing, direct System Disk import, blocked document fall-through, external Trash rejection, Finder-to-Desktop move and free reposition, document paste and duplication, free Finder icon placement, direct folder and Trash moves, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled Trash drag, free System Disk placement, disk pointer-follow, Trash hover, eject animation, persisted eject, normal-quit save failure recovery, repeated quit coalescing, and quit-inside-debounce persistence.',
   );
   console.log(
-    'Persistence relaunch passed: Finder geometry, exact Desktop and Finder icon positions, Desktop content and hierarchy, System Disk, and virtual filesystem reloaded.',
+    'Persistence relaunch passed: normal-quit mutation, Finder geometry, exact Desktop and Finder icon positions, Desktop content and hierarchy, System Disk, and virtual filesystem reloaded.',
   );
 } finally {
   await rm(userData, { recursive: true, force: true });

@@ -70,6 +70,11 @@ button:focus-visible {
   overflow: hidden;
 }
 
+html.is-normal-quit-pending .macintosh,
+.macintosh.is-normal-quit-pending {
+  pointer-events: none;
+}
+
 .menu-bar {
   position: fixed;
   z-index: 7000;
