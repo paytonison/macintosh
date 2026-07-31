@@ -253,6 +253,11 @@ html.is-normal-quit-pending .macintosh,
   place-items: center;
 }
 
+.pixel-icon-drag-artwork {
+  position: relative;
+  z-index: 1;
+}
+
 .desktop-icon-label {
   max-width: 82px;
   padding: 1px 3px;
@@ -569,6 +574,34 @@ html.is-item-dragging *,
 .macintosh.is-item-dragging,
 .macintosh.is-item-dragging * {
   cursor: var(--closed-fist-cursor), default !important;
+}
+
+.vfs-item-drag-preview {
+  position: absolute;
+  z-index: 6950;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.vfs-item-drag-preview-icon {
+  position: absolute;
+  display: block;
+}
+
+.vfs-item-drag-preview-icon > .pixel-icon {
+  position: absolute;
+  inset: 0;
+}
+
+.vfs-item-drag-preview-icon > .pixel-icon-drag-shadow {
+  transform: translate3d(3px, 3px, 0);
+}
+
+.vfs-item-drag-preview-icon.is-solid-shadow > .pixel-icon-drag-shadow rect {
+  fill: #000;
 }
 
 .finder-item span {

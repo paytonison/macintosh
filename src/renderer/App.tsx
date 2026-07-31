@@ -29,6 +29,8 @@ import {
 } from './components/FinderWindow';
 import { MenuBar, type MenuDefinition, type MenuEntry } from './components/MenuBar';
 import { StartupScreen } from './components/StartupScreen';
+import { SystemDiskDragPreview } from './components/SystemDiskDragPreview';
+import { VfsItemDragPreview } from './components/VfsItemDragPreview';
 import { deriveFinderCommandContext, findMenuShortcutEntry } from './model/command-context';
 import {
   placeImportedDesktopRoots,
@@ -36,6 +38,11 @@ import {
   translateDesktopIconDrag,
 } from './model/desktop-icon-layout';
 import { translateFinderIconDrag } from './model/finder-icon-layout';
+import {
+  createIconDragPreviewItems,
+  resolveIconDragPreviewPosition,
+  type IconDragPreviewItem,
+} from './model/icon-drag-preview';
 import { resolveKeyboardOwner } from './model/input-owner';
 import {
   addFolder,
@@ -99,6 +106,20 @@ const findNodeAnimationSource = (nodeId: string): HTMLElement | null =>
     (element) => element.dataset.vfsNodeId === nodeId || element.dataset.vfsItem === nodeId,
   ) ?? null;
 
+const previewUsesSolidDesktopShadow = (item: IconDragPreviewItem, pointer: Point): boolean => {
+  const position = resolveIconDragPreviewPosition(item, pointer);
+  const target = document.elementFromPoint(
+    position.x + Math.round(item.size / 2),
+    position.y + Math.round(item.size / 2),
+  );
+  const surface = document.querySelector<HTMLElement>('.desktop-surface');
+  return (
+    target instanceof Element &&
+    surface?.contains(target) === true &&
+    !target.closest('[data-finder-window], [data-calculator-window], [role="dialog"]')
+  );
+};
+
 export default function App() {
   const automation = useMemo(
     () => new URLSearchParams(window.location.search).has('automation'),
@@ -112,7 +133,16 @@ export default function App() {
     Partial<Record<SpecialDesktopIconId, Point>>
   >({});
   const [draggingIcon, setDraggingIcon] = useState<SpecialDesktopIconId | null>(null);
+  const [systemDiskDragPreviewItem, setSystemDiskDragPreviewItem] =
+    useState<IconDragPreviewItem | null>(null);
+  const [systemDiskDragPointer, setSystemDiskDragPointer] = useState<Point | null>(null);
+  const [systemDiskDragSolidShadow, setSystemDiskDragSolidShadow] = useState(false);
   const [vfsItemDragging, setVfsItemDragging] = useState(false);
+  const [vfsItemDragPreviewItems, setVfsItemDragPreviewItems] = useState<IconDragPreviewItem[]>([]);
+  const [vfsItemDragPointer, setVfsItemDragPointer] = useState<Point | null>(null);
+  const [vfsItemDragSolidShadowIds, setVfsItemDragSolidShadowIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [snappingIcon, setSnappingIcon] = useState<SpecialDesktopIconId | null>(null);
   const [trashHover, setTrashHover] = useState(false);
   const [ejecting, setEjecting] = useState(false);
@@ -130,6 +160,7 @@ export default function App() {
   const windowAnimationsRef = useRef<Record<string, FinderWindowAnimation>>({});
   const windowAnimationToken = useRef(0);
   const dragOrigins = useRef<Partial<Record<SpecialDesktopIconId, Point>>>({});
+  const systemDiskDragPreviewItemRef = useRef<IconDragPreviewItem | null>(null);
   const vfsItemDrag = useRef<FinderItemDragContext | null>(null);
   const vfsItemInvalidTargets = useRef<Set<string>>(new Set());
   const vfsItemDraggingRef = useRef(false);
@@ -170,6 +201,9 @@ export default function App() {
     clearVfsItemDropTarget();
     setPointerSessionActive(false);
     setVfsItemDragActive(false);
+    setVfsItemDragPreviewItems([]);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
     setInteractionCancelToken((current) => current + 1);
   }, [clearVfsItemDropTarget, setVfsItemDragActive]);
 
@@ -594,12 +628,15 @@ export default function App() {
       }
     }
     setVfsItemDragActive(true);
+    setVfsItemDragPreviewItems(context.previewItems);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
     setPointerInteractionActive(true);
     setFinderSelection(new Set(nodeIds));
     setDesktopSelection(new Set());
   };
 
-  const startDesktopItemDrag = (id: string, pointerOffset: Point): void => {
+  const startDesktopItemDrag = (id: string, pointerOffset: Point, pointerOrigin: Point): void => {
     const current = stateRef.current;
     if (!current) return;
     const items = listChildren(current.nodes, 'desktop', 'icons');
@@ -607,6 +644,29 @@ export default function App() {
     const draggedItems = items.filter((item) => selectedIds.has(item.id));
     if (draggedItems.length === 0) return;
     const nodeIds = draggedItems.map((item) => item.id);
+    const renderedItems = [...document.querySelectorAll<HTMLElement>('[data-desktop-vfs-item]')];
+    const previewItems = createIconDragPreviewItems(
+      nodeIds.flatMap((nodeId) => {
+        const renderedItem = renderedItems.find(
+          (element) => element.dataset.desktopVfsItem === nodeId,
+        );
+        const icon = renderedItem?.querySelector('.pixel-icon');
+        if (!icon) return [];
+        const bounds = icon.getBoundingClientRect();
+        return [
+          {
+            nodeId,
+            bounds: {
+              left: bounds.left,
+              top: bounds.top,
+              width: bounds.width,
+              height: bounds.height,
+            },
+          },
+        ];
+      }),
+      pointerOrigin,
+    );
     vfsItemDrag.current = {
       parentId: 'desktop',
       nodeIds,
@@ -617,6 +677,7 @@ export default function App() {
           draggedItems.map((item) => [item.id, resolveDesktopIconPosition(item)]),
         ),
       },
+      previewItems,
     };
     vfsItemInvalidTargets.current = new Set(nodeIds);
     for (const nodeId of nodeIds) {
@@ -625,6 +686,9 @@ export default function App() {
       }
     }
     setVfsItemDragActive(true);
+    setVfsItemDragPreviewItems(previewItems);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
     setPointerInteractionActive(true);
     setDesktopSelection(new Set(nodeIds));
     setFinderSelection(new Set());
@@ -663,6 +727,15 @@ export default function App() {
 
   const previewVfsItemDrag = useCallback(
     (pointer: Point): void => {
+      const previewPointer = { x: Math.round(pointer.x), y: Math.round(pointer.y) };
+      setVfsItemDragPointer(previewPointer);
+      setVfsItemDragSolidShadowIds(
+        new Set(
+          (vfsItemDrag.current?.previewItems ?? [])
+            .filter((item) => previewUsesSolidDesktopShadow(item, previewPointer))
+            .map((item) => item.nodeId),
+        ),
+      );
       const target = resolveVfsItemDrop(pointer);
       if (vfsItemDropTarget.current === target?.element) return;
       clearVfsItemDropTarget();
@@ -805,6 +878,9 @@ export default function App() {
     vfsItemDrag.current = null;
     vfsItemInvalidTargets.current.clear();
     setVfsItemDragActive(false);
+    setVfsItemDragPreviewItems([]);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
     setPointerInteractionActive(false);
   };
 
@@ -813,13 +889,51 @@ export default function App() {
     vfsItemInvalidTargets.current.clear();
     clearVfsItemDropTarget();
     setVfsItemDragActive(false);
+    setVfsItemDragPreviewItems([]);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
     setPointerInteractionActive(false);
   }, [clearVfsItemDropTarget, setVfsItemDragActive, setPointerInteractionActive]);
 
-  const startIconDrag = (id: SpecialDesktopIconId, origin: Point): void => {
+  const clearSystemDiskDragPreview = (): void => {
+    systemDiskDragPreviewItemRef.current = null;
+    setSystemDiskDragPreviewItem(null);
+    setSystemDiskDragPointer(null);
+    setSystemDiskDragSolidShadow(false);
+  };
+
+  const startIconDrag = (id: SpecialDesktopIconId, origin: Point, pointerOrigin: Point): void => {
     dragOrigins.current[id] = origin;
     setDraggingIcon(id);
     setSnappingIcon(null);
+    if (id === 'system-disk') {
+      const icon = document.querySelector<SVGElement>(
+        '[data-desktop-icon="system-disk"] .pixel-icon',
+      );
+      const bounds = icon?.getBoundingClientRect();
+      const [previewItem] = bounds
+        ? createIconDragPreviewItems(
+            [
+              {
+                nodeId: id,
+                bounds: {
+                  left: bounds.left,
+                  top: bounds.top,
+                  width: bounds.width,
+                  height: bounds.height,
+                },
+              },
+            ],
+            pointerOrigin,
+          )
+        : [];
+      systemDiskDragPreviewItemRef.current = previewItem ?? null;
+      setSystemDiskDragPreviewItem(previewItem ?? null);
+      setSystemDiskDragPointer(pointerOrigin);
+      setSystemDiskDragSolidShadow(
+        previewItem ? previewUsesSolidDesktopShadow(previewItem, pointerOrigin) : false,
+      );
+    }
     selectDesktopIcon(id, false);
   };
 
@@ -843,6 +957,12 @@ export default function App() {
     setPreviewPositions((current) => ({ ...current, [id]: next }));
 
     if (id !== 'system-disk') return;
+    setSystemDiskDragPointer(pointer);
+    setSystemDiskDragSolidShadow(
+      systemDiskDragPreviewItemRef.current
+        ? previewUsesSolidDesktopShadow(systemDiskDragPreviewItemRef.current, pointer)
+        : false,
+    );
     setTrashHover(isTrashDropPoint(pointer));
   };
 
@@ -856,6 +976,7 @@ export default function App() {
     setDraggingIcon(null);
     setSnappingIcon(null);
     setTrashHover(false);
+    if (id === 'system-disk') clearSystemDiskDragPreview();
   };
 
   const restoreIcon = (id: SpecialDesktopIconId): void => {
@@ -864,6 +985,7 @@ export default function App() {
     setDraggingIcon(null);
     setSnappingIcon(id);
     setTrashHover(false);
+    if (id === 'system-disk') clearSystemDiskDragPreview();
     setTimeout(() => {
       setPreviewPositions((current) => {
         const next = { ...current };
@@ -881,6 +1003,7 @@ export default function App() {
     setOpenMenu(null);
     setEjecting(true);
     setDraggingIcon(null);
+    clearSystemDiskDragPreview();
     setTrashHover(true);
     playEjectSound();
     await pause(automation ? 280 : 920);
@@ -945,6 +1068,7 @@ export default function App() {
     });
     delete dragOrigins.current[id];
     setDraggingIcon(null);
+    if (id === 'system-disk') clearSystemDiskDragPreview();
   };
 
   const createFolder = useCallback((): void => {
@@ -1294,7 +1418,10 @@ export default function App() {
     return <StartupScreen automation={automation} onComplete={() => setStartupComplete(true)} />;
   }
 
-  const diskPosition = previewPositions['system-disk'] ?? state.desktop.diskPosition;
+  const diskPosition =
+    draggingIcon === 'system-disk'
+      ? state.desktop.diskPosition
+      : (previewPositions['system-disk'] ?? state.desktop.diskPosition);
   const trashPosition = previewPositions.trash ?? state.desktop.trashPosition;
   const activeWindowId = state.desktop.windows.at(-1)?.id ?? null;
   const itemDragging = draggingIcon !== null || vfsItemDragging;
@@ -1404,7 +1531,6 @@ export default function App() {
           />
         ))}
         <DesktopIcon
-          dragging={draggingIcon === 'system-disk'}
           ejecting={ejecting}
           icon="disk"
           id="system-disk"
@@ -1486,6 +1612,21 @@ export default function App() {
           </div>
         )}
       </DesktopSurface>
+      {vfsItemDragging && vfsItemDragPointer ? (
+        <VfsItemDragPreview
+          items={vfsItemDragPreviewItems}
+          nodes={state.nodes}
+          pointer={vfsItemDragPointer}
+          solidShadowIds={vfsItemDragSolidShadowIds}
+        />
+      ) : null}
+      {draggingIcon === 'system-disk' && systemDiskDragPreviewItem && systemDiskDragPointer ? (
+        <SystemDiskDragPreview
+          item={systemDiskDragPreviewItem}
+          pointer={systemDiskDragPointer}
+          solidShadow={systemDiskDragSolidShadow}
+        />
+      ) : null}
     </main>
   );
 }

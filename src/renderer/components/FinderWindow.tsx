@@ -20,6 +20,7 @@ import {
   resolveFinderIconPosition,
   type FinderIconDragLayout,
 } from '../model/finder-icon-layout';
+import { createIconDragPreviewItems, type IconDragPreviewItem } from '../model/icon-drag-preview';
 import {
   beginPointerDrag,
   releasePointerDrag,
@@ -38,6 +39,7 @@ export interface FinderItemDragContext {
   parentId: string;
   nodeIds: string[];
   layout: FinderIconDragLayout | null;
+  previewItems: IconDragPreviewItem[];
 }
 
 interface FinderWindowProps {
@@ -431,6 +433,32 @@ export function FinderWindow({
       ? iconItems.filter(({ item: candidate }) => selectedIds.has(candidate.id))
       : iconItems.filter(({ item: candidate }) => candidate.id === item.id);
     const bounds = event.currentTarget.getBoundingClientRect();
+    const renderedItems = [
+      ...(event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[data-vfs-item]') ??
+        []),
+    ];
+    const previewItems = createIconDragPreviewItems(
+      draggedItems.flatMap(({ item: candidate }) => {
+        const renderedItem = renderedItems.find(
+          (element) => element.dataset.vfsItem === candidate.id,
+        );
+        const icon = renderedItem?.querySelector('.pixel-icon');
+        if (!icon) return [];
+        const iconBounds = icon.getBoundingClientRect();
+        return [
+          {
+            nodeId: candidate.id,
+            bounds: {
+              left: iconBounds.left,
+              top: iconBounds.top,
+              width: iconBounds.width,
+              height: iconBounds.height,
+            },
+          },
+        ];
+      }),
+      { x: event.clientX, y: event.clientY },
+    );
     const context = {
       parentId: node.id,
       nodeIds: draggedItems.map(({ item: candidate }) => candidate.id),
@@ -449,6 +477,7 @@ export function FinderWindow({
             ),
           }
         : null,
+      previewItems,
     } satisfies FinderItemDragContext;
     onInteractionChange(true);
     pressedItem.current = event.currentTarget;

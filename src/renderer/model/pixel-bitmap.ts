@@ -44,3 +44,16 @@ export const rasterizeOneBitBitmap = ({ x, y, rows }: PixelBitmap): PixelRun[] =
     }
     return runs;
   });
+
+export const ditherPixelSilhouette = (runs: PixelRun[]): PixelRun[] =>
+  runs.flatMap((run) =>
+    Array.from({ length: run.width }, (_, offset): PixelRun => {
+      const x = run.x + offset;
+      return {
+        x,
+        y: run.y,
+        width: 1,
+        color: (x + run.y) % 2 === 0 ? 'black' : 'white',
+      };
+    }),
+  );

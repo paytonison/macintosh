@@ -1,4 +1,4 @@
-import { rasterizeOneBitBitmap, type PixelRun } from '../model/pixel-bitmap';
+import { ditherPixelSilhouette, rasterizeOneBitBitmap, type PixelRun } from '../model/pixel-bitmap';
 
 export type PixelIconName =
   'computer' | 'disk' | 'trash' | 'trash-full' | 'folder' | 'document' | 'system-folder';
@@ -204,24 +204,38 @@ const drawings: Record<PixelIconName, PixelRun[]> = {
   }),
 };
 
+const shadowDrawings = Object.fromEntries(
+  Object.entries(drawings).map(([name, runs]) => [name, ditherPixelSilhouette(runs)]),
+) as Record<PixelIconName, PixelRun[]>;
+
+export type PixelIconVariant = 'artwork' | 'shadow';
+
 interface PixelIconProps {
   name: PixelIconName;
   size?: number;
   className?: string;
+  variant?: PixelIconVariant;
 }
 
-export function PixelIcon({ name, size = 48, className = '' }: PixelIconProps) {
+export function PixelIcon({
+  name,
+  size = 48,
+  className = '',
+  variant = 'artwork',
+}: PixelIconProps) {
+  const drawing = variant === 'shadow' ? shadowDrawings[name] : drawings[name];
   return (
     <svg
       aria-hidden="true"
       className={`pixel-icon ${className}`}
       data-pixel-icon={name}
+      data-pixel-icon-variant={variant}
       height={size}
       shapeRendering="crispEdges"
       viewBox="0 0 32 32"
       width={size}
     >
-      {drawings[name].map((run, index) => (
+      {drawing.map((run, index) => (
         <rect
           fill={run.color === 'white' ? '#fff' : '#000'}
           height="1"

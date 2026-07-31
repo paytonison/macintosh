@@ -453,6 +453,35 @@ interface SmokeNativeCursorEvent {
   hotspot: SmokePoint;
 }
 
+interface SmokeIconDragPreviewState {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  artworkName: string | null;
+  artworkVariant: string | null;
+  shadowName: string | null;
+  shadowVariant: string | null;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  shadowColors: string[];
+  pointerEvents: string;
+  borderStyle: string;
+  outlineStyle: string;
+  solidShadow: boolean;
+  shadowFullyBlack: boolean;
+}
+
+interface SmokeNativeFinderDragState {
+  htmlDragging: boolean;
+  rootDragging: boolean;
+  dataDragging: string | null;
+  sourceCursor: string;
+  targetCursor: string;
+  dropHighlighted: boolean;
+  preview: SmokeIconDragPreviewState | null;
+}
+
 const runNativeFinderDragCursorProbe = async (
   window: BrowserWindow,
   itemId: string,
@@ -464,26 +493,30 @@ const runNativeFinderDragCursorProbe = async (
       const item = document.querySelector('[data-vfs-item="${itemId}"]');
       const menu = document.querySelector('.menu-bar');
       const canvas = item?.closest('[data-icon-layout-parent]');
-      if (!(item instanceof HTMLElement) || !(menu instanceof HTMLElement) || !(canvas instanceof HTMLElement)) return null;
-      const bounds = item.getBoundingClientRect();
+      const icon = item?.querySelector('.pixel-icon');
+      const folderTarget = [...(canvas?.querySelectorAll('[data-vfs-item][data-drop-destination]') ?? [])]
+        .find((candidate) => candidate !== item);
+      const folderTargetIcon = folderTarget?.querySelector('.pixel-icon');
+      if (
+        !(item instanceof HTMLElement) ||
+        !(icon instanceof SVGElement) ||
+        !(menu instanceof HTMLElement) ||
+        !(canvas instanceof HTMLElement) ||
+        !(folderTarget instanceof HTMLElement) ||
+        !(folderTargetIcon instanceof SVGElement)
+      ) return null;
+      const bounds = icon.getBoundingClientRect();
+      const folderTargetBounds = folderTargetIcon.getBoundingClientRect();
       const menuBounds = menu.getBoundingClientRect();
-      const canvasBounds = canvas.getBoundingClientRect();
-      let downward = null;
-      for (let y = Math.round(bounds.bottom + 12); y < canvasBounds.bottom - 12; y += 12) {
-        const x = Math.round(bounds.left + bounds.width / 2);
-        const target = document.elementFromPoint(x, y);
-        if (target?.closest('[data-icon-layout-parent]') === canvas && !target.closest('[data-vfs-item]')) {
-          downward = { x, y };
-          break;
-        }
-      }
-      if (!downward) return null;
       return {
         source: {
           x: Math.round(bounds.left + bounds.width / 2),
           y: Math.round(bounds.top + bounds.height / 2)
         },
-        downward,
+        folderTarget: {
+          x: Math.round(folderTargetBounds.left + folderTargetBounds.width / 2),
+          y: Math.round(folderTargetBounds.top + folderTargetBounds.height / 2)
+        },
         blocked: {
           x: Math.round(menuBounds.left + menuBounds.width / 2),
           y: Math.round(menuBounds.top + menuBounds.height / 2)
@@ -491,7 +524,7 @@ const runNativeFinderDragCursorProbe = async (
       };
     })()`,
     true,
-  )) as { source: SmokePoint; downward: SmokePoint; blocked: SmokePoint } | null;
+  )) as { source: SmokePoint; folderTarget: SmokePoint; blocked: SmokePoint } | null;
   if (!points) throw new Error(`${itemId} was unavailable for a native cursor probe.`);
 
   const cursorEvents: SmokeNativeCursorEvent[] = [];
@@ -518,6 +551,15 @@ const runNativeFinderDragCursorProbe = async (
         const source = document.querySelector('[data-vfs-item="${itemId}"]');
         const target = document.elementFromPoint(${point.x}, ${point.y});
         if (!(root instanceof HTMLElement) || !(source instanceof HTMLElement)) return null;
+        const previewRoot = document.querySelector('[data-vfs-item-drag-preview="true"]');
+        const preview = document.querySelector(
+          '[data-vfs-item-drag-preview-node="${itemId}"]'
+        );
+        const artwork = preview?.querySelector('.pixel-icon-drag-artwork');
+        const shadow = preview?.querySelector('.pixel-icon-drag-shadow');
+        const artworkBounds = artwork?.getBoundingClientRect();
+        const shadowBounds = shadow?.getBoundingClientRect();
+        const previewStyle = preview instanceof HTMLElement ? getComputedStyle(preview) : null;
         return {
           htmlDragging: document.documentElement.classList.contains('is-item-dragging'),
           rootDragging: root.classList.contains('is-item-dragging'),
@@ -525,18 +567,42 @@ const runNativeFinderDragCursorProbe = async (
           sourceCursor: getComputedStyle(source).cursor,
           targetCursor: target instanceof Element ? getComputedStyle(target).cursor : '',
           dropHighlighted: target instanceof Element &&
-            target.closest('[data-drop-destination]')?.classList.contains('is-file-drop-target') === true
+            target.closest('[data-drop-destination]')?.classList.contains('is-file-drop-target') === true,
+          preview:
+            previewRoot instanceof HTMLElement &&
+            preview instanceof HTMLElement &&
+            artwork instanceof SVGElement &&
+            shadow instanceof SVGElement &&
+            artworkBounds &&
+            shadowBounds &&
+            previewStyle
+              ? {
+                  left: Math.round(artworkBounds.left),
+                  top: Math.round(artworkBounds.top),
+                  width: Math.round(artworkBounds.width),
+                  height: Math.round(artworkBounds.height),
+                  artworkName: artwork.dataset.pixelIcon ?? null,
+                  artworkVariant: artwork.dataset.pixelIconVariant ?? null,
+                  shadowName: shadow.dataset.pixelIcon ?? null,
+                  shadowVariant: shadow.dataset.pixelIconVariant ?? null,
+                  shadowOffsetX: Math.round(shadowBounds.left - artworkBounds.left),
+                  shadowOffsetY: Math.round(shadowBounds.top - artworkBounds.top),
+                  shadowColors: [...new Set(
+                    [...shadow.querySelectorAll('rect')].map((rect) => rect.getAttribute('fill') ?? '')
+                  )],
+                  pointerEvents: getComputedStyle(previewRoot).pointerEvents,
+                  borderStyle: previewStyle.borderStyle,
+                  outlineStyle: previewStyle.outlineStyle,
+                  solidShadow: preview.classList.contains('is-solid-shadow'),
+                  shadowFullyBlack: [...shadow.querySelectorAll('rect')].every(
+                    (rect) => getComputedStyle(rect).fill === 'rgb(0, 0, 0)'
+                  )
+                }
+              : null
         };
       })()`,
       true,
-    )) as {
-      htmlDragging: boolean;
-      rootDragging: boolean;
-      dataDragging: string | null;
-      sourceCursor: string;
-      targetCursor: string;
-      dropHighlighted: boolean;
-    } | null;
+    )) as SmokeNativeFinderDragState | null;
   window.webContents.on('cursor-changed', recordCursor);
   let buttonDown = false;
   try {
@@ -545,6 +611,14 @@ const runNativeFinderDragCursorProbe = async (
     window.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', ...points.source });
     buttonDown = true;
     await pause(32);
+    await expectItemCursor(
+      window,
+      `[data-vfs-item="${itemId}"]`,
+      points.source,
+      expected,
+      'pressed',
+      `Native ${itemId} pointer-down`,
+    );
     for (let offset = 2; offset <= 12; offset += 2) {
       window.webContents.sendInputEvent({
         type: 'mouseMove',
@@ -558,10 +632,11 @@ const runNativeFinderDragCursorProbe = async (
 
     const activeCursor = cursorEvents.at(-1);
     const activeScale = activeCursor ? activeCursor.size.width / 16 : 0;
-    const activeState = await cursorState({
+    const activePoint = {
       x: points.source.x + 12,
       y: points.source.y + 12,
-    });
+    };
+    const activeState = await cursorState(activePoint);
     if (
       !activeCursor ||
       activeCursor.type !== 'custom' ||
@@ -580,27 +655,63 @@ const runNativeFinderDragCursorProbe = async (
         `Native ${itemId} drag did not acquire the closed-fist cursor: ${JSON.stringify({ activeCursor, activeState })}.`,
       );
     }
+    const activePreview = activeState.preview;
+    if (
+      !activePreview ||
+      activePreview.width !== 32 ||
+      activePreview.height !== 32 ||
+      activePreview.artworkName !== 'folder' ||
+      activePreview.shadowName !== activePreview.artworkName ||
+      activePreview.artworkVariant !== 'artwork' ||
+      activePreview.shadowVariant !== 'shadow' ||
+      activePreview.shadowOffsetX !== 3 ||
+      activePreview.shadowOffsetY !== 3 ||
+      !activePreview.shadowColors.includes('#000') ||
+      !activePreview.shadowColors.includes('#fff') ||
+      activePreview.pointerEvents !== 'none' ||
+      activePreview.borderStyle !== 'none' ||
+      activePreview.outlineStyle !== 'none' ||
+      activePreview.solidShadow ||
+      activePreview.shadowFullyBlack ||
+      activePoint.x < activePreview.left ||
+      activePoint.x > activePreview.left + activePreview.width ||
+      activePoint.y < activePreview.top ||
+      activePoint.y > activePreview.top + activePreview.height
+    ) {
+      throw new Error(
+        `Native ${itemId} drag did not render its icon-shaped dithered preview under the cursor: ${JSON.stringify(activePreview)}.`,
+      );
+    }
     cursorEvents.length = 0;
 
     window.webContents.sendInputEvent({
       type: 'mouseMove',
       button: 'left',
       modifiers: ['leftbuttondown'],
-      ...points.downward,
+      ...points.folderTarget,
     });
     await pause(64);
-    const downwardState = await cursorState(points.downward);
+    const folderTargetState = await cursorState(points.folderTarget);
+    const folderTargetPreview = folderTargetState?.preview;
     if (
-      !downwardState?.htmlDragging ||
-      !downwardState.rootDragging ||
-      downwardState.targetCursor !== expected.closed ||
-      !downwardState.dropHighlighted
+      !folderTargetState?.htmlDragging ||
+      !folderTargetState.rootDragging ||
+      folderTargetState.targetCursor !== expected.closed ||
+      !folderTargetState.dropHighlighted ||
+      !folderTargetPreview ||
+      folderTargetPreview.solidShadow ||
+      folderTargetPreview.shadowFullyBlack ||
+      folderTargetPreview.left - activePreview.left !== points.folderTarget.x - activePoint.x ||
+      folderTargetPreview.top - activePreview.top !== points.folderTarget.y - activePoint.y ||
+      points.folderTarget.x < folderTargetPreview.left ||
+      points.folderTarget.x > folderTargetPreview.left + folderTargetPreview.width ||
+      points.folderTarget.y < folderTargetPreview.top ||
+      points.folderTarget.y > folderTargetPreview.top + folderTargetPreview.height
     ) {
       throw new Error(
-        `Native ${itemId} drag lost its cursor while moving downward inside Finder: ${JSON.stringify(downwardState)}.`,
+        `Native ${itemId} drag lost its icon preview over another folder: ${JSON.stringify(folderTargetState)}.`,
       );
     }
-
     window.webContents.sendInputEvent({
       type: 'mouseMove',
       button: 'left',
@@ -612,7 +723,9 @@ const runNativeFinderDragCursorProbe = async (
     if (
       !desktopState?.htmlDragging ||
       !desktopState.rootDragging ||
-      desktopState.targetCursor !== expected.closed
+      desktopState.targetCursor !== expected.closed ||
+      !desktopState.preview?.solidShadow ||
+      !desktopState.preview.shadowFullyBlack
     ) {
       throw new Error(
         `Native ${itemId} drag lost its cursor over the desktop: ${JSON.stringify(desktopState)}.`,
@@ -629,7 +742,10 @@ const runNativeFinderDragCursorProbe = async (
     if (
       !blockedState?.htmlDragging ||
       !blockedState.rootDragging ||
-      blockedState.targetCursor !== expected.closed
+      blockedState.targetCursor !== expected.closed ||
+      !blockedState.preview ||
+      blockedState.preview.solidShadow ||
+      blockedState.preview.shadowFullyBlack
     ) {
       throw new Error(
         `Native ${itemId} drag lost its cursor over a blocked surface: ${JSON.stringify(blockedState)}.`,
@@ -666,10 +782,11 @@ const runNativeFinderDragCursorProbe = async (
       releasedState.htmlDragging ||
       releasedState.rootDragging ||
       releasedState.dataDragging !== null ||
+      releasedState.preview !== null ||
       ![expected.arrow, expected.pointing].includes(releasedState.targetCursor)
     ) {
       throw new Error(
-        `Native ${itemId} drag did not release its cursor: ${JSON.stringify(releasedState)}.`,
+        `Native ${itemId} drag did not release its cursor and icon preview: ${JSON.stringify(releasedState)}.`,
       );
     }
   } finally {
@@ -2272,30 +2389,59 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!selectedImport) throw new Error('Imported document could not be selected for Copy/Paste.');
-  await pause(50);
+  let importedDocumentSelected = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    importedDocumentSelected = (await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('[data-vfs-item]')].some(
+        (item) => item.textContent?.includes('Dropped Note.txt') &&
+          item.classList.contains('is-selected')
+      )`,
+      true,
+    )) as boolean;
+    if (importedDocumentSelected) break;
+    await pause(20);
+  }
+  if (!importedDocumentSelected) {
+    throw new Error('Imported document selection did not reach the Copy command context.');
+  }
   await window.webContents.executeJavaScript(
     "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true, cancelable: true }))",
     true,
   );
-  await pause(50);
+  let copiedToInternalClipboard = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    copiedToInternalClipboard = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-transfer-notice="true"]')
+        ?.textContent?.startsWith('Copied 1 item to the Clipboard.') === true`,
+      true,
+    )) as boolean;
+    if (copiedToInternalClipboard) break;
+    await pause(20);
+  }
+  if (!copiedToInternalClipboard) {
+    throw new Error('Copy did not populate the internal Finder clipboard.');
+  }
   await window.webContents.executeJavaScript(
     "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', metaKey: true, bubbles: true, cancelable: true }))",
     true,
   );
-  await pause(120);
-
-  const pastedDocuments = (await window.webContents.executeJavaScript(
-    `(() => {
-      const names = [...document.querySelectorAll('[data-vfs-item]')].map(
-        (item) => item.textContent?.trim() ?? ''
-      );
-      return {
-        clipboard: names.some((name) => name.includes('Clipboard')),
-        duplicated: names.some((name) => name.includes('Dropped Note copy.txt'))
-      };
-    })()`,
-    true,
-  )) as { clipboard: boolean; duplicated: boolean };
+  let pastedDocuments = { clipboard: false, duplicated: false };
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    pastedDocuments = (await window.webContents.executeJavaScript(
+      `(() => {
+        const names = [...document.querySelectorAll('[data-vfs-item]')].map(
+          (item) => item.textContent?.trim() ?? ''
+        );
+        return {
+          clipboard: names.some((name) => name.includes('Clipboard')),
+          duplicated: names.some((name) => name.includes('Dropped Note copy.txt'))
+        };
+      })()`,
+      true,
+    )) as { clipboard: boolean; duplicated: boolean };
+    if (pastedDocuments.clipboard && pastedDocuments.duplicated) break;
+    await pause(25);
+  }
   if (!pastedDocuments.clipboard || !pastedDocuments.duplicated) {
     throw new Error(`Document Copy/Paste failed: ${JSON.stringify(pastedDocuments)}.`);
   }
@@ -3259,20 +3405,124 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
           selector,
           pointer,
           cursorBindings.expected,
-          'dragging',
+          'off-dragging',
           'Disk active drag',
         );
-        const distance = (await window.webContents.executeJavaScript(
+        const dragPreview = (await window.webContents.executeJavaScript(
           `(() => {
             const disk = document.querySelector('[data-desktop-icon="system-disk"]');
-            if (!(disk instanceof HTMLElement)) return 9999;
-            const bounds = disk.getBoundingClientRect();
-            return Math.hypot(bounds.left + bounds.width / 2 - ${pointer.x},
-              bounds.top + bounds.height / 2 - ${pointer.y});
+            const sourceArtwork = disk?.querySelector('.pixel-icon');
+            const previewRoot = document.querySelector('[data-system-disk-drag-preview="true"]');
+            const preview = previewRoot?.querySelector(
+              '[data-system-disk-drag-preview-icon="true"]'
+            );
+            const artwork = preview?.querySelector('.pixel-icon-drag-artwork');
+            const shadow = preview?.querySelector('.pixel-icon-drag-shadow');
+            if (
+              !(disk instanceof HTMLElement) ||
+              !(sourceArtwork instanceof SVGElement) ||
+              !(previewRoot instanceof HTMLElement) ||
+              !(preview instanceof HTMLElement) ||
+              !(artwork instanceof SVGElement) ||
+              !(shadow instanceof SVGElement)
+            ) return null;
+            const diskBounds = disk.getBoundingClientRect();
+            const sourceBounds = sourceArtwork.getBoundingClientRect();
+            const artworkBounds = artwork.getBoundingClientRect();
+            const shadowBounds = shadow.getBoundingClientRect();
+            const previewStyle = getComputedStyle(preview);
+            return {
+              sourceDistance: Math.hypot(
+                diskBounds.left + diskBounds.width / 2 - ${from.x},
+                diskBounds.top + diskBounds.height / 2 - ${from.y}
+              ),
+              sourceDragging: disk.classList.contains('is-dragging'),
+              previewDeltaX: Math.round(artworkBounds.left - sourceBounds.left),
+              previewDeltaY: Math.round(artworkBounds.top - sourceBounds.top),
+              preview: {
+                left: Math.round(artworkBounds.left),
+                top: Math.round(artworkBounds.top),
+                width: Math.round(artworkBounds.width),
+                height: Math.round(artworkBounds.height),
+                artworkName: artwork.dataset.pixelIcon ?? null,
+                artworkVariant: artwork.dataset.pixelIconVariant ?? null,
+                shadowName: shadow.dataset.pixelIcon ?? null,
+                shadowVariant: shadow.dataset.pixelIconVariant ?? null,
+                shadowOffsetX: Math.round(shadowBounds.left - artworkBounds.left),
+                shadowOffsetY: Math.round(shadowBounds.top - artworkBounds.top),
+                shadowColors: [...new Set(
+                  [...shadow.querySelectorAll('rect')]
+                    .map((rect) => rect.getAttribute('fill') ?? '')
+                )],
+                pointerEvents: getComputedStyle(previewRoot).pointerEvents,
+                borderStyle: previewStyle.borderStyle,
+                outlineStyle: previewStyle.outlineStyle,
+                solidShadow: preview.classList.contains('is-solid-shadow'),
+                shadowFullyBlack: [...shadow.querySelectorAll('rect')].every(
+                  (rect) => getComputedStyle(rect).fill === 'rgb(0, 0, 0)'
+                )
+              }
+            };
           })()`,
           true,
-        )) as number;
-        if (distance > 12) throw new Error('System Disk did not follow the pointer during drag.');
+        )) as {
+          sourceDistance: number;
+          sourceDragging: boolean;
+          previewDeltaX: number;
+          previewDeltaY: number;
+          preview: SmokeIconDragPreviewState;
+        } | null;
+        const activePreview = dragPreview?.preview;
+        if (
+          !dragPreview ||
+          !activePreview ||
+          dragPreview.sourceDistance > 2 ||
+          dragPreview.sourceDragging ||
+          dragPreview.previewDeltaX !== pointer.x - from.x ||
+          dragPreview.previewDeltaY !== pointer.y - from.y ||
+          activePreview.width !== 32 ||
+          activePreview.height !== 32 ||
+          activePreview.artworkName !== 'disk' ||
+          activePreview.shadowName !== 'disk' ||
+          activePreview.artworkVariant !== 'artwork' ||
+          activePreview.shadowVariant !== 'shadow' ||
+          activePreview.shadowOffsetX !== 3 ||
+          activePreview.shadowOffsetY !== 3 ||
+          !activePreview.shadowColors.includes('#000') ||
+          !activePreview.shadowColors.includes('#fff') ||
+          activePreview.pointerEvents !== 'none' ||
+          activePreview.borderStyle !== 'none' ||
+          activePreview.outlineStyle !== 'none' ||
+          activePreview.solidShadow ||
+          activePreview.shadowFullyBlack
+        ) {
+          throw new Error(
+            `System Disk did not use its icon-only dithered drag preview: ${JSON.stringify(dragPreview)}.`,
+          );
+        }
+      }
+      if (verifyFollowing && step === 12) {
+        const desktopShadow = (await window.webContents.executeJavaScript(
+          `(() => {
+            const preview = document.querySelector(
+              '[data-system-disk-drag-preview-icon="true"]'
+            );
+            const shadow = preview?.querySelector('.pixel-icon-drag-shadow');
+            if (!(preview instanceof HTMLElement) || !(shadow instanceof SVGElement)) return null;
+            return {
+              solid: preview.classList.contains('is-solid-shadow'),
+              fullyBlack: [...shadow.querySelectorAll('rect')].every(
+                (rect) => getComputedStyle(rect).fill === 'rgb(0, 0, 0)'
+              )
+            };
+          })()`,
+          true,
+        )) as { solid: boolean; fullyBlack: boolean } | null;
+        if (!desktopShadow?.solid || !desktopShadow.fullyBlack) {
+          throw new Error(
+            `System Disk shadow did not switch to solid black over the Desktop: ${JSON.stringify(desktopShadow)}.`,
+          );
+        }
       }
     }
 
@@ -3284,6 +3534,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     });
     await pause(36);
     await expectItemCursor(window, selector, to, cursorBindings.expected, 'idle', 'Disk up');
+    const previewReleased = await window.webContents.executeJavaScript(
+      'document.querySelector(\'[data-system-disk-drag-preview="true"]\') === null',
+      true,
+    );
+    if (!previewReleased) throw new Error('System Disk drag preview remained after release.');
   };
 
   await window.webContents.executeJavaScript(
@@ -3442,6 +3697,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       if (!(disk instanceof HTMLElement)) return false;
       const bounds = disk.getBoundingClientRect();
       return !disk.classList.contains('is-dragging') &&
+        document.querySelector('[data-system-disk-drag-preview="true"]') === null &&
         Math.hypot(
           bounds.left + bounds.width / 2 - ${coordinates.disk.x},
           bounds.top + bounds.height / 2 - ${coordinates.disk.y}
@@ -3523,10 +3779,25 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   await pause(100);
   const trashIsActive = await window.webContents.executeJavaScript(
-    "document.querySelector('[data-desktop-icon=\"trash\"]')?.classList.contains('is-drop-target') === true",
+    `document.querySelector('[data-desktop-icon="trash"]')?.classList.contains('is-drop-target') === true &&
+      (() => {
+        const preview = document.querySelector('[data-system-disk-drag-preview-icon="true"]');
+        const artwork = preview?.querySelector(
+          '[data-pixel-icon="disk"][data-pixel-icon-variant="artwork"]'
+        );
+        const shadow = preview?.querySelector('.pixel-icon-drag-shadow');
+        return preview?.classList.contains('is-solid-shadow') === true &&
+          artwork !== null &&
+          shadow instanceof SVGElement &&
+          [...shadow.querySelectorAll('rect')].every(
+            (rect) => getComputedStyle(rect).fill === 'rgb(0, 0, 0)'
+          );
+      })()`,
     true,
   );
-  if (!trashIsActive) throw new Error('Trash did not enter its valid-drop hover state.');
+  if (!trashIsActive) {
+    throw new Error('Trash hover did not retain the System Disk icon-only drag preview.');
+  }
 
   window.webContents.sendInputEvent({
     type: 'mouseUp',

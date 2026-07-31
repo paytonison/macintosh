@@ -21,7 +21,7 @@ interface DesktopVfsIconProps {
   selected: boolean;
   onSelect: (id: string, additive: boolean) => void;
   onOpen: (id: string, source: HTMLElement) => void;
-  onDragStart: (id: string, pointerOffset: Point) => void;
+  onDragStart: (id: string, pointerOffset: Point, pointerOrigin: Point) => void;
   onDragMove: (pointer: Point) => void;
   onDragEnd: (pointer: Point) => void;
   onDragCancel: () => void;
@@ -98,7 +98,7 @@ export function DesktopVfsIcon({
     });
     if (previousPhase === 'pressed' && active.intent.phase === 'dragging') {
       active.captureTarget.classList.remove('is-pointer-pressed');
-      onDragStart(node.id, active.pointerOffset);
+      onDragStart(node.id, active.pointerOffset, active.intent.origin);
     }
     if (active.intent.phase !== 'dragging') return;
     event.preventDefault();

@@ -27,7 +27,7 @@ interface DesktopIconProps {
   validDropTarget?: boolean;
   onSelect: (id: 'system-disk' | 'trash', additive: boolean) => void;
   onOpen: (id: 'system-disk' | 'trash', source: HTMLElement) => void;
-  onDragStart: (id: 'system-disk' | 'trash', origin: Point) => void;
+  onDragStart: (id: 'system-disk' | 'trash', origin: Point, pointerOrigin: Point) => void;
   onDrag: (id: 'system-disk' | 'trash', position: Point, pointer: Point) => void;
   onDragEnd: (id: 'system-disk' | 'trash', pointer: Point) => void;
   onDragCancel: (id: 'system-disk' | 'trash') => void;
@@ -107,7 +107,7 @@ export function DesktopIcon({
     });
     if (previousPhase === 'pressed' && active.intent.phase === 'dragging') {
       active.captureTarget.classList.remove('is-pointer-pressed');
-      onDragStart(id, active.origin);
+      onDragStart(id, active.origin, active.intent.origin);
     }
     if (active.intent.phase !== 'dragging') return;
     onDrag(

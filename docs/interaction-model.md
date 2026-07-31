@@ -38,7 +38,7 @@ The current implementation is the baseline. A rule in this document may also ide
 
 **Selection domain** is either the desktop or Finder. Only one domain may own the current selection at a time.
 
-**Preview state** is temporary feedback during a pointer session, such as a drag outline or provisional icon position.
+**Preview state** is temporary feedback during a pointer session, such as a drag outline, icon shadow, or provisional icon position.
 
 **Durable state** is state expected to survive application relaunch.
 
@@ -60,6 +60,8 @@ A higher-priority context must prevent the same event from also triggering a low
 Authored pointer-session drags remain a press until movement reaches the shared four-pixel Euclidean threshold. Releasing before that threshold is a click; crossing it begins the drag and latches that state until release or cancellation. Pointer capture keeps the session owned when the pointer leaves its source element. Pointer cancellation or losing application focus clears transient interaction state so a later interaction starts cleanly.
 
 Cursor feedback mirrors that ownership without changing gesture semantics. Every authored cursor uses a white interior with a crisp black outline. The normal cursor is a 1-bit System 1-style arrow. Finder and desktop files and folders, together with System Disk and Trash, show a 1-bit pointing finger while any part of their icon-and-label region is hovered. A primary-button press changes immediately to an open hand and keeps it until the shared drag threshold is crossed. An active item drag uses a closed fist latched for the entire pointer-captured drag, including after the pointer leaves its source. Pointer-up, pointer cancellation, lost pointer capture, or application-focus cancellation clears the pressed or dragging state immediately and restores the pointing finger when the pointer remains over an eligible item or the arrow otherwise. Native drag-and-drop remains reserved for explicit host-file imports; internal virtual-filesystem item movement uses the authored pointer session so platform drag feedback cannot replace the closed-fist cursor.
+
+An active internal virtual-filesystem item drag keeps each grabbed bitmap visible at its exact pointer-relative offset. A three-pixel aligned silhouette follows behind each bitmap as its shadow. The silhouette is solid black over the patterned Desktop and switches to 50% black-and-white dithering over white window surfaces so it remains distinct from either backdrop. This transient layer contains icon artwork only, has no rectangular boundary outline, does not participate in hit testing, and disappears immediately on release or cancellation. The source icons remain at their committed locations until the drop succeeds. System Disk uses the same icon-only preview and contextual shadow; Trash continues to use its existing provisional moving icon and hard shadow.
 
 Opening a menu temporarily owns pointer interaction inside the menu bar. Clicking outside closes the menu; the underlying click may proceed only when doing so is intentional and tested.
 
@@ -206,6 +208,7 @@ Icon view begins with an orderly deterministic arrangement, but it does not cons
 
 - Dragging onto bare icon-view space commits an integer-pixel position relative to that folder's scrollable content.
 - Dragging multiple selected icons applies one shared delta so their relative arrangement remains intact.
+- Every dragged icon remains visible with its backdrop-contrasted icon-shaped shadow throughout the pointer session, including over another folder or outside its source window.
 - Dropping onto a folder icon performs the existing virtual filesystem move instead of a placement-only change.
 - Dropping into the bare icon canvas of another open folder moves the items and places them at the drop point.
 - List view ignores icon positions and remains name-sorted. Returning to icon view restores the saved positions.
@@ -219,6 +222,7 @@ Desktop files and folders use the same selection, Open, and Get Info commands as
 
 Internal desktop movement uses the authored pointer session:
 
+- The moving icon-only preview and its solid-black Desktop shadow follow the pointer without changing the committed Desktop layout.
 - Dragging onto bare desktop space moves a Finder item into Desktop or repositions an item already there.
 - A same-parent drag changes only the item's parent-scoped desktop position; it does not alter its timestamp, name, contents, or descendants.
 - Dragging multiple selected items applies one bounded shared delta so their relative arrangement remains intact.
@@ -229,7 +233,7 @@ Internal desktop movement uses the authored pointer session:
 
 An explicit host drop onto bare desktop space imports bounded virtual copies into Desktop and places the imported roots at and near the drop point. Multiple roots use a deterministic bounded, non-overlapping layout while space remains available. A direct drop onto a folder or System Disk imports into that explicit target instead. Host drops onto Trash remain rejected.
 
-System Disk and Trash are freely repositionable. Their provisional positions follow the pointer during drag and become durable when the drag commits.
+System Disk and Trash are freely repositionable. System Disk uses the shared icon-only preview while its committed icon and label remain in place; Trash's provisional position follows the pointer. Their new positions become durable only when the drag commits.
 
 System Disk drag is the eject gesture:
 
