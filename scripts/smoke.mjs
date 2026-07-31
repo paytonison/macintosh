@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { getBrandedElectronExecutable } from './macos-runtime.mjs';
 
+const SYSTEM_DISK_CREATED_AT = '1984-01-04T00:00:00.000Z';
 const electronPath = await getBrandedElectronExecutable();
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const userData = await mkdtemp(path.join(tmpdir(), 'macintosh-workbench-smoke-'));
@@ -50,6 +51,9 @@ try {
     throw new Error('The persisted state was not migrated to schema 3.');
   const disk = state.nodes.find((node) => node.id === 'system-disk');
   if (!disk || disk.kind !== 'disk') throw new Error('The persisted virtual disk was removed.');
+  if (disk.createdAt !== SYSTEM_DISK_CREATED_AT) {
+    throw new Error(`System Disk creation metadata was not canonical: ${disk.createdAt}.`);
+  }
   const desktop = state.nodes.find((node) => node.id === 'desktop');
   if (!desktop || desktop.kind !== 'desktop' || desktop.parentId !== null) {
     throw new Error('The hidden Desktop root was not persisted.');
@@ -204,7 +208,7 @@ try {
     'Electron smoke passed: native The Macintosh identity/icon, System 1 bitmap cursor bindings, native closed-fist drag continuity, backdrop-contrasted icon shadows without boundary boxes for virtual items and System Disk, file/folder pointer transitions, thresholded click-hold/drag, off-center pointer alignment, focus-loss cleanup, host file/folder Desktop placement, Desktop selection/info/stepped folder and document opening and closing with the Finder move-preview outline and hard shadow, direct System Disk import, blocked document fall-through, external Trash rejection, Finder-to-Desktop move and free reposition, document paste and duplication, free Finder icon placement, direct folder and Trash moves, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled Trash drag, free System Disk placement, disk icon-preview following, Trash hover, eject animation, persisted eject, normal-quit save failure recovery, repeated quit coalescing, and quit-inside-debounce persistence.',
   );
   console.log(
-    'Persistence relaunch passed: normal-quit mutation, Finder geometry, exact Desktop and Finder icon positions, Desktop content and hierarchy, System Disk, and virtual filesystem reloaded.',
+    'Persistence relaunch passed: normal-quit mutation, Finder geometry, exact Desktop and Finder icon positions, Desktop content and hierarchy, canonical System Disk metadata, and virtual filesystem reloaded.',
   );
 } finally {
   await rm(userData, { recursive: true, force: true });

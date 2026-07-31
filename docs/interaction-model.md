@@ -263,6 +263,8 @@ Dialogs are modal interaction contexts. They appear above ordinary windows, reta
 
 A dialog may be moved by its title bar. Closing it through its close box or default button produces the same result. Modal keyboard behavior should be explicit; do not allow an underlying Calculator or Finder shortcut to consume a key intended for the dialog.
 
+System Disk owns canonical simulated creation metadata for January 4, 1984. Its Get Info dialog renders that metadata exactly as `Created: 1/4/1984`, independent of the host locale and timezone. Other virtual filesystem nodes retain their own creation timestamps.
+
 A persistence error is an alert state with higher priority than ordinary desktop interaction. Dismissing the alert acknowledges the message; it does not fabricate a successful save.
 
 ## Virtual filesystem behavior

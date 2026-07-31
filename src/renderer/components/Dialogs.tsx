@@ -12,6 +12,14 @@ import type { VfsNode } from '../../shared/state';
 import { beginPointerDrag, updatePointerDrag, type PointerDragIntent } from '../model/pointer-drag';
 import { PixelIcon } from './PixelIcon';
 
+export const formatInfoCreatedDate = (node: VfsNode): string => {
+  const date = new Date(node.createdAt);
+  if (node.id === 'system-disk') {
+    return `${date.getUTCMonth() + 1}/${date.getUTCDate()}/${date.getUTCFullYear()}`;
+  }
+  return date.toLocaleDateString();
+};
+
 interface ClassicDialogProps {
   title: string;
   children: ReactNode;
@@ -298,7 +306,7 @@ export function InfoDialog({
           </div>
           <div>
             <dt>Created:</dt>
-            <dd>{new Date(node.createdAt).toLocaleDateString()}</dd>
+            <dd>{formatInfoCreatedDate(node)}</dd>
           </div>
         </dl>
       </div>

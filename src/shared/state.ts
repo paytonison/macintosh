@@ -2,6 +2,7 @@ import { initialDesktopIconPosition } from './desktop-icon-position';
 
 export const STATE_SCHEMA_VERSION = 3 as const;
 const LEGACY_STATE_SCHEMA_VERSIONS = new Set([1, 2]);
+export const SYSTEM_DISK_CREATED_AT = '1984-01-04T00:00:00.000Z';
 
 // Schema 2 allowed two required roots plus 510 ordinary nodes. Schema 3 keeps
 // that user-visible capacity while adding the hidden Desktop root.
@@ -68,6 +69,11 @@ const seedNode = (
   modifiedAt: seedTimestamp,
 });
 
+const seedSystemDisk = (): VfsNode => ({
+  ...seedNode('system-disk', null, 'System Disk', 'disk'),
+  createdAt: SYSTEM_DISK_CREATED_AT,
+});
+
 export const createDefaultState = (): MacintoshState => ({
   schemaVersion: STATE_SCHEMA_VERSION,
   desktop: {
@@ -87,7 +93,7 @@ export const createDefaultState = (): MacintoshState => ({
     lastEjectAt: null,
   },
   nodes: [
-    seedNode('system-disk', null, 'System Disk', 'disk'),
+    seedSystemDisk(),
     seedNode('trash', null, 'Trash', 'trash'),
     seedNode('desktop', null, 'Desktop', 'desktop'),
     seedNode('system-folder', 'system-disk', 'System Folder', 'folder'),
@@ -207,6 +213,12 @@ const requiredRoots = [
   { id: 'desktop', kind: 'desktop' },
 ] as const;
 
+const normalizeRequiredRoot = (node: VfsNode): VfsNode => {
+  const root = { ...node, parentId: null };
+  delete root.iconPosition;
+  return root.id === 'system-disk' ? { ...root, createdAt: SYSTEM_DISK_CREATED_AT } : root;
+};
+
 const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNode[] => {
   const requirements = new Map<string, VfsNodeKind>(
     requiredRoots.map((root) => [root.id, root.kind]),
@@ -227,9 +239,7 @@ const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNod
 
     seen.add(node.id);
     if (requiredKind) {
-      const root = { ...node };
-      delete root.iconPosition;
-      repaired.push({ ...root, parentId: null });
+      repaired.push(normalizeRequiredRoot(node));
     } else {
       repaired.push(node);
     }
@@ -238,7 +248,7 @@ const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNod
   for (const requirement of requiredRoots) {
     if (seen.has(requirement.id)) continue;
     const fallback = fallbackNodes.find((node) => node.id === requirement.id);
-    if (fallback) repaired.push({ ...fallback });
+    if (fallback) repaired.push(normalizeRequiredRoot(fallback));
   }
 
   let overflow = repaired.length - MAX_VFS_NODES;

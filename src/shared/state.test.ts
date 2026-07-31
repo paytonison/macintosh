@@ -5,6 +5,7 @@ import {
   MAX_VFS_NODES,
   sanitizeState,
   STATE_SCHEMA_VERSION,
+  SYSTEM_DISK_CREATED_AT,
   type VfsNode,
 } from './state';
 
@@ -12,7 +13,10 @@ describe('persistent Macintosh state', () => {
   it('creates the three required roots, including a hidden Desktop container', () => {
     const state = createDefaultState();
 
-    expect(state.nodes.find((node) => node.id === 'system-disk')?.kind).toBe('disk');
+    expect(state.nodes.find((node) => node.id === 'system-disk')).toMatchObject({
+      kind: 'disk',
+      createdAt: SYSTEM_DISK_CREATED_AT,
+    });
     expect(state.nodes.find((node) => node.id === 'trash')?.kind).toBe('trash');
     expect(state.nodes.find((node) => node.id === 'desktop')).toMatchObject({
       kind: 'desktop',
@@ -34,6 +38,27 @@ describe('persistent Macintosh state', () => {
     expect(restored.nodes.some((node) => node.id === 'trash')).toBe(true);
     expect(restored.nodes.some((node) => node.id === 'desktop')).toBe(true);
   });
+
+  it.each([1, 2, STATE_SCHEMA_VERSION])(
+    'normalizes the System Disk creation date in schema %i without rewriting other nodes',
+    (schemaVersion) => {
+      const saved = createDefaultState();
+      const disk = saved.nodes.find((node) => node.id === 'system-disk');
+      const welcome = saved.nodes.find((node) => node.id === 'welcome');
+      if (!disk || !welcome) throw new Error('Missing timestamp fixtures.');
+      disk.createdAt = '1989-01-24T09:00:00.000Z';
+      welcome.createdAt = '2026-07-30T18:45:00.000Z';
+
+      const normalized = sanitizeState({ ...saved, schemaVersion });
+
+      expect(normalized.nodes.find((node) => node.id === 'system-disk')?.createdAt).toBe(
+        SYSTEM_DISK_CREATED_AT,
+      );
+      expect(normalized.nodes.find((node) => node.id === 'welcome')?.createdAt).toBe(
+        '2026-07-30T18:45:00.000Z',
+      );
+    },
+  );
 
   it('repairs a missing or malformed Desktop root without discarding valid nodes', () => {
     const missing = createDefaultState();
