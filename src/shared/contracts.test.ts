@@ -10,6 +10,9 @@ describe('Electron capability contract', () => {
       mutateVfs: 'macintosh:vfs:mutate',
       importFiles: 'macintosh:files:import',
       requestPaste: 'macintosh:clipboard:paste',
+      normalQuitReady: 'macintosh:app:normal-quit-ready',
+      normalQuitRequested: 'macintosh:app:normal-quit-requested',
+      flushPresentationAndQuit: 'macintosh:app:flush-presentation-and-quit',
       saveAndQuitAfterEject: 'macintosh:app:save-and-quit-after-eject',
     });
     expect('saveState' in IPC_CHANNELS).toBe(false);

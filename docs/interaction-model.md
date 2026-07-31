@@ -38,7 +38,7 @@ The current implementation is the baseline. A rule in this document may also ide
 
 **Selection domain** is either the desktop or Finder. Only one domain may own the current selection at a time.
 
-**Preview state** is temporary feedback during a pointer session, such as a drag outline or provisional icon position.
+**Preview state** is temporary feedback during a pointer session, such as a drag outline, icon shadow, or provisional icon position.
 
 **Durable state** is state expected to survive application relaunch.
 
@@ -47,14 +47,21 @@ The current implementation is the baseline. A rule in this document may also ide
 Input has one owner. The following precedence applies from highest to lowest:
 
 1. A save or fatal-state alert that requires acknowledgement.
-2. An open modal dialog.
-3. An active drag or resize session.
-4. An open menu.
-5. The active desk accessory or application window.
-6. The active Finder window.
-7. The desktop surface.
+2. A normal-quit final-save transaction.
+3. An open modal dialog.
+4. An active drag or resize session.
+5. An open menu.
+6. The active desk accessory or application window.
+7. The active Finder window.
+8. The desktop surface.
 
 A higher-priority context must prevent the same event from also triggering a lower-priority action. Components should use pointer capture, propagation control, and explicit keyboard routing rather than relying on incidental DOM focus.
+
+Authored pointer-session drags remain a press until movement reaches the shared four-pixel Euclidean threshold. Releasing before that threshold is a click; crossing it begins the drag and latches that state until release or cancellation. Pointer capture keeps the session owned when the pointer leaves its source element. Pointer cancellation or losing application focus clears transient interaction state so a later interaction starts cleanly.
+
+Cursor feedback mirrors that ownership without changing gesture semantics. Every authored cursor uses a white interior with a crisp black outline. The normal cursor is a 1-bit System 1-style arrow. Finder and desktop files and folders, together with System Disk and Trash, show a 1-bit pointing finger while any part of their icon-and-label region is hovered. A primary-button press changes immediately to an open hand and keeps it until the shared drag threshold is crossed. An active item drag uses a closed fist latched for the entire pointer-captured drag, including after the pointer leaves its source. Pointer-up, pointer cancellation, lost pointer capture, or application-focus cancellation clears the pressed or dragging state immediately and restores the pointing finger when the pointer remains over an eligible item or the arrow otherwise. Native drag-and-drop remains reserved for explicit host-file imports; internal virtual-filesystem item movement uses the authored pointer session so platform drag feedback cannot replace the closed-fist cursor.
+
+An active internal virtual-filesystem item drag keeps each grabbed bitmap visible at its exact pointer-relative offset. A three-pixel aligned silhouette follows behind each bitmap as its shadow. The silhouette is solid black over the patterned Desktop and switches to 50% black-and-white dithering over white window surfaces so it remains distinct from either backdrop. This transient layer contains icon artwork only, has no rectangular boundary outline, does not participate in hit testing, and disappears immediately on release or cancellation. The source icons remain at their committed locations until the drop succeeds. System Disk uses the same icon-only preview and contextual shadow; Trash continues to use its existing provisional moving icon and hard shadow.
 
 Opening a menu temporarily owns pointer interaction inside the menu bar. Clicking outside closes the menu; the underlying click may proceed only when doing so is intentional and tested.
 
@@ -160,12 +167,13 @@ There is at most one Finder window for a given virtual filesystem node. The wind
 
 Disk, folder, and Trash windows list their children. Document windows display read-only document content until editing is deliberately introduced.
 
-Creating a folder or document window uses a short stepped scale from the opening icon to the final
-window frame. Commands without a visible source scale from the final frame's center. Bringing an
-existing window to the front does not replay the effect, and opening animation state is transient.
-Closing reverses that scale toward the node's currently visible icon, or toward the window center
-when no source icon is rendered. The window leaves the Finder stack only after the close animation
-finishes; reopening it during that transition cancels the pending close.
+Creating a Finder window uses a short stepped scale from the opening icon to the final
+window frame. The same transparent outline and hard pixel shadow used for Finder window-move
+previews follow the scaling frame. Commands without a visible source scale from the final frame's
+center. Bringing an existing window to the front does not replay the effect, and opening animation
+state is transient. Closing reverses that scale toward the node's currently visible icon, or toward
+the window center when no source icon is rendered. The window leaves the Finder stack only after
+the close animation finishes; reopening it during that transition cancels the pending close.
 
 ### Moving
 
@@ -201,6 +209,7 @@ Icon view begins with an orderly deterministic arrangement ranked by stable node
 
 - Dragging onto bare icon-view space commits an integer-pixel position relative to that folder's scrollable content.
 - Dragging multiple selected icons applies one shared delta so their relative arrangement remains intact.
+- Every dragged icon remains visible with its backdrop-contrasted icon-shaped shadow throughout the pointer session, including over another folder or outside its source window.
 - Dropping onto a folder icon performs the existing virtual filesystem move instead of a placement-only change.
 - Dropping into the bare icon canvas of another open folder moves the items and places them at the drop point.
 - List view ignores icon positions and remains name-sorted. Returning to icon view restores the saved positions.
@@ -227,7 +236,18 @@ Host files and folders dropped on bare Desktop are imported as bounded virtual c
 
 Bare Desktop is a destination only when it actually owns the hit. Finder windows, desk accessories, dialogs, ejection layers, and other blocked surfaces do not fall through. Direct drops onto System Disk, folders, and the precise Trash artwork retain those destinations. Host drops remain prohibited on Trash.
 
-System Disk and Trash are freely repositionable. Their provisional positions follow the pointer during drag and become durable when the drag commits.
+Internal desktop movement uses the authored pointer session:
+
+- The moving icon-only preview and its solid-black Desktop shadow follow the pointer without changing the committed Desktop layout.
+- Dragging onto bare desktop space moves a Finder item into Desktop or repositions an item already there.
+- A same-parent drag changes only the item's parent-scoped desktop position; it does not alter its timestamp, name, contents, or descendants.
+- Dragging multiple selected items applies one bounded shared delta so their relative arrangement remains intact.
+- Dropping onto a desktop folder, System Disk, or Trash performs the corresponding virtual-filesystem move instead of a bare-desktop placement.
+- A desktop document consumes the drop without accepting it; it must not allow the event to fall through to bare Desktop.
+- An item and its descendants are invalid destinations for that item's drag.
+- Cancellation or release outside a valid destination changes neither layout nor filesystem state.
+
+System Disk and Trash are freely repositionable. System Disk uses the shared icon-only preview while its committed icon and label remain in place; Trash's provisional position follows the pointer. Their new positions become durable only when the drag commits.
 
 System Disk drag is the eject gesture:
 
@@ -259,6 +279,8 @@ Only one ordinary dialog is open at a time. About, Get Info, and the eject expla
 Dialogs are modal interaction contexts. They appear above ordinary windows, retain input priority until dismissed, and do not alter Finder stacking merely by opening. Their geometry is transient.
 
 A dialog may be moved by its title bar. Closing it through its close box or default button produces the same result. Modal keyboard behavior should be explicit; do not allow an underlying Calculator or Finder shortcut to consume a key intended for the dialog.
+
+System Disk, Trash, and the shipped folders and documents own canonical simulated creation metadata for January 24, 1984. Their Get Info dialogs render that date exactly as `Created: 1/24/1984`, independent of the host locale and timezone. The hidden Desktop root and user-created, imported, pasted, or duplicated nodes retain their own creation timestamps.
 
 A persistence error is an alert state with higher priority than ordinary desktop interaction. Dismissing the alert acknowledges the message; it does not fabricate a successful save.
 
@@ -310,7 +332,16 @@ The main process owns canonical durable state. It merges allowlisted renderer pr
 validates semantic VFS commands, and serializes all resulting atomic writes. Canonical state
 advances only after a write succeeds. A relaunch must never observe a partially written state file.
 
-Valid schema version 1 and version 2 states migrate to version 3 without resetting the desktop or virtual disk. Migration inserts the hidden Desktop root while leaving existing System Disk children in place and preserving names, contents, timestamps, window state, view mode, special icon positions, Finder icon positions, and eject time. Sanitization repairs missing or malformed required roots, removes root `iconPosition` values, and preserves arbitrary bounded positions for Desktop children. A legacy Desktop child without coordinates receives one identity-derived free-form position during sanitization; that materialized position is persisted and never depends on node-array order.
+Normal application quit is a persistence transaction. Command-Q, the native Quit item, and closing
+the last application window request one final allowlisted presentation patch, stop further
+interaction, and enqueue its reconciliation with canonical main-process state behind any write
+already in flight. Electron may exit only after the final atomic write succeeds. Repeated quit
+requests join the same transaction. If the write fails, the application remains open, interaction
+resumes behind a visible persistence alert, and the user may retry. Explicit automation shutdown
+and forced process termination remain separate escape paths and must not be mistaken for a
+successful normal save-and-quit.
+
+Valid schema version 1 and version 2 states migrate to version 3 without resetting the desktop or virtual disk. Migration inserts the hidden Desktop root while leaving existing System Disk children in place and preserving names, contents, modified timestamps, user-owned creation timestamps, window state, view mode, special icon positions, Finder icon positions, and eject time. Sanitization normalizes the simulated creation date of built-in IDs to January 24, 1984, repairs missing or malformed required roots, removes root `iconPosition` values, and preserves arbitrary bounded positions for Desktop children. A legacy Desktop child without coordinates receives one identity-derived free-form position during sanitization; that materialized position is persisted and never depends on node-array order.
 
 Adding durable fields requires all of the following:
 
@@ -329,6 +360,7 @@ Visual feedback must communicate state, not decorate latency.
 - Selected items must remain legible under inverse or patterned treatment.
 - Drag outlines must be crisp and aligned to integer pixels.
 - Hover treatment appears only for a meaningful target.
+- Cursor artwork and hotspots must remain crisp, integer-aligned 1-bit bitmaps so changing pointer states does not create an apparent positional jump.
 - Animation should be stepped or restrained when that better fits the 1-bit language.
 - System sounds are synthesized or original and remain local to the application.
 

@@ -19,21 +19,26 @@ import {
   type VfsMutationResult,
 } from '../shared/vfs';
 import { inspectImportPaths } from './import-files';
+import { createNormalQuitCoordinator } from './normal-quit';
 import { createAuthoritativeStateController } from './state-controller';
 import { createSerializedStateWriter } from './state-save-queue';
 
 const STATE_FILE_NAME = 'macintosh-state.json';
 const PROBE_FILE_NAME = 'persistence-proof.json';
 const APP_NAME = 'The Macintosh';
+const NORMAL_QUIT_WINDOW_DELTA = { x: 37, y: 23 } as const;
 const APP_ICON_PATH = path.join(app.getAppPath(), 'assets', 'the-macintosh-icon.png');
+type SmokePoint = { x: number; y: number };
 const smokeMode = process.argv.includes('--smoke-test');
 const persistenceProbeMode = process.argv.includes('--persistence-probe');
+const normalQuitProbeMode = process.argv.includes('--normal-quit-probe');
 const captureAboutMode = process.argv.includes('--capture-about');
 const captureCalculatorMode = process.argv.includes('--capture-calculator');
 const captureStartupArgument = process.argv.find((value) => value.startsWith('--capture-startup='));
 const automationMode =
   smokeMode ||
   persistenceProbeMode ||
+  normalQuitProbeMode ||
   process.argv.some((value) => value.startsWith('--capture-screen='));
 const captureArgument = process.argv.find((value) => value.startsWith('--capture-screen='));
 
@@ -120,9 +125,35 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const injectSmokeSaveFailure = (operation: Exclude<typeof smokeSaveFailureTarget, null>): void => {
-  if (!smokeMode || smokeSaveFailureTarget !== operation) return;
+  if ((!smokeMode && !normalQuitProbeMode) || smokeSaveFailureTarget !== operation) return;
   smokeSaveFailureTarget = null;
   throw new Error('Injected smoke-test save failure.');
+};
+
+const normalQuit = createNormalQuitCoordinator<unknown>({
+  requestRendererFlush: () => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+      throw new Error('The renderer is unavailable for a final presentation flush.');
+    }
+    mainWindow.webContents.send(IPC_CHANNELS.normalQuitRequested);
+  },
+  persistFinalState: async (presentation) => {
+    injectSmokeSaveFailure('presentation');
+    await stateController.finalize(presentation ?? {}, (state) => ({ state, value: null }));
+  },
+  quitApplication: () => {
+    setTimeout(() => app.quit(), 0);
+  },
+});
+
+const requestNormalQuit = (): void => {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
+    void normalQuit.finalizeAndQuitWithoutRenderer().catch((error: unknown) => {
+      console.error('The Macintosh could not finalize state without its renderer:', error);
+    });
+    return;
+  }
+  normalQuit.requestQuit();
 };
 
 const commitVfsCommand = async (
@@ -211,6 +242,18 @@ const registerIpc = (): void => {
     return { accepted: true as const };
   });
 
+  ipcMain.handle(IPC_CHANNELS.normalQuitReady, (event) => {
+    assertTrustedRenderer(event);
+    normalQuit.rendererReady();
+    return { accepted: true as const };
+  });
+
+  ipcMain.handle(IPC_CHANNELS.flushPresentationAndQuit, async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    await normalQuit.flushAndQuit(value);
+    return { accepted: true as const };
+  });
+
   ipcMain.handle(IPC_CHANNELS.saveAndQuitAfterEject, async (event, value: unknown) => {
     assertTrustedRenderer(event);
     injectSmokeSaveFailure('eject');
@@ -225,7 +268,7 @@ const registerIpc = (): void => {
       value: null,
     }));
     quitRequested = true;
-    setTimeout(() => app.quit(), 80);
+    setTimeout(() => normalQuit.quitWithoutFlush(), 80);
     return { accepted: true as const };
   });
 };
@@ -281,12 +324,22 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
-  type SmokePoint = { x: number; y: number };
   type SmokeWindowAnimation = {
     phase: 'opening' | 'closing';
     animationName: string;
     offsetX: string;
     offsetY: string;
+    windowId: string;
+    frameBoxShadow: string;
+    frameTransform: string;
+    shadowAnimationName: string;
+    shadowAriaHidden: string | null;
+    shadowBoxShadow: string;
+    shadowMounted: boolean;
+    shadowPointerEvents: string;
+    shadowTransform: string;
+    transformsMatch: boolean;
+    framesAligned: boolean;
   };
   const clickAt = async (point: SmokePoint): Promise<void> => {
     window.webContents.sendInputEvent({ type: 'mouseMove', ...point });
@@ -319,18 +372,74 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
             return;
           }
           const animationAttribute = ${JSON.stringify(`data-${phase}`)};
+          const expectedAnimationName = ${JSON.stringify(
+            phase === 'opening' ? 'finder-window-open' : 'finder-window-close',
+          )};
           const observer = new MutationObserver(() => {
             const finder = [...document.querySelectorAll('[data-finder-window]')].find(
               (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
             );
             if (!(finder instanceof HTMLElement) || finder.getAttribute(animationAttribute) !== 'true') return;
+            const windowId = finder.getAttribute('data-finder-window');
+            const shadow = [...document.querySelectorAll('[data-window-animation-shadow]')].find(
+              (candidate) =>
+                candidate.getAttribute('data-window-animation-shadow') === windowId
+            );
+            if (!(shadow instanceof HTMLElement) || !windowId) return;
             observer.disconnect();
+            const frameAnimation = finder.getAnimations().find(
+              (animation) => animation.animationName === expectedAnimationName
+            );
+            const shadowAnimation = shadow.getAnimations().find(
+              (animation) => animation.animationName === expectedAnimationName
+            );
+            if (frameAnimation && shadowAnimation) {
+              const durationValue = frameAnimation.effect?.getTiming().duration;
+              const duration = typeof durationValue === 'number' ? durationValue : 20;
+              frameAnimation.pause();
+              shadowAnimation.pause();
+              frameAnimation.currentTime = duration / 2;
+              shadowAnimation.currentTime = duration / 2;
+            }
             const style = getComputedStyle(finder);
-            resolve({
+            const shadowStyle = getComputedStyle(shadow);
+            const frameBounds = finder.getBoundingClientRect();
+            const shadowBounds = shadow.getBoundingClientRect();
+            const nearlyEqual = (left, right) => Math.abs(left - right) <= 0.05;
+            const framesAligned =
+              nearlyEqual(frameBounds.left, shadowBounds.left) &&
+              nearlyEqual(frameBounds.top, shadowBounds.top) &&
+              nearlyEqual(frameBounds.right, shadowBounds.right) &&
+              nearlyEqual(frameBounds.bottom, shadowBounds.bottom) &&
+              nearlyEqual(frameBounds.width, shadowBounds.width) &&
+              nearlyEqual(frameBounds.height, shadowBounds.height);
+            const frameTransform = style.transform;
+            const shadowTransform = shadowStyle.transform;
+            const snapshot = {
               phase: ${JSON.stringify(phase)},
               animationName: style.animationName,
               offsetX: style.getPropertyValue('--window-animation-offset-x').trim(),
               offsetY: style.getPropertyValue('--window-animation-offset-y').trim(),
+              windowId,
+              frameBoxShadow: style.boxShadow,
+              frameTransform,
+              shadowAnimationName: shadowStyle.animationName,
+              shadowAriaHidden: shadow.getAttribute('aria-hidden'),
+              shadowBoxShadow: shadowStyle.boxShadow,
+              shadowMounted: shadow.isConnected,
+              shadowPointerEvents: shadowStyle.pointerEvents,
+              shadowTransform,
+              transformsMatch: frameTransform === shadowTransform,
+              framesAligned
+            };
+            if (frameAnimation && shadowAnimation) {
+              frameAnimation.currentTime = 0;
+              shadowAnimation.currentTime = 0;
+              frameAnimation.play();
+              shadowAnimation.play();
+            }
+            resolve({
+              ...snapshot
             });
           });
           observer.observe(surface, {
@@ -352,6 +461,102 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       'window.__macintoshSmokeWindowAnimation',
       true,
     ) as Promise<SmokeWindowAnimation | null>;
+  };
+  const assertWindowAnimationShadow = (
+    animation: SmokeWindowAnimation | null,
+    label: string,
+  ): void => {
+    const expectedName =
+      animation?.phase === 'opening' ? 'finder-window-open' : 'finder-window-close';
+    if (
+      !animation ||
+      animation.animationName !== expectedName ||
+      animation.shadowAnimationName !== expectedName ||
+      animation.frameBoxShadow !== 'none' ||
+      !animation.shadowBoxShadow.startsWith('rgb(0, 0, 0) ') ||
+      !animation.shadowBoxShadow.endsWith(' 3px 3px 0px 0px') ||
+      animation.shadowPointerEvents !== 'none' ||
+      animation.shadowAriaHidden !== 'true' ||
+      !animation.shadowMounted ||
+      !animation.transformsMatch ||
+      animation.frameTransform !== animation.shadowTransform ||
+      !animation.framesAligned
+    ) {
+      throw new Error(
+        `${label} did not render an aligned hard animation shadow: ${JSON.stringify(animation)}.`,
+      );
+    }
+  };
+  const waitForFinderWindowSettled = async (
+    windowLabel: string,
+    windowId: string,
+  ): Promise<void> => {
+    type SettledWindowState = {
+      boxShadow: string;
+      opening: string | null;
+      closing: string | null;
+      shadowPresent: boolean;
+    };
+    const deadline = Date.now() + 800;
+    let state: SettledWindowState | null = null;
+    while (Date.now() < deadline) {
+      state = (await window.webContents.executeJavaScript(
+        `(() => {
+          const finder = [...document.querySelectorAll('[data-finder-window]')].find(
+            (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
+          );
+          if (!(finder instanceof HTMLElement)) return null;
+          return {
+            boxShadow: getComputedStyle(finder).boxShadow,
+            opening: finder.getAttribute('data-opening'),
+            closing: finder.getAttribute('data-closing'),
+            shadowPresent: document.querySelector(
+              '[data-window-animation-shadow=${JSON.stringify(windowId)}]'
+            ) !== null
+          };
+        })()`,
+        true,
+      )) as SettledWindowState | null;
+      if (state && state.opening !== 'true' && state.closing !== 'true' && !state.shadowPresent) {
+        if (
+          !state.boxShadow.startsWith('rgb(0, 0, 0) ') ||
+          !state.boxShadow.endsWith(' 3px 3px 0px 0px')
+        ) {
+          throw new Error(
+            `${windowLabel} did not restore its settled hard shadow: ${JSON.stringify(state)}.`,
+          );
+        }
+        return;
+      }
+      await pause(10);
+    }
+    throw new Error(
+      `${windowLabel} did not tear down its animation shadow: ${JSON.stringify(state)}.`,
+    );
+  };
+  const waitForFinderWindowAbsence = async (
+    windowLabel: string,
+    windowId?: string,
+  ): Promise<void> => {
+    const deadline = Date.now() + 800;
+    while (Date.now() < deadline) {
+      const absent = await window.webContents.executeJavaScript(
+        `(() => {
+          const finderAbsent = [...document.querySelectorAll('[data-finder-window]')].every(
+            (candidate) => candidate.getAttribute('aria-label') !== ${JSON.stringify(windowLabel)}
+          );
+          const shadowAbsent = ${JSON.stringify(windowId ?? null)} === null ||
+            document.querySelector(
+              '[data-window-animation-shadow=' + JSON.stringify(${JSON.stringify(windowId ?? '')}) + ']'
+            ) === null;
+          return finderAbsent && shadowAbsent;
+        })()`,
+        true,
+      );
+      if (absent) return;
+      await pause(10);
+    }
+    throw new Error(`${windowLabel} remained after its close animation.`);
   };
   const assertPixelCursor = (
     label: string,
@@ -401,10 +606,399 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   } | null;
   if (!cursorBindings) throw new Error('Pixel cursor bindings could not be inspected.');
   assertPixelCursor('Desktop arrow', cursorBindings.body, 11, 16, { x: 1, y: 1 });
-  assertPixelCursor('Desktop icon grab', cursorBindings.desktopIcon, 16, 16, { x: 7, y: 8 });
+  assertPixelCursor('Desktop icon pointing hand', cursorBindings.desktopIcon, 16, 16, {
+    x: 5,
+    y: 1,
+  });
   assertPixelCursor('Window title-bar grab', cursorBindings.titlebar, 16, 16, { x: 7, y: 8 });
   assertPixelCursor('Window control arrow', cursorBindings.windowControl, 11, 16, { x: 1, y: 1 });
   assertPixelCursor('Window resize', cursorBindings.growBox, 15, 15, { x: 7, y: 7 });
+
+  const focusLossDragPoints = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]'
+      );
+      const icon = source?.querySelector('.pixel-icon');
+      const surface = document.querySelector('.desktop-surface');
+      if (
+        !(source instanceof HTMLElement) ||
+        !(icon instanceof SVGElement) ||
+        !(surface instanceof HTMLElement)
+      ) return null;
+      const iconBounds = icon.getBoundingClientRect();
+      const surfaceBounds = surface.getBoundingClientRect();
+      let destination = null;
+      const clearOffsets = [-18, 0, 18];
+      for (let y = Math.round(surfaceBounds.top + 18); y < surfaceBounds.bottom - 18; y += 24) {
+        for (let x = Math.round(surfaceBounds.left + 18); x < surfaceBounds.right - 18; x += 24) {
+          if (
+            clearOffsets.every((offsetY) =>
+              clearOffsets.every(
+                (offsetX) => document.elementFromPoint(x + offsetX, y + offsetY) === surface
+              )
+            )
+          ) {
+            destination = { x, y };
+            break;
+          }
+        }
+        if (destination) break;
+      }
+      if (!destination) return null;
+      document.body.dataset.macintoshSmokeBlurred = 'false';
+      window.addEventListener(
+        'blur',
+        () => { document.body.dataset.macintoshSmokeBlurred = 'true'; },
+        { once: true }
+      );
+      return {
+        source: {
+          x: Math.round(iconBounds.left + iconBounds.width / 2),
+          y: Math.round(iconBounds.top + iconBounds.height / 2)
+        },
+        icon: {
+          left: Math.round(iconBounds.left),
+          top: Math.round(iconBounds.top),
+          width: Math.round(iconBounds.width),
+          height: Math.round(iconBounds.height)
+        },
+        destination
+      };
+    })()`,
+    true,
+  )) as {
+    source: SmokePoint;
+    icon: { left: number; top: number; width: number; height: number };
+    destination: SmokePoint;
+  } | null;
+  if (!focusLossDragPoints) throw new Error('Focus-loss drag coordinates were unavailable.');
+
+  type SmokeFocusLossPreviewState = {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    artworkName: string | null;
+    artworkVariant: string | null;
+    shadowName: string | null;
+    shadowVariant: string | null;
+    shadowOffsetX: number;
+    shadowOffsetY: number;
+    shadowColors: string[];
+    pointerEvents: string;
+    borderStyle: string;
+    outlineStyle: string;
+    solidShadow: boolean;
+    shadowFullyBlack: boolean;
+  };
+  type SmokeFocusLossDragState = {
+    htmlDragging: boolean;
+    rootDragging: boolean;
+    dataDragging: string | null;
+    sourcePressed: boolean;
+    sourceCursor: string;
+    targetCursor: string;
+    preview: SmokeFocusLossPreviewState | null;
+  };
+  const readFocusLossDragState = async (
+    point: SmokePoint,
+  ): Promise<SmokeFocusLossDragState | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const source = document.querySelector(
+          '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]'
+        );
+        const root = document.querySelector('.macintosh');
+        const target = document.elementFromPoint(${point.x}, ${point.y});
+        const previewRoot = document.querySelector('[data-vfs-item-drag-preview="true"]');
+        const preview = document.querySelector(
+          '[data-vfs-item-drag-preview-node="applications"]'
+        );
+        const artwork = preview?.querySelector('.pixel-icon-drag-artwork');
+        const shadow = preview?.querySelector('.pixel-icon-drag-shadow');
+        const artworkBounds = artwork?.getBoundingClientRect();
+        const shadowBounds = shadow?.getBoundingClientRect();
+        const previewStyle = preview instanceof HTMLElement ? getComputedStyle(preview) : null;
+        if (!(source instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+        const shadowRects = shadow instanceof SVGElement
+          ? [...shadow.querySelectorAll('rect')]
+          : [];
+        return {
+          htmlDragging: document.documentElement.classList.contains('is-item-dragging'),
+          rootDragging: root.classList.contains('is-item-dragging'),
+          dataDragging: root.dataset.itemDragging ?? null,
+          sourcePressed: source.classList.contains('is-pointer-pressed'),
+          sourceCursor: getComputedStyle(source).cursor,
+          targetCursor: target instanceof Element ? getComputedStyle(target).cursor : '',
+          preview:
+            previewRoot instanceof HTMLElement &&
+            preview instanceof HTMLElement &&
+            artwork instanceof SVGElement &&
+            shadow instanceof SVGElement &&
+            artworkBounds &&
+            shadowBounds &&
+            previewStyle
+              ? {
+                  left: Math.round(artworkBounds.left),
+                  top: Math.round(artworkBounds.top),
+                  width: Math.round(artworkBounds.width),
+                  height: Math.round(artworkBounds.height),
+                  artworkName: artwork.dataset.pixelIcon ?? null,
+                  artworkVariant: artwork.dataset.pixelIconVariant ?? null,
+                  shadowName: shadow.dataset.pixelIcon ?? null,
+                  shadowVariant: shadow.dataset.pixelIconVariant ?? null,
+                  shadowOffsetX: Math.round(shadowBounds.left - artworkBounds.left),
+                  shadowOffsetY: Math.round(shadowBounds.top - artworkBounds.top),
+                  shadowColors: [...new Set(
+                    shadowRects.map((rect) => rect.getAttribute('fill') ?? '')
+                  )],
+                  pointerEvents: getComputedStyle(previewRoot).pointerEvents,
+                  borderStyle: previewStyle.borderStyle,
+                  outlineStyle: previewStyle.outlineStyle,
+                  solidShadow: preview.classList.contains('is-solid-shadow'),
+                  shadowFullyBlack:
+                    shadowRects.length > 0 && shadowRects.every(
+                      (rect) => getComputedStyle(rect).fill === 'rgb(0, 0, 0)'
+                    )
+                }
+              : null
+        };
+      })()`,
+      true,
+    )) as SmokeFocusLossDragState | null;
+
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...focusLossDragPoints.source });
+  await pause(32);
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...focusLossDragPoints.source,
+  });
+  await pause(32);
+  const preThresholdPoint = {
+    x: focusLossDragPoints.source.x + 2,
+    y: focusLossDragPoints.source.y,
+  };
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...preThresholdPoint,
+  });
+  await pause(32);
+  const focusLossPressedState = await readFocusLossDragState(preThresholdPoint);
+  if (
+    !focusLossPressedState?.sourcePressed ||
+    focusLossPressedState.rootDragging ||
+    focusLossPressedState.dataDragging !== null ||
+    focusLossPressedState.preview !== null
+  ) {
+    throw new Error(
+      `The focus-loss probe did not preserve its pre-threshold press: ${JSON.stringify(focusLossPressedState)}.`,
+    );
+  }
+  assertPixelCursor(
+    'Focus-loss pre-threshold open hand',
+    focusLossPressedState.sourceCursor,
+    16,
+    16,
+    { x: 8, y: 8 },
+  );
+
+  const thresholdPoint = {
+    x: focusLossDragPoints.source.x + 4,
+    y: focusLossDragPoints.source.y,
+  };
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...thresholdPoint,
+  });
+  await pause(48);
+  const focusLossThresholdState = await readFocusLossDragState(thresholdPoint);
+  const thresholdPreview = focusLossThresholdState?.preview;
+  if (
+    !focusLossThresholdState?.rootDragging ||
+    focusLossThresholdState.dataDragging !== 'true' ||
+    focusLossThresholdState.sourcePressed ||
+    !thresholdPreview ||
+    thresholdPreview.left !== focusLossDragPoints.icon.left + 4 ||
+    thresholdPreview.top !== focusLossDragPoints.icon.top ||
+    thresholdPreview.width !== 32 ||
+    thresholdPreview.height !== 32 ||
+    thresholdPreview.artworkName !== 'folder' ||
+    thresholdPreview.shadowName !== thresholdPreview.artworkName ||
+    thresholdPreview.artworkVariant !== 'artwork' ||
+    thresholdPreview.shadowVariant !== 'shadow' ||
+    thresholdPreview.shadowOffsetX !== 3 ||
+    thresholdPreview.shadowOffsetY !== 3 ||
+    !thresholdPreview.shadowColors.includes('#000') ||
+    !thresholdPreview.shadowColors.includes('#fff') ||
+    thresholdPreview.pointerEvents !== 'none' ||
+    thresholdPreview.borderStyle !== 'none' ||
+    thresholdPreview.outlineStyle !== 'none' ||
+    thresholdPreview.solidShadow ||
+    thresholdPreview.shadowFullyBlack
+  ) {
+    throw new Error(
+      `The focus-loss probe did not render its pointer-following dithered Finder preview: ${JSON.stringify(focusLossThresholdState)}.`,
+    );
+  }
+  assertPixelCursor(
+    'Focus-loss post-threshold closed fist',
+    focusLossThresholdState.sourceCursor,
+    16,
+    16,
+    { x: 8, y: 8 },
+  );
+
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...focusLossDragPoints.destination,
+  });
+  await pause(60);
+  let focusLossActiveState: SmokeFocusLossDragState | null = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    focusLossActiveState = await readFocusLossDragState(focusLossDragPoints.destination);
+    if (
+      focusLossActiveState?.preview?.solidShadow &&
+      focusLossActiveState.preview.shadowFullyBlack
+    ) {
+      break;
+    }
+    await pause(15);
+  }
+  const activePreview = focusLossActiveState?.preview;
+  if (
+    !focusLossActiveState?.rootDragging ||
+    focusLossActiveState.dataDragging !== 'true' ||
+    focusLossActiveState.sourcePressed ||
+    !activePreview ||
+    activePreview.left !==
+      focusLossDragPoints.icon.left +
+        focusLossDragPoints.destination.x -
+        focusLossDragPoints.source.x ||
+    activePreview.top !==
+      focusLossDragPoints.icon.top +
+        focusLossDragPoints.destination.y -
+        focusLossDragPoints.source.y ||
+    activePreview.width !== 32 ||
+    activePreview.height !== 32 ||
+    !activePreview.solidShadow ||
+    !activePreview.shadowFullyBlack
+  ) {
+    throw new Error(
+      `The focus-loss probe did not acquire an active item drag: ${JSON.stringify(focusLossActiveState)}.`,
+    );
+  }
+  assertPixelCursor(
+    'Focus-loss active source closed fist',
+    focusLossActiveState.sourceCursor,
+    16,
+    16,
+    { x: 8, y: 8 },
+  );
+  assertPixelCursor(
+    'Focus-loss active target closed fist',
+    focusLossActiveState.targetCursor,
+    16,
+    16,
+    { x: 8, y: 8 },
+  );
+
+  window.blur();
+  type SmokeFocusLossCleanedState = {
+    blurred: boolean;
+    htmlDragging: boolean;
+    rootDragging: boolean;
+    dataDragging: string | null;
+    previewVisible: boolean;
+    sourcePressed: boolean;
+    highlightedTargets: number;
+    sourceCursor: string;
+    targetCursor: string;
+  };
+  let focusLossCleanedState: SmokeFocusLossCleanedState | null = null;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    focusLossCleanedState = (await window.webContents.executeJavaScript(
+      `(() => {
+        const source = document.querySelector(
+          '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]'
+        );
+        const root = document.querySelector('.macintosh');
+        const target = document.elementFromPoint(
+          ${focusLossDragPoints.destination.x},
+          ${focusLossDragPoints.destination.y}
+        );
+        if (!(source instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+        return {
+          blurred: document.body.dataset.macintoshSmokeBlurred === 'true',
+          htmlDragging: document.documentElement.classList.contains('is-item-dragging'),
+          rootDragging: root.classList.contains('is-item-dragging'),
+          dataDragging: root.dataset.itemDragging ?? null,
+          previewVisible:
+            document.querySelector('[data-vfs-item-drag-preview="true"]') !== null,
+          sourcePressed: source.classList.contains('is-pointer-pressed'),
+          highlightedTargets: document.querySelectorAll('.is-file-drop-target').length,
+          sourceCursor: getComputedStyle(source).cursor,
+          targetCursor: target instanceof Element ? getComputedStyle(target).cursor : ''
+        };
+      })()`,
+      true,
+    )) as SmokeFocusLossCleanedState | null;
+    if (
+      focusLossCleanedState?.blurred &&
+      !focusLossCleanedState.htmlDragging &&
+      !focusLossCleanedState.rootDragging &&
+      focusLossCleanedState.dataDragging === null &&
+      !focusLossCleanedState.previewVisible &&
+      !focusLossCleanedState.sourcePressed &&
+      focusLossCleanedState.highlightedTargets === 0
+    ) {
+      break;
+    }
+    await pause(25);
+  }
+  window.focus();
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...focusLossDragPoints.destination,
+  });
+  await pause(60);
+  if (
+    !focusLossCleanedState?.blurred ||
+    focusLossCleanedState.htmlDragging ||
+    focusLossCleanedState.rootDragging ||
+    focusLossCleanedState.dataDragging !== null ||
+    focusLossCleanedState.previewVisible ||
+    focusLossCleanedState.sourcePressed ||
+    focusLossCleanedState.highlightedTargets !== 0
+  ) {
+    throw new Error(
+      `The active item drag did not clean up on focus loss: ${JSON.stringify(focusLossCleanedState)}.`,
+    );
+  }
+  assertPixelCursor(
+    'Focus-loss restored item pointing hand',
+    focusLossCleanedState.sourceCursor,
+    16,
+    16,
+    { x: 5, y: 1 },
+  );
+  assertPixelCursor(
+    'Focus-loss restored desktop arrow',
+    focusLossCleanedState.targetCursor,
+    11,
+    16,
+    { x: 1, y: 1 },
+  );
 
   type SmokeWindowGeometry = {
     left: number;
@@ -435,6 +1029,25 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       })()`,
       true,
     )) as SmokeWindowGeometry | null;
+  const waitForSystemWindowSize = async (
+    width: number,
+    height: number,
+  ): Promise<SmokeWindowGeometry | null> => {
+    const deadline = Date.now() + 800;
+    let geometry: SmokeWindowGeometry | null = null;
+    while (Date.now() < deadline) {
+      geometry = await readSystemWindowGeometry();
+      if (
+        geometry &&
+        Math.abs(geometry.width - width) <= 1 &&
+        Math.abs(geometry.height - height) <= 1
+      ) {
+        return geometry;
+      }
+      await pause(10);
+    }
+    return geometry;
+  };
   const originalWindow = await readSystemWindowGeometry();
   if (!originalWindow) throw new Error('System Disk controls could not be located.');
 
@@ -460,14 +1073,64 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }
 
   const resizeWindow = async (from: SmokePoint, to: SmokePoint): Promise<void> => {
+    await window.webContents.executeJavaScript(
+      `(() => {
+        delete window.__macintoshSmokeSystemResizePointerId;
+        const grow = document.querySelector(
+          '[data-finder-window="window-system-disk"] [aria-label="Resize System Disk"]'
+        );
+        if (!(grow instanceof HTMLElement)) return;
+        grow.addEventListener(
+          'pointerdown',
+          (event) => { window.__macintoshSmokeSystemResizePointerId = event.pointerId; },
+          { once: true }
+        );
+      })()`,
+      true,
+    );
     window.webContents.sendInputEvent({ type: 'mouseMove', ...from });
-    await pause(20);
+    await pause(32);
     window.webContents.sendInputEvent({
       type: 'mouseDown',
       button: 'left',
       clickCount: 1,
       ...from,
     });
+    let captureOwned = false;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      captureOwned = (await window.webContents.executeJavaScript(
+        `(() => {
+          const grow = document.querySelector(
+            '[data-finder-window="window-system-disk"] [aria-label="Resize System Disk"]'
+          );
+          const pointerId = window.__macintoshSmokeSystemResizePointerId;
+          return grow instanceof HTMLElement &&
+            typeof pointerId === 'number' &&
+            grow.hasPointerCapture(pointerId);
+        })()`,
+        true,
+      )) as boolean;
+      if (captureOwned) break;
+      await pause(10);
+    }
+    if (!captureOwned) {
+      window.webContents.sendInputEvent({
+        type: 'mouseUp',
+        button: 'left',
+        clickCount: 1,
+        ...from,
+      });
+      throw new Error('The Finder grow box did not acquire native pointer capture.');
+    }
+    await pause(24);
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: Math.round((from.x + to.x) / 2),
+      y: Math.round((from.y + to.y) / 2),
+    });
+    await pause(20);
     window.webContents.sendInputEvent({
       type: 'mouseMove',
       button: 'left',
@@ -488,7 +1151,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     x: restoredWindow.grow.x + resizeDelta.x,
     y: restoredWindow.grow.y + resizeDelta.y,
   });
-  const resizedWindow = await readSystemWindowGeometry();
+  const resizedWindow = await waitForSystemWindowSize(
+    originalWindow.width + resizeDelta.x,
+    originalWindow.height + resizeDelta.y,
+  );
   if (
     !resizedWindow ||
     Math.abs(resizedWindow.width - (originalWindow.width + resizeDelta.x)) > 1 ||
@@ -500,7 +1166,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     x: resizedWindow.grow.x - resizeDelta.x,
     y: resizedWindow.grow.y - resizeDelta.y,
   });
-  const resizeRestoredWindow = await readSystemWindowGeometry();
+  const resizeRestoredWindow = await waitForSystemWindowSize(
+    originalWindow.width,
+    originalWindow.height,
+  );
   if (
     !resizeRestoredWindow ||
     Math.abs(resizeRestoredWindow.width - originalWindow.width) > 1 ||
@@ -573,6 +1242,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       if (!(calculator instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
       const windowRect = calculator.getBoundingClientRect();
       const handleRect = handle.getBoundingClientRect();
+      handle.addEventListener(
+        'pointerdown',
+        (event) => { window.__macintoshSmokeCalculatorPointerId = event.pointerId; },
+        { once: true }
+      );
       return {
         window: { left: windowRect.left, top: windowRect.top },
         pointer: {
@@ -592,12 +1266,37 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     y: calculatorDragStart.pointer.y + 32,
   };
   window.webContents.sendInputEvent({ type: 'mouseMove', ...calculatorDragStart.pointer });
+  await pause(32);
   window.webContents.sendInputEvent({
     type: 'mouseDown',
     button: 'left',
     clickCount: 1,
     ...calculatorDragStart.pointer,
   });
+  let calculatorCaptureOwned = false;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    calculatorCaptureOwned = (await window.webContents.executeJavaScript(
+      `(() => {
+        const handle = document.querySelector('[data-calculator-drag-handle="true"]');
+        const pointerId = window.__macintoshSmokeCalculatorPointerId;
+        return handle instanceof HTMLElement &&
+          typeof pointerId === 'number' &&
+          handle.hasPointerCapture(pointerId);
+      })()`,
+      true,
+    )) as boolean;
+    if (calculatorCaptureOwned) break;
+    await pause(10);
+  }
+  if (!calculatorCaptureOwned) {
+    window.webContents.sendInputEvent({
+      type: 'mouseUp',
+      button: 'left',
+      clickCount: 1,
+      ...calculatorDragStart.pointer,
+    });
+    throw new Error('Calculator drag did not acquire native pointer capture.');
+  }
   for (let step = 1; step <= 4; step += 1) {
     const progress = step / 4;
     window.webContents.sendInputEvent({
@@ -1016,7 +1715,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `Desktop document opening did not scale from its command origin: ${JSON.stringify(desktopDocumentOpenAnimation)}.`,
     );
   }
-  await pause(220);
+  assertWindowAnimationShadow(desktopDocumentOpenAnimation, 'Desktop document opening animation');
+  await waitForFinderWindowSettled(
+    'Dropped Note.txt window',
+    desktopDocumentOpenAnimation.windowId,
+  );
   const desktopDocumentOpened = await window.webContents.executeJavaScript(
     `document.querySelector('[aria-label="Dropped Note.txt window"] .document-sheet')
       ?.textContent?.includes('external Electron drop') === true`,
@@ -1041,13 +1744,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `Desktop document closing did not scale to its icon: ${JSON.stringify(desktopDocumentCloseAnimation)}.`,
     );
   }
-  await pause(50);
-  const desktopDocumentClosed = await window.webContents.executeJavaScript(
-    `document.querySelector('[aria-label="Dropped Note.txt window"]') === null`,
-    true,
+  assertWindowAnimationShadow(desktopDocumentCloseAnimation, 'Desktop document closing animation');
+  await waitForFinderWindowAbsence(
+    'Dropped Note.txt window',
+    desktopDocumentCloseAnimation.windowId,
   );
-  if (!desktopDocumentClosed)
-    throw new Error('Desktop document remained after its close animation.');
 
   await window.webContents.executeJavaScript(
     `document.querySelector('[data-desktop-vfs-item][aria-label="Dropped Note.txt"]')?.click()`,
@@ -1088,7 +1789,8 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `Desktop folder opening did not scale from its icon: ${JSON.stringify(desktopFolderOpenAnimation)}.`,
     );
   }
-  await pause(220);
+  assertWindowAnimationShadow(desktopFolderOpenAnimation, 'Desktop folder opening animation');
+  await waitForFinderWindowSettled('Drop Folder window', desktopFolderOpenAnimation.windowId);
   const desktopFolderOpened = await window.webContents.executeJavaScript(
     `document.querySelector('[aria-label="Drop Folder window"] [data-vfs-item]')
       ?.textContent?.includes('Nested Note.txt') === true`,
@@ -1114,12 +1816,8 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `Desktop folder closing did not scale to its icon: ${JSON.stringify(desktopFolderCloseAnimation)}.`,
     );
   }
-  await pause(50);
-  const desktopFolderClosed = await window.webContents.executeJavaScript(
-    `document.querySelector('[aria-label="Drop Folder window"]') === null`,
-    true,
-  );
-  if (!desktopFolderClosed) throw new Error('Desktop folder remained after its close animation.');
+  assertWindowAnimationShadow(desktopFolderCloseAnimation, 'Desktop folder closing animation');
+  await waitForFinderWindowAbsence('Drop Folder window', desktopFolderCloseAnimation.windowId);
 
   const systemDiskDropPoint = (await window.webContents.executeJavaScript(
     `(() => {
@@ -1162,7 +1860,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error(`Direct System Disk import failed: ${JSON.stringify(directSystemDiskImport)}.`);
   }
 
-  const documentDropBlocked = (await window.webContents.executeJavaScript(
+  const documentBlockCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector(
         '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]'
@@ -1170,45 +1868,116 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       const target = document.querySelector(
         '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
       );
-      if (!(source instanceof HTMLElement) || !(target instanceof HTMLElement)) return null;
-      const sourceBounds = source.getBoundingClientRect();
-      const targetBounds = target.getBoundingClientRect();
-      const data = new DataTransfer();
-      source.dispatchEvent(new DragEvent('dragstart', {
-        dataTransfer: data,
-        clientX: sourceBounds.left + sourceBounds.width / 2,
-        clientY: sourceBounds.top + sourceBounds.height / 2,
-        bubbles: true,
-        cancelable: true
-      }));
-      const point = {
-        x: targetBounds.left + targetBounds.width / 2,
-        y: targetBounds.top + targetBounds.height / 2
+      const root = document.querySelector('[data-vfs-count]');
+      if (!(source instanceof HTMLElement) || !(target instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      const center = (element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          x: Math.round(bounds.left + bounds.width / 2),
+          y: Math.round(bounds.top + bounds.height / 2)
+        };
       };
-      target.dispatchEvent(new DragEvent('dragover', {
-        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
-      }));
-      const highlighted = target.classList.contains('is-file-drop-target');
-      target.dispatchEvent(new DragEvent('drop', {
-        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
-      }));
-      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
-      return { highlighted, payload: data.getData('application/x-macintosh-vfs-node-ids') };
+      const visiblePoint = (element) => {
+        const bounds = element.getBoundingClientRect();
+        for (let y = Math.ceil(bounds.top + 2); y < Math.floor(bounds.bottom - 2); y += 3) {
+          for (let x = Math.ceil(bounds.left + 2); x < Math.floor(bounds.right - 2); x += 3) {
+            if (document.elementFromPoint(x, y)?.closest('[data-desktop-vfs-item]') === element) {
+              return { x, y };
+            }
+          }
+        }
+        return null;
+      };
+      const destination = visiblePoint(target);
+      if (!destination) return null;
+      return {
+        source: center(source),
+        destination,
+        vfsCount: Number(root.dataset.vfsCount || 0)
+      };
     })()`,
     true,
-  )) as { highlighted: boolean; payload: string } | null;
-  await pause(80);
-  const documentDropStayedPut = await window.webContents.executeJavaScript(
-    `document.querySelector(
-      '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]'
-    ) !== null && document.querySelector('[data-desktop-vfs-item="applications"]') === null`,
+  )) as { source: SmokePoint; destination: SmokePoint; vfsCount: number } | null;
+  if (!documentBlockCoordinates) {
+    throw new Error('Desktop document drop-block coordinates were unavailable.');
+  }
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...documentBlockCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...documentBlockCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: documentBlockCoordinates.source.x + offset,
+      y: documentBlockCoordinates.source.y,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...documentBlockCoordinates.destination,
+  });
+  await pause(40);
+  const documentDropPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const documentItem = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+      );
+      const surface = document.querySelector('.desktop-surface');
+      const root = document.querySelector('.macintosh');
+      if (!(documentItem instanceof HTMLElement) || !(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted:
+          documentItem.classList.contains('is-file-drop-target') ||
+          surface.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(documentItem).cursor
+      };
+    })()`,
     true,
-  );
-  if (!documentDropBlocked?.payload || documentDropBlocked.highlighted || !documentDropStayedPut) {
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...documentBlockCoordinates.destination,
+  });
+  await pause(80);
+  const documentDropResult = (await window.webContents.executeJavaScript(
+    `(() => {
+      const root = document.querySelector('[data-vfs-count]');
+      return {
+        vfsCount: root instanceof HTMLElement ? Number(root.dataset.vfsCount || 0) : null,
+        sourcePresent: document.querySelector(
+          '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]'
+        ) !== null,
+        desktopPresent: document.querySelector('[data-desktop-vfs-item="applications"]') !== null
+      };
+    })()`,
+    true,
+  )) as { vfsCount: number | null; sourcePresent: boolean; desktopPresent: boolean };
+  const documentDropStayedPut =
+    documentDropResult.vfsCount === documentBlockCoordinates.vfsCount &&
+    documentDropResult.sourcePresent &&
+    !documentDropResult.desktopPresent;
+  if (
+    !documentDropPreview?.pointerOwned ||
+    documentDropPreview.highlighted ||
+    !documentDropStayedPut
+  ) {
     throw new Error(
-      `Desktop document allowed a fall-through drop: ${JSON.stringify(documentDropBlocked)}.`,
+      `A Desktop document did not block an active internal drop: ${JSON.stringify({ preview: documentDropPreview, result: documentDropResult })}.`,
     );
   }
+  assertPixelCursor('Internal item closed fist', documentDropPreview.cursor, 16, 16, {
+    x: 8,
+    y: 8,
+  });
 
   const hostTrashDropRejected = (await window.webContents.executeJavaScript(
     `(() => {
@@ -1299,7 +2068,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error(`Document Copy/Paste failed: ${JSON.stringify(pastedDocuments)}.`);
   }
 
-  const freeIconPlacement = (await window.webContents.executeJavaScript(
+  const freeIconCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector('[data-vfs-item="applications"]');
       const canvas = document.querySelector('[data-icon-layout-parent="system-disk"]');
@@ -1313,43 +2082,69 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         x: Math.round(canvasRect.left + destination.x + hotspot.x),
         y: Math.round(canvasRect.top + destination.y + hotspot.y)
       };
-      const data = new DataTransfer();
-      source.dispatchEvent(new DragEvent('dragstart', {
-        dataTransfer: data,
-        clientX: Math.round(sourceRect.left + hotspot.x),
-        clientY: Math.round(sourceRect.top + hotspot.y),
-        bubbles: true,
-        cancelable: true
-      }));
-      canvas.dispatchEvent(new DragEvent('dragover', {
-        dataTransfer: data,
-        clientX: client.x,
-        clientY: client.y,
-        bubbles: true,
-        cancelable: true
-      }));
-      const highlighted = canvas.classList.contains('is-file-drop-target');
-      canvas.dispatchEvent(new DragEvent('drop', {
-        dataTransfer: data,
-        clientX: client.x,
-        clientY: client.y,
-        bubbles: true,
-        cancelable: true
-      }));
-      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
       return {
-        highlighted,
-        payload: data.getData('application/x-macintosh-vfs-node-ids'),
+        source: {
+          x: Math.round(sourceRect.left + hotspot.x),
+          y: Math.round(sourceRect.top + hotspot.y)
+        },
+        destination: client,
         vfsCount: Number(root.dataset.vfsCount || 0)
       };
     })()`,
     true,
-  )) as { highlighted: boolean; payload: string; vfsCount: number } | null;
-  if (!freeIconPlacement?.payload || !freeIconPlacement.highlighted) {
+  )) as { source: SmokePoint; destination: SmokePoint; vfsCount: number } | null;
+  if (!freeIconCoordinates) throw new Error('Free Finder placement coordinates were unavailable.');
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...freeIconCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...freeIconCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: freeIconCoordinates.source.x + offset,
+      y: freeIconCoordinates.source.y,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...freeIconCoordinates.destination,
+  });
+  await pause(40);
+  const freeIconPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector('[data-vfs-item="applications"]');
+      const canvas = document.querySelector('[data-icon-layout-parent="system-disk"]');
+      const root = document.querySelector('.macintosh');
+      if (!(source instanceof HTMLElement) || !(canvas instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: canvas.classList.contains('is-file-drop-target'),
+        pointerOwned: !source.hasAttribute('draggable') && root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(canvas).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...freeIconCoordinates.destination,
+  });
+  if (!freeIconPreview?.highlighted || !freeIconPreview.pointerOwned) {
     throw new Error(
-      `Free Finder placement did not use the internal drag surface: ${JSON.stringify(freeIconPlacement)}.`,
+      `Free Finder placement did not use the pointer-owned internal drag surface: ${JSON.stringify(freeIconPreview)}.`,
     );
   }
+  assertPixelCursor('Free Finder placement closed fist', freeIconPreview.cursor, 16, 16, {
+    x: 8,
+    y: 8,
+  });
   await pause(100);
   const placedIcon = (await window.webContents.executeJavaScript(
     `(() => {
@@ -1368,7 +2163,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     !placedIcon ||
     placedIcon.x !== 441 ||
     placedIcon.y !== 239 ||
-    placedIcon.vfsCount !== freeIconPlacement.vfsCount
+    placedIcon.vfsCount !== freeIconCoordinates.vfsCount
   ) {
     throw new Error(`Finder icon did not commit its free position: ${JSON.stringify(placedIcon)}.`);
   }
@@ -1410,7 +2205,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }
 
   const desktopInternalInitial = { x: 713, y: 627 };
-  const finderToDesktopDrop = (await window.webContents.executeJavaScript(
+  const finderToDesktopCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector(
         '[data-finder-window="window-system-disk"] [data-vfs-item="utilities"]'
@@ -1425,43 +2220,71 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         x: Math.round(surfaceBounds.left + ${desktopInternalInitial.x} + hotspot.x),
         y: Math.round(surfaceBounds.top + ${desktopInternalInitial.y} + hotspot.y)
       };
-      const data = new DataTransfer();
-      source.dispatchEvent(new DragEvent('dragstart', {
-        dataTransfer: data,
-        clientX: Math.round(sourceBounds.left + hotspot.x),
-        clientY: Math.round(sourceBounds.top + hotspot.y),
-        bubbles: true,
-        cancelable: true
-      }));
-      surface.dispatchEvent(new DragEvent('dragover', {
-        dataTransfer: data,
-        clientX: destination.x,
-        clientY: destination.y,
-        bubbles: true,
-        cancelable: true
-      }));
-      const highlighted = surface.classList.contains('is-file-drop-target');
-      surface.dispatchEvent(new DragEvent('drop', {
-        dataTransfer: data,
-        clientX: destination.x,
-        clientY: destination.y,
-        bubbles: true,
-        cancelable: true
-      }));
-      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
+      if (document.elementFromPoint(destination.x, destination.y) !== surface) return null;
       return {
-        highlighted,
-        payload: data.getData('application/x-macintosh-vfs-node-ids'),
+        source: {
+          x: Math.round(sourceBounds.left + hotspot.x),
+          y: Math.round(sourceBounds.top + hotspot.y)
+        },
+        destination,
         vfsCount: Number(root.dataset.vfsCount || 0)
       };
     })()`,
     true,
-  )) as { highlighted: boolean; payload: string; vfsCount: number } | null;
-  if (!finderToDesktopDrop?.highlighted || !finderToDesktopDrop.payload) {
+  )) as { source: SmokePoint; destination: SmokePoint; vfsCount: number } | null;
+  if (!finderToDesktopCoordinates) {
+    throw new Error('Finder-to-Desktop drag coordinates were unavailable.');
+  }
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...finderToDesktopCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...finderToDesktopCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: finderToDesktopCoordinates.source.x + offset,
+      y: finderToDesktopCoordinates.source.y,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...finderToDesktopCoordinates.destination,
+  });
+  await pause(40);
+  const finderToDesktopPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const surface = document.querySelector('.desktop-surface');
+      const root = document.querySelector('.macintosh');
+      if (!(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: surface.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(surface).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...finderToDesktopCoordinates.destination,
+  });
+  if (!finderToDesktopPreview?.highlighted || !finderToDesktopPreview.pointerOwned) {
     throw new Error(
-      `Finder-to-Desktop drag was not accepted: ${JSON.stringify(finderToDesktopDrop)}.`,
+      `Finder-to-Desktop drag did not retain pointer ownership: ${JSON.stringify(finderToDesktopPreview)}.`,
     );
   }
+  assertPixelCursor('Finder-to-Desktop closed fist', finderToDesktopPreview.cursor, 16, 16, {
+    x: 8,
+    y: 8,
+  });
   await pause(120);
   const movedDesktopItem = (await window.webContents.executeJavaScript(
     `(() => {
@@ -1481,7 +2304,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     !movedDesktopItem ||
     movedDesktopItem.x !== desktopInternalInitial.x ||
     movedDesktopItem.y !== desktopInternalInitial.y ||
-    movedDesktopItem.vfsCount !== finderToDesktopDrop.vfsCount ||
+    movedDesktopItem.vfsCount !== finderToDesktopCoordinates.vfsCount ||
     !movedDesktopItem.notice.startsWith('Moved 1 item to Desktop.')
   ) {
     throw new Error(
@@ -1490,7 +2313,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }
 
   const desktopInternalFinal = { x: 593, y: 649 };
-  const desktopReposition = (await window.webContents.executeJavaScript(
+  const desktopRepositionCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector('[data-desktop-vfs-item="utilities"]');
       const surface = document.querySelector('.desktop-surface');
@@ -1503,41 +2326,71 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         x: Math.round(surfaceBounds.left + ${desktopInternalFinal.x} + hotspot.x),
         y: Math.round(surfaceBounds.top + ${desktopInternalFinal.y} + hotspot.y)
       };
-      const data = new DataTransfer();
-      source.dispatchEvent(new DragEvent('dragstart', {
-        dataTransfer: data,
-        clientX: Math.round(sourceBounds.left + hotspot.x),
-        clientY: Math.round(sourceBounds.top + hotspot.y),
-        bubbles: true,
-        cancelable: true
-      }));
-      surface.dispatchEvent(new DragEvent('dragover', {
-        dataTransfer: data,
-        clientX: destination.x,
-        clientY: destination.y,
-        bubbles: true,
-        cancelable: true
-      }));
-      const highlighted = surface.classList.contains('is-file-drop-target');
-      surface.dispatchEvent(new DragEvent('drop', {
-        dataTransfer: data,
-        clientX: destination.x,
-        clientY: destination.y,
-        bubbles: true,
-        cancelable: true
-      }));
-      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
+      if (document.elementFromPoint(destination.x, destination.y) !== surface) return null;
       return {
-        highlighted,
-        payload: data.getData('application/x-macintosh-vfs-node-ids'),
+        source: {
+          x: Math.round(sourceBounds.left + hotspot.x),
+          y: Math.round(sourceBounds.top + hotspot.y)
+        },
+        destination,
         vfsCount: Number(root.dataset.vfsCount || 0)
       };
     })()`,
     true,
-  )) as { highlighted: boolean; payload: string; vfsCount: number } | null;
-  if (!desktopReposition?.highlighted || !desktopReposition.payload) {
-    throw new Error(`Desktop reposition was not accepted: ${JSON.stringify(desktopReposition)}.`);
+  )) as { source: SmokePoint; destination: SmokePoint; vfsCount: number } | null;
+  if (!desktopRepositionCoordinates) {
+    throw new Error('Desktop reposition coordinates were unavailable.');
   }
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...desktopRepositionCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...desktopRepositionCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: desktopRepositionCoordinates.source.x + offset,
+      y: desktopRepositionCoordinates.source.y,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...desktopRepositionCoordinates.destination,
+  });
+  await pause(40);
+  const desktopRepositionPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const surface = document.querySelector('.desktop-surface');
+      const root = document.querySelector('.macintosh');
+      if (!(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: surface.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(surface).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...desktopRepositionCoordinates.destination,
+  });
+  if (!desktopRepositionPreview?.highlighted || !desktopRepositionPreview.pointerOwned) {
+    throw new Error(
+      `Desktop reposition did not retain pointer ownership: ${JSON.stringify(desktopRepositionPreview)}.`,
+    );
+  }
+  assertPixelCursor('Desktop reposition closed fist', desktopRepositionPreview.cursor, 16, 16, {
+    x: 8,
+    y: 8,
+  });
   await pause(100);
   const repositionedDesktopItem = (await window.webContents.executeJavaScript(
     `(() => {
@@ -1556,7 +2409,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     !repositionedDesktopItem ||
     repositionedDesktopItem.x !== desktopInternalFinal.x ||
     repositionedDesktopItem.y !== desktopInternalFinal.y ||
-    repositionedDesktopItem.vfsCount !== desktopReposition.vfsCount
+    repositionedDesktopItem.vfsCount !== desktopRepositionCoordinates.vfsCount
   ) {
     throw new Error(
       `Desktop item did not commit its free reposition: ${JSON.stringify(repositionedDesktopItem)}.`,
@@ -1570,43 +2423,87 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     await writeFile(importCaptureDestination, image.toPNG());
   }
 
-  const internalFolderDrop = (await window.webContents.executeJavaScript(
+  const internalFolderCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector(
         '[data-finder-window="window-system-disk"] [data-vfs-item="system-folder"]'
       );
-      const destination = document.querySelector('[data-vfs-item="documents"]');
+      const destination = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="documents"]'
+      );
       if (!(source instanceof HTMLElement) || !(destination instanceof HTMLElement)) return null;
-      const data = new DataTransfer();
-      source.dispatchEvent(new DragEvent('dragstart', {
-        dataTransfer: data,
-        bubbles: true,
-        cancelable: true
-      }));
-      destination.dispatchEvent(new DragEvent('dragover', {
-        dataTransfer: data,
-        bubbles: true,
-        cancelable: true
-      }));
-      const highlighted = destination.classList.contains('is-file-drop-target');
-      destination.dispatchEvent(new DragEvent('drop', {
-        dataTransfer: data,
-        bubbles: true,
-        cancelable: true
-      }));
-      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
+      const center = (element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          x: Math.round(bounds.left + bounds.width / 2),
+          y: Math.round(bounds.top + bounds.height / 2)
+        };
+      };
       return {
-        highlighted,
-        payload: data.getData('application/x-macintosh-vfs-node-ids')
+        source: center(source),
+        destination: center(destination)
       };
     })()`,
     true,
-  )) as { highlighted: boolean; payload: string } | null;
-  if (!internalFolderDrop?.payload || !internalFolderDrop.highlighted) {
+  )) as { source: SmokePoint; destination: SmokePoint } | null;
+  if (!internalFolderCoordinates) {
+    throw new Error('Internal folder drag coordinates were unavailable.');
+  }
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...internalFolderCoordinates.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    ...internalFolderCoordinates.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: internalFolderCoordinates.source.x,
+      y: internalFolderCoordinates.source.y + offset,
+    });
+    await pause(24);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseMove',
+    button: 'left',
+    modifiers: ['leftbuttondown'],
+    ...internalFolderCoordinates.destination,
+  });
+  await pause(40);
+  const internalFolderPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="system-folder"]'
+      );
+      const destination = document.querySelector(
+        '[data-finder-window="window-system-disk"] [data-vfs-item="documents"]'
+      );
+      const root = document.querySelector('.macintosh');
+      if (!(source instanceof HTMLElement) || !(destination instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: destination.classList.contains('is-file-drop-target'),
+        pointerOwned: !source.hasAttribute('draggable') && root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(destination).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    ...internalFolderCoordinates.destination,
+  });
+  if (!internalFolderPreview?.highlighted || !internalFolderPreview.pointerOwned) {
     throw new Error(
-      `Internal folder drag did not create and accept its payload: ${JSON.stringify(internalFolderDrop)}.`,
+      `Internal folder drag did not keep pointer ownership over its target: ${JSON.stringify(internalFolderPreview)}.`,
     );
   }
+  assertPixelCursor('Internal folder closed fist', internalFolderPreview.cursor, 16, 16, {
+    x: 8,
+    y: 8,
+  });
   await pause(120);
   const movedFolderHidden = await window.webContents.executeJavaScript(
     `document.querySelector(
@@ -1614,7 +2511,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     ) === null`,
     true,
   );
-  if (!movedFolderHidden) throw new Error('Internal folder drop did not move System Folder.');
+  if (!movedFolderHidden) throw new Error('Internal folder drop did not move the folder.');
 
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['meta'] });
   window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['meta'] });
@@ -1923,6 +2820,22 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   if (!coordinates) throw new Error('Smoke test could not locate desktop icons.');
 
+  type SmokeDiskDragPreview = {
+    sourceDistance: number;
+    sourceDragging: boolean;
+    previewDeltaX: number;
+    previewDeltaY: number;
+    width: number;
+    height: number;
+    artworkVariant: string | null;
+    shadowVariant: string | null;
+    shadowOffsetX: number;
+    shadowOffsetY: number;
+    pointerEvents: string;
+    borderStyle: string;
+    outlineStyle: string;
+  };
+
   const moveHeldPointer = async (
     from: { x: number; y: number },
     to: { x: number; y: number },
@@ -1943,21 +2856,96 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       });
       await pause(22);
       if (verifyFollowing && step === Math.ceil(steps / 2)) {
-        let distance = Number.POSITIVE_INFINITY;
+        let dragPreview: SmokeDiskDragPreview | null = null;
         for (let attempt = 0; attempt < 12; attempt += 1) {
-          distance = (await window.webContents.executeJavaScript(
+          dragPreview = (await window.webContents.executeJavaScript(
             `(() => {
               const disk = document.querySelector('[data-desktop-icon="system-disk"]');
-              if (!(disk instanceof HTMLElement)) return 9999;
-              const rect = disk.getBoundingClientRect();
-              return Math.hypot(rect.left + rect.width / 2 - ${pointer.x}, rect.top + rect.height / 2 - ${pointer.y});
+              const sourceArtwork = disk?.querySelector('.pixel-icon');
+              const previewRoot = document.querySelector('[data-system-disk-drag-preview="true"]');
+              const preview = previewRoot?.querySelector('[data-system-disk-drag-preview-icon="true"]');
+              const artwork = preview?.querySelector('.pixel-icon-drag-artwork');
+              const shadow = preview?.querySelector('.pixel-icon-drag-shadow');
+              if (!(disk instanceof HTMLElement) || !(sourceArtwork instanceof SVGElement) ||
+                  !(previewRoot instanceof HTMLElement) || !(preview instanceof HTMLElement) ||
+                  !(artwork instanceof SVGElement) || !(shadow instanceof SVGElement)) return null;
+              const diskBounds = disk.getBoundingClientRect();
+              const sourceBounds = sourceArtwork.getBoundingClientRect();
+              const artworkBounds = artwork.getBoundingClientRect();
+              const shadowBounds = shadow.getBoundingClientRect();
+              const previewStyle = getComputedStyle(preview);
+              return {
+                sourceDistance: Math.hypot(
+                  diskBounds.left + diskBounds.width / 2 - ${from.x},
+                  diskBounds.top + diskBounds.height / 2 - ${from.y}
+                ),
+                sourceDragging: disk.classList.contains('is-dragging'),
+                previewDeltaX: Math.round(artworkBounds.left - sourceBounds.left),
+                previewDeltaY: Math.round(artworkBounds.top - sourceBounds.top),
+                width: Math.round(artworkBounds.width),
+                height: Math.round(artworkBounds.height),
+                artworkVariant: artwork.dataset.pixelIconVariant ?? null,
+                shadowVariant: shadow.dataset.pixelIconVariant ?? null,
+                shadowOffsetX: Math.round(shadowBounds.left - artworkBounds.left),
+                shadowOffsetY: Math.round(shadowBounds.top - artworkBounds.top),
+                pointerEvents: getComputedStyle(previewRoot).pointerEvents,
+                borderStyle: previewStyle.borderStyle,
+                outlineStyle: previewStyle.outlineStyle
+              };
             })()`,
             true,
-          )) as number;
-          if (distance <= 12) break;
+          )) as SmokeDiskDragPreview | null;
+          if (
+            dragPreview &&
+            dragPreview.sourceDistance <= 2 &&
+            dragPreview.previewDeltaX === pointer.x - from.x &&
+            dragPreview.previewDeltaY === pointer.y - from.y
+          ) {
+            break;
+          }
           await pause(15);
         }
-        if (distance > 12) throw new Error('System Disk did not follow the pointer during drag.');
+        if (
+          !dragPreview ||
+          dragPreview.sourceDistance > 2 ||
+          dragPreview.sourceDragging ||
+          dragPreview.previewDeltaX !== pointer.x - from.x ||
+          dragPreview.previewDeltaY !== pointer.y - from.y ||
+          dragPreview.width !== 32 ||
+          dragPreview.height !== 32 ||
+          dragPreview.artworkVariant !== 'artwork' ||
+          dragPreview.shadowVariant !== 'shadow' ||
+          dragPreview.shadowOffsetX !== 3 ||
+          dragPreview.shadowOffsetY !== 3 ||
+          dragPreview.pointerEvents !== 'none' ||
+          dragPreview.borderStyle !== 'none' ||
+          dragPreview.outlineStyle !== 'none'
+        ) {
+          throw new Error(
+            `System Disk did not use its icon-only drag preview: ${JSON.stringify(dragPreview)}.`,
+          );
+        }
+      }
+      if (verifyFollowing && step === steps) {
+        const desktopShadow = (await window.webContents.executeJavaScript(
+          `(() => {
+            const preview = document.querySelector('[data-system-disk-drag-preview-icon="true"]');
+            const shadow = preview?.querySelector('.pixel-icon-drag-shadow');
+            if (!(preview instanceof HTMLElement) || !(shadow instanceof SVGElement)) return null;
+            return {
+              solid: preview.classList.contains('is-solid-shadow'),
+              fullyBlack: [...shadow.querySelectorAll('rect')].every(
+                (rect) => getComputedStyle(rect).fill === 'rgb(0, 0, 0)'
+              )
+            };
+          })()`,
+          true,
+        )) as { solid: boolean; fullyBlack: boolean } | null;
+        if (!desktopShadow?.solid || !desktopShadow.fullyBlack) {
+          throw new Error(
+            `System Disk shadow did not switch to solid black over the Desktop: ${JSON.stringify(desktopShadow)}.`,
+          );
+        }
       }
     }
   };
@@ -1967,14 +2955,123 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     to: { x: number; y: number },
     verifyFollowing: boolean,
   ): Promise<void> => {
-    window.webContents.sendInputEvent({ type: 'mouseMove', ...from });
-    await pause(25);
+    type SystemDiskInputReadiness = {
+      hit: string | null;
+      hovered: boolean;
+      pointerOwned: boolean;
+      previewVisible: boolean;
+    };
+    let inputReadiness: SystemDiskInputReadiness | null = null;
+    for (let attempt = 0; attempt < (verifyFollowing ? 12 : 1); attempt += 1) {
+      window.webContents.sendInputEvent({ type: 'mouseMove', ...from });
+      await pause(25);
+      if (!verifyFollowing) break;
+      inputReadiness = (await window.webContents.executeJavaScript(
+        `(() => {
+          const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+          const root = document.querySelector('.macintosh');
+          const hit = document.elementFromPoint(${from.x}, ${from.y});
+          if (!(disk instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+          return {
+            hit: hit instanceof Element
+              ? hit.closest('[data-desktop-icon]')?.getAttribute('data-desktop-icon') ?? null
+              : null,
+            hovered: disk.matches(':hover'),
+            pointerOwned: root.dataset.itemDragging === 'true',
+            previewVisible:
+              document.querySelector('[data-vfs-item-drag-preview="true"], [data-system-disk-drag-preview="true"]') !== null
+          };
+        })()`,
+        true,
+      )) as SystemDiskInputReadiness | null;
+      if (
+        inputReadiness?.hit === 'system-disk' &&
+        inputReadiness.hovered &&
+        !inputReadiness.pointerOwned &&
+        !inputReadiness.previewVisible
+      ) {
+        break;
+      }
+      await pause(15);
+    }
+    if (
+      verifyFollowing &&
+      (inputReadiness?.hit !== 'system-disk' ||
+        !inputReadiness.hovered ||
+        inputReadiness.pointerOwned ||
+        inputReadiness.previewVisible)
+    ) {
+      throw new Error(
+        `System Disk was not ready to receive native pointer input: ${JSON.stringify(inputReadiness)}.`,
+      );
+    }
     window.webContents.sendInputEvent({
       type: 'mouseDown',
       button: 'left',
       clickCount: 1,
       ...from,
     });
+    let diskPressed = !verifyFollowing;
+    for (let attempt = 0; verifyFollowing && attempt < 12; attempt += 1) {
+      diskPressed = (await window.webContents.executeJavaScript(
+        `document.querySelector('[data-desktop-icon="system-disk"]')
+          ?.classList.contains('is-pointer-pressed') === true`,
+        true,
+      )) as boolean;
+      if (diskPressed) break;
+      await pause(15);
+    }
+    if (!diskPressed) {
+      window.webContents.sendInputEvent({
+        type: 'mouseUp',
+        button: 'left',
+        clickCount: 1,
+        ...from,
+      });
+      throw new Error('System Disk did not acknowledge its native pointer press.');
+    }
+    if (verifyFollowing) {
+      const delta = { x: to.x - from.x, y: to.y - from.y };
+      const distance = Math.max(1, Math.hypot(delta.x, delta.y));
+      const thresholdPoint = {
+        x: Math.round(from.x + (delta.x / distance) * 5),
+        y: Math.round(from.y + (delta.y / distance) * 5),
+      };
+      window.webContents.sendInputEvent({
+        type: 'mouseMove',
+        button: 'left',
+        modifiers: ['leftbuttondown'],
+        ...thresholdPoint,
+      });
+      let previewOwned = false;
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        previewOwned = (await window.webContents.executeJavaScript(
+          `(() => {
+            const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+            const root = document.querySelector('.macintosh');
+            return disk instanceof HTMLElement &&
+              root instanceof HTMLElement &&
+              !disk.classList.contains('is-pointer-pressed') &&
+              root.dataset.itemDragging === 'true' &&
+              document.querySelector('[data-system-disk-drag-preview="true"]') !== null;
+          })()`,
+          true,
+        )) as boolean;
+        if (previewOwned) break;
+        await pause(15);
+      }
+      if (!previewOwned) {
+        window.webContents.sendInputEvent({
+          type: 'mouseUp',
+          button: 'left',
+          clickCount: 1,
+          ...thresholdPoint,
+        });
+        throw new Error(
+          'System Disk did not retain pointer ownership while crossing the drag threshold.',
+        );
+      }
+    }
     await pause(25);
     await moveHeldPointer(from, to, 12, verifyFollowing);
   };
@@ -2053,7 +3150,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   if (!trashPreviewMoved?.moved) {
     throw new Error('Trash did not enter a movable preview before cancel.');
   }
-  assertPixelCursor('Desktop icon drag', trashPreviewMoved.cursor, 16, 16, { x: 7, y: 7 });
+  assertPixelCursor('Desktop icon closed fist', trashPreviewMoved.cursor, 16, 16, { x: 8, y: 8 });
   await window.webContents.executeJavaScript(
     `(() => {
       const trash = document.querySelector('[data-desktop-icon="trash"]');
@@ -2300,7 +3397,15 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   await restoreDefaultDesktopLayout();
 
-  const rejectedInternalTrashDrop = (await window.webContents.executeJavaScript(
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-finder-window="window-system-disk"]')?.dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 9001 })
+    )`,
+    true,
+  );
+  await pause(40);
+
+  const rejectedInternalTrashCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector(
         '[data-finder-window="window-system-disk"] [data-vfs-item="welcome"]'
@@ -2310,30 +3415,41 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       if (!(source instanceof HTMLElement) || !(trash instanceof HTMLElement) || !(label instanceof HTMLElement)) return null;
       const sourceBounds = source.getBoundingClientRect();
       const labelBounds = label.getBoundingClientRect();
-      const data = new DataTransfer();
-      source.dispatchEvent(new DragEvent('dragstart', {
-        dataTransfer: data,
-        clientX: sourceBounds.left + sourceBounds.width / 2,
-        clientY: sourceBounds.top + sourceBounds.height / 2,
-        bubbles: true,
-        cancelable: true
-      }));
-      const point = {
-        x: labelBounds.left + labelBounds.width / 2,
-        y: labelBounds.top + labelBounds.height / 2
+      return {
+        source: {
+          x: Math.round(sourceBounds.left + sourceBounds.width / 2),
+          y: Math.round(sourceBounds.top + sourceBounds.height / 2)
+        },
+        destination: {
+          x: Math.round(labelBounds.left + labelBounds.width / 2),
+          y: Math.round(labelBounds.top + labelBounds.height / 2)
+        }
       };
-      label.dispatchEvent(new DragEvent('dragover', {
-        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
-      }));
-      const highlighted = trash.classList.contains('is-file-drop-target');
-      label.dispatchEvent(new DragEvent('drop', {
-        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
-      }));
-      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
-      return { highlighted, payload: data.getData('application/x-macintosh-vfs-node-ids') };
     })()`,
     true,
-  )) as { highlighted: boolean; payload: string } | null;
+  )) as { source: SmokePoint; destination: SmokePoint } | null;
+  if (!rejectedInternalTrashCoordinates) {
+    throw new Error('The Trash-label internal-drop coordinates were unavailable.');
+  }
+  await beginDrag(
+    rejectedInternalTrashCoordinates.source,
+    rejectedInternalTrashCoordinates.destination,
+    false,
+  );
+  const rejectedInternalTrashPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const root = document.querySelector('.macintosh');
+      if (!(trash instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: trash.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(trash).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  releaseDrag(rejectedInternalTrashCoordinates.destination);
   await pause(100);
   const rejectedInternalItemRemained = (await window.webContents.executeJavaScript(
     `document.querySelector(
@@ -2342,16 +3458,23 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   )) as boolean;
   if (
-    !rejectedInternalTrashDrop?.payload ||
-    rejectedInternalTrashDrop.highlighted ||
+    !rejectedInternalTrashPreview?.pointerOwned ||
+    rejectedInternalTrashPreview.highlighted ||
     !rejectedInternalItemRemained
   ) {
     throw new Error(
-      `The Trash label accepted an internal item: ${JSON.stringify(rejectedInternalTrashDrop)}.`,
+      `The Trash label accepted an internal item: ${JSON.stringify(rejectedInternalTrashPreview)}.`,
     );
   }
+  assertPixelCursor(
+    'Rejected internal Trash closed fist',
+    rejectedInternalTrashPreview.cursor,
+    16,
+    16,
+    { x: 8, y: 8 },
+  );
 
-  const acceptedInternalTrashDrop = (await window.webContents.executeJavaScript(
+  const acceptedInternalTrashCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector(
         '[data-finder-window="window-system-disk"] [data-vfs-item="welcome"]'
@@ -2361,30 +3484,41 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       if (!(source instanceof HTMLElement) || !(trash instanceof HTMLElement) || !(glyph instanceof Element)) return null;
       const sourceBounds = source.getBoundingClientRect();
       const glyphBounds = glyph.getBoundingClientRect();
-      const data = new DataTransfer();
-      source.dispatchEvent(new DragEvent('dragstart', {
-        dataTransfer: data,
-        clientX: sourceBounds.left + sourceBounds.width / 2,
-        clientY: sourceBounds.top + sourceBounds.height / 2,
-        bubbles: true,
-        cancelable: true
-      }));
-      const point = {
-        x: glyphBounds.left + glyphBounds.width / 2,
-        y: glyphBounds.top + glyphBounds.height / 2
+      return {
+        source: {
+          x: Math.round(sourceBounds.left + sourceBounds.width / 2),
+          y: Math.round(sourceBounds.top + sourceBounds.height / 2)
+        },
+        destination: {
+          x: Math.round(glyphBounds.left + glyphBounds.width / 2),
+          y: Math.round(glyphBounds.top + glyphBounds.height / 2)
+        }
       };
-      glyph.dispatchEvent(new DragEvent('dragover', {
-        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
-      }));
-      const highlighted = trash.classList.contains('is-file-drop-target');
-      glyph.dispatchEvent(new DragEvent('drop', {
-        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
-      }));
-      source.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
-      return { highlighted, payload: data.getData('application/x-macintosh-vfs-node-ids') };
     })()`,
     true,
-  )) as { highlighted: boolean; payload: string } | null;
+  )) as { source: SmokePoint; destination: SmokePoint } | null;
+  if (!acceptedInternalTrashCoordinates) {
+    throw new Error('The Trash-glyph internal-drop coordinates were unavailable.');
+  }
+  await beginDrag(
+    acceptedInternalTrashCoordinates.source,
+    acceptedInternalTrashCoordinates.destination,
+    false,
+  );
+  const acceptedInternalTrashPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const root = document.querySelector('.macintosh');
+      if (!(trash instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: trash.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        cursor: getComputedStyle(trash).cursor
+      };
+    })()`,
+    true,
+  )) as { highlighted: boolean; pointerOwned: boolean; cursor: string } | null;
+  releaseDrag(acceptedInternalTrashCoordinates.destination);
   await pause(120);
   const acceptedInternalItemMoved = (await window.webContents.executeJavaScript(
     `document.querySelector(
@@ -2393,14 +3527,21 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   )) as boolean;
   if (
-    !acceptedInternalTrashDrop?.payload ||
-    !acceptedInternalTrashDrop.highlighted ||
+    !acceptedInternalTrashPreview?.pointerOwned ||
+    !acceptedInternalTrashPreview.highlighted ||
     !acceptedInternalItemMoved
   ) {
     throw new Error(
-      `The rendered Trash glyph rejected an internal item: ${JSON.stringify(acceptedInternalTrashDrop)}.`,
+      `The rendered Trash glyph rejected an internal item: ${JSON.stringify(acceptedInternalTrashPreview)}.`,
     );
   }
+  assertPixelCursor(
+    'Accepted internal Trash closed fist',
+    acceptedInternalTrashPreview.cursor,
+    16,
+    16,
+    { x: 8, y: 8 },
+  );
 
   const trashWindowOpened = await window.webContents.executeJavaScript(
     `(() => {
@@ -2518,82 +3659,177 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   const unscaledViewport = desktopGeometry.viewport;
   window.webContents.setZoomFactor(1.25);
   await pause(120);
-  const scaledDropProbe = (await window.webContents.executeJavaScript(
+  const scaledGeometry = await readDesktopGeometry();
+  if (
+    window.webContents.getZoomFactor() !== 1.25 ||
+    !scaledGeometry ||
+    scaledGeometry.trashGlyph.left < 0 ||
+    scaledGeometry.trashGlyph.right > scaledGeometry.viewport.width ||
+    scaledGeometry.trashGlyph.top < 0 ||
+    scaledGeometry.trashGlyph.bottom > scaledGeometry.viewport.height ||
+    scaledGeometry.viewport.width >= unscaledViewport.width ||
+    scaledGeometry.viewport.height >= unscaledViewport.height
+  ) {
+    throw new Error(`Scaled Trash geometry failed: ${JSON.stringify(scaledGeometry)}.`);
+  }
+  const scaledInputPoint = (point: SmokePoint): SmokePoint => ({
+    x: Math.round(point.x * window.webContents.getZoomFactor()),
+    y: Math.round(point.y * window.webContents.getZoomFactor()),
+  });
+  const scaledProbePoints = trashProbePoints(scaledGeometry);
+  await beginDrag(
+    scaledInputPoint(scaledGeometry.disk),
+    scaledInputPoint(scaledProbePoints.insideEdge),
+    false,
+  );
+  await waitForTrashHighlight(true);
+  await moveHeldPointer(
+    scaledInputPoint(scaledProbePoints.insideEdge),
+    scaledInputPoint(scaledProbePoints.outsideEdge),
+    4,
+  );
+  await waitForTrashHighlight(false);
+  await moveHeldPointer(
+    scaledInputPoint(scaledProbePoints.outsideEdge),
+    scaledInputPoint(scaledProbePoints.label),
+    6,
+  );
+  await waitForTrashHighlight(false);
+  await moveHeldPointer(
+    scaledInputPoint(scaledProbePoints.label),
+    scaledInputPoint(scaledProbePoints.insideEdge),
+    6,
+  );
+  await waitForTrashHighlight(true);
+  await moveHeldPointer(
+    scaledInputPoint(scaledProbePoints.insideEdge),
+    scaledInputPoint(scaledProbePoints.outsideEdge),
+    4,
+  );
+  await waitForTrashHighlight(false);
+  releaseDrag(scaledInputPoint(scaledProbePoints.outsideEdge));
+  await pause(80);
+  await assertRejectedDiskRelease(scaledProbePoints.outsideEdge, 'The scaled outside-edge release');
+
+  const scaledVfsTrashCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
+      const finder = document.querySelector('[data-finder-window="window-system-disk"]');
+      if (finder instanceof HTMLElement) finder.style.removeProperty('pointer-events');
+      const source = finder?.querySelector('[data-vfs-item="documents"]');
       const trash = document.querySelector('[data-desktop-icon="trash"]');
       const glyph = trash?.querySelector('[data-trash-drop-bounds="true"]');
-      const label = trash?.querySelector('[data-desktop-icon-label="trash"]');
-      const surface = document.querySelector('.desktop-surface');
-      if (!(trash instanceof HTMLElement) || !(glyph instanceof Element) || !(label instanceof HTMLElement) || !(surface instanceof HTMLElement)) return null;
+      if (!(finder instanceof HTMLElement) || !(source instanceof HTMLElement) || !(glyph instanceof Element)) return null;
+      const sourceBounds = source.getBoundingClientRect();
       const glyphBounds = glyph.getBoundingClientRect();
-      const labelBounds = label.getBoundingClientRect();
-      const tolerance = Number(glyph.getAttribute('data-trash-drop-tolerance'));
-      const data = new DataTransfer();
-      data.setData('application/x-macintosh-vfs-node-ids', JSON.stringify(['read-me']));
-      const dragOver = (target, point) => target.dispatchEvent(new DragEvent('dragover', {
-        dataTransfer: data, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true
-      }));
-      const inside = {
-        x: glyphBounds.right + tolerance - 1,
-        y: (glyphBounds.top + glyphBounds.bottom) / 2
+      const sourcePoint = {
+        x: Math.round(sourceBounds.left + sourceBounds.width / 2),
+        y: Math.round(sourceBounds.top + sourceBounds.height / 2)
       };
-      const outside = { x: glyphBounds.right + tolerance + 1, y: inside.y };
-      const labelPoint = {
-        x: labelBounds.left + labelBounds.width / 2,
-        y: labelBounds.top + labelBounds.height / 2
-      };
-      dragOver(glyph, inside);
-      const insideHighlighted = trash.classList.contains('is-file-drop-target');
-      dragOver(glyph, outside);
-      const outsideRejected = !trash.classList.contains('is-file-drop-target');
-      dragOver(label, labelPoint);
-      const labelRejected = !trash.classList.contains('is-file-drop-target');
-      dragOver(glyph, inside);
-      const dropCommitted = !glyph.dispatchEvent(new DragEvent('drop', {
-        dataTransfer: data, clientX: inside.x, clientY: inside.y, bubbles: true, cancelable: true
-      }));
-      surface.dispatchEvent(new DragEvent('dragend', { dataTransfer: data, bubbles: true }));
+      if (document.elementFromPoint(sourcePoint.x, sourcePoint.y)?.closest('[data-vfs-item]') !== source) {
+        return null;
+      }
       return {
-        insideHighlighted,
-        outsideRejected,
-        labelRejected,
-        dropCommitted,
-        glyphVisible:
-          glyphBounds.left >= 0 && glyphBounds.right <= window.innerWidth &&
-          glyphBounds.top >= 0 && glyphBounds.bottom <= window.innerHeight,
-        viewport: {
-          width: window.innerWidth,
-          height: window.innerHeight,
-          devicePixelRatio: window.devicePixelRatio
+        source: sourcePoint,
+        destination: {
+          x: Math.round(glyphBounds.left + glyphBounds.width / 2),
+          y: Math.round(glyphBounds.top + glyphBounds.height / 2)
         }
       };
     })()`,
     true,
+  )) as { source: SmokePoint; destination: SmokePoint } | null;
+  if (!scaledVfsTrashCoordinates) {
+    throw new Error('The scaled ordinary-item Trash coordinates were unavailable.');
+  }
+  const scaledVfsTrashInput = {
+    source: scaledInputPoint(scaledVfsTrashCoordinates.source),
+    destination: scaledInputPoint(scaledVfsTrashCoordinates.destination),
+  };
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...scaledVfsTrashInput.source });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...scaledVfsTrashInput.source,
+  });
+  for (const offset of [2, 4]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: scaledVfsTrashInput.source.x + Math.round(offset * window.webContents.getZoomFactor()),
+      y: scaledVfsTrashInput.source.y,
+    });
+    await pause(24);
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-finder-window="window-system-disk"]')
+      ?.style.setProperty('pointer-events', 'none')`,
+    true,
+  );
+  await moveHeldPointer(
+    {
+      x: scaledVfsTrashInput.source.x + Math.round(4 * window.webContents.getZoomFactor()),
+      y: scaledVfsTrashInput.source.y,
+    },
+    scaledVfsTrashInput.destination,
+    12,
+  );
+  const scaledVfsTrashPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const root = document.querySelector('.macintosh');
+      const preview = document.querySelector(
+        '[data-vfs-item-drag-preview-node="documents"]'
+      );
+      if (!(trash instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      return {
+        highlighted: trash.classList.contains('is-file-drop-target'),
+        pointerOwned: root.dataset.itemDragging === 'true',
+        previewVisible: preview instanceof HTMLElement,
+        cursor: getComputedStyle(trash).cursor
+      };
+    })()`,
+    true,
   )) as {
-    insideHighlighted: boolean;
-    outsideRejected: boolean;
-    labelRejected: boolean;
-    dropCommitted: boolean;
-    glyphVisible: boolean;
-    viewport: { width: number; height: number; devicePixelRatio: number };
+    highlighted: boolean;
+    pointerOwned: boolean;
+    previewVisible: boolean;
+    cursor: string;
   } | null;
   if (
-    window.webContents.getZoomFactor() !== 1.25 ||
-    !scaledDropProbe?.insideHighlighted ||
-    !scaledDropProbe.outsideRejected ||
-    !scaledDropProbe.labelRejected ||
-    !scaledDropProbe.dropCommitted ||
-    !scaledDropProbe.glyphVisible ||
-    scaledDropProbe.viewport.width >= unscaledViewport.width ||
-    scaledDropProbe.viewport.height >= unscaledViewport.height
+    !scaledVfsTrashPreview?.highlighted ||
+    !scaledVfsTrashPreview.pointerOwned ||
+    !scaledVfsTrashPreview.previewVisible
   ) {
-    throw new Error(`Scaled Trash coordinates failed: ${JSON.stringify(scaledDropProbe)}.`);
+    throw new Error(
+      `The scaled ordinary-item Trash drop did not retain its pointer preview: ${JSON.stringify(scaledVfsTrashPreview)}.`,
+    );
   }
-  await pause(320);
-  const scaledDropPersisted = (await loadState()).nodes.some(
-    (node) => node.id === 'read-me' && node.parentId === 'trash',
+  assertPixelCursor(
+    'Scaled ordinary-item Trash closed fist',
+    scaledVfsTrashPreview.cursor,
+    16,
+    16,
+    {
+      x: 8,
+      y: 8,
+    },
   );
-  if (!scaledDropPersisted) throw new Error('The scaled Trash drop did not commit its VFS move.');
+  releaseDrag(scaledVfsTrashInput.destination);
+  let scaledVfsTrashParent: string | null | undefined;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    scaledVfsTrashParent = (await loadState()).nodes.find(
+      (node) => node.id === 'documents',
+    )?.parentId;
+    if (scaledVfsTrashParent === 'trash') break;
+    await pause(25);
+  }
+  if (scaledVfsTrashParent !== 'trash') {
+    throw new Error(
+      `The scaled ordinary-item Trash drop did not commit its parent change: ${String(scaledVfsTrashParent)}.`,
+    );
+  }
 
   window.webContents.setZoomFactor(1);
   window.setContentSize(1152, 768);
@@ -2602,13 +3838,17 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   if (!desktopGeometry) throw new Error('Desktop geometry did not recover after scaled testing.');
 
   const repositionTarget = { x: 137, y: 343 };
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-desktop-icon="trash"]')
+      ?.style.setProperty('pointer-events', 'none')`,
+    true,
+  );
   await sendDrag(desktopGeometry.disk, repositionTarget, true);
   await pause(260);
   await assertRejectedDiskRelease(repositionTarget, 'The free desktop release');
   await window.webContents.executeJavaScript(
-    `document.querySelectorAll('[data-finder-window]').forEach((finder) => {
-      if (finder instanceof HTMLElement) finder.style.removeProperty('pointer-events');
-    })`,
+    `document.querySelector('[data-desktop-icon="trash"]')
+      ?.style.removeProperty('pointer-events')`,
     true,
   );
 
@@ -2675,7 +3915,9 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
       desktopUtilitiesY: Number(desktopUtilities.dataset.iconY),
       vfsCount: Number(root.dataset.vfsCount || 0),
       windowLeft: Number.parseFloat(finder.style.left),
-      windowTop: Number.parseFloat(finder.style.top)
+      windowTop: Number.parseFloat(finder.style.top),
+      windowWidth: Number.parseFloat(finder.style.width),
+      windowHeight: Number.parseFloat(finder.style.height)
     };
   })()`,
     true,
@@ -2683,7 +3925,398 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
 
   const destination = path.join(app.getPath('userData'), PROBE_FILE_NAME);
   await writeFile(destination, `${JSON.stringify(proof, null, 2)}\n`, { mode: 0o600 });
+  normalQuit.quitWithoutFlush();
+};
+
+const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
+  await waitForRenderer(window);
+
+  smokeSaveFailureTarget = 'presentation';
+  window.close();
+
+  const failureDeadline = Date.now() + 2_000;
+  let saveFailureAlert: { message: string; pending: boolean } | null = null;
+  while (Date.now() < failureDeadline) {
+    saveFailureAlert = (await window.webContents.executeJavaScript(
+      `(() => {
+        const alert = document.querySelector('[aria-label="Persistence error"]');
+        const root = document.querySelector('.macintosh');
+        if (!(alert instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+        return {
+          message: alert.textContent?.trim() ?? '',
+          pending: root.dataset.normalQuitPending === 'true'
+        };
+      })()`,
+      true,
+    )) as { message: string; pending: boolean } | null;
+    if (saveFailureAlert) break;
+    await pause(20);
+  }
+  if (
+    !saveFailureAlert ||
+    !saveFailureAlert.message.includes('could not quit') ||
+    saveFailureAlert.pending
+  ) {
+    throw new Error(
+      `Normal quit save failure was not recoverable: ${JSON.stringify(saveFailureAlert)}.`,
+    );
+  }
+
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[aria-label="Persistence error"] button\')?.click()',
+    true,
+  );
+  window.focus();
+  await pause(50);
+  await window.webContents.executeJavaScript(
+    `document.querySelectorAll('[data-finder-window]').forEach((finder) => {
+      if (
+        finder instanceof HTMLElement &&
+        finder.dataset.finderWindow !== 'window-applications'
+      ) {
+        finder.style.pointerEvents = 'none';
+      }
+    })`,
+    true,
+  );
+
+  const committedMove = (await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-applications"]');
+      const handle = finder?.querySelector('[data-window-drag-handle="true"]');
+      if (!(finder instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
+      const frame = finder.getBoundingClientRect();
+      const handleBounds = handle.getBoundingClientRect();
+      handle.addEventListener(
+        'pointerdown',
+        (event) => { window.__macintoshSmokeNormalQuitMovePointerId = event.pointerId; },
+        { once: true }
+      );
+      const position = {
+        x: Number.parseFloat(finder.style.left),
+        y: Number.parseFloat(finder.style.top)
+      };
+      return {
+        current: {
+          ...position,
+          width: Number.parseFloat(finder.style.width),
+          height: Number.parseFloat(finder.style.height)
+        },
+        expected: {
+          x: position.x + ${NORMAL_QUIT_WINDOW_DELTA.x},
+          y: position.y + ${NORMAL_QUIT_WINDOW_DELTA.y},
+          width: Number.parseFloat(finder.style.width),
+          height: Number.parseFloat(finder.style.height)
+        },
+        pointer: {
+          x: Math.round(handleBounds.left + handleBounds.width / 2),
+          y: Math.round(handleBounds.top + handleBounds.height / 2)
+        },
+        rendered: {
+          left: Math.round(frame.left),
+          top: Math.round(frame.top)
+        }
+      };
+    })()`,
+    true,
+  )) as {
+    current: { x: number; y: number; width: number; height: number };
+    expected: { x: number; y: number; width: number; height: number };
+    pointer: SmokePoint;
+    rendered: { left: number; top: number };
+  } | null;
+  if (
+    !committedMove ||
+    !Object.values(committedMove.current).every(Number.isFinite) ||
+    !Object.values(committedMove.expected).every(Number.isFinite)
+  ) {
+    throw new Error(
+      `Normal-quit presentation geometry was unavailable: ${JSON.stringify(committedMove)}.`,
+    );
+  }
+
+  const moveDestination = {
+    x: committedMove.pointer.x + NORMAL_QUIT_WINDOW_DELTA.x,
+    y: committedMove.pointer.y + NORMAL_QUIT_WINDOW_DELTA.y,
+  };
+  type NormalQuitMoveInputReadiness = {
+    documentFocused: boolean;
+    hitHandle: boolean;
+    hitWindow: string | null;
+    normalQuitPending: boolean;
+    persistenceAlertPresent: boolean;
+  };
+  let moveCaptureOwned = false;
+  let moveInputReadiness: NormalQuitMoveInputReadiness | null = null;
+  for (let pressAttempt = 0; pressAttempt < 8 && !moveCaptureOwned; pressAttempt += 1) {
+    window.focus();
+    window.webContents.sendInputEvent({ type: 'mouseMove', ...committedMove.pointer });
+    await pause(30);
+    moveInputReadiness = (await window.webContents.executeJavaScript(
+      `(() => {
+        const handle = document.querySelector(
+          '[data-finder-window="window-applications"] [data-window-drag-handle="true"]'
+        );
+        const root = document.querySelector('.macintosh');
+        const hit = document.elementFromPoint(
+          ${committedMove.pointer.x},
+          ${committedMove.pointer.y}
+        );
+        return {
+          documentFocused: document.hasFocus(),
+          hitHandle:
+            handle instanceof HTMLElement &&
+            hit instanceof Element &&
+            hit.closest('[data-window-drag-handle="true"]') === handle,
+          hitWindow:
+            hit instanceof Element
+              ? hit.closest('[data-finder-window]')?.getAttribute('data-finder-window') ?? null
+              : null,
+          normalQuitPending:
+            root instanceof HTMLElement && root.dataset.normalQuitPending === 'true',
+          persistenceAlertPresent:
+            document.querySelector('[aria-label="Persistence error"]') !== null
+        };
+      })()`,
+      true,
+    )) as NormalQuitMoveInputReadiness;
+    if (
+      !moveInputReadiness.documentFocused ||
+      !moveInputReadiness.hitHandle ||
+      moveInputReadiness.hitWindow !== 'window-applications' ||
+      moveInputReadiness.normalQuitPending ||
+      moveInputReadiness.persistenceAlertPresent
+    ) {
+      await pause(20);
+      continue;
+    }
+    window.webContents.sendInputEvent({
+      type: 'mouseDown',
+      button: 'left',
+      clickCount: 1,
+      ...committedMove.pointer,
+    });
+    for (let captureAttempt = 0; captureAttempt < 10; captureAttempt += 1) {
+      moveCaptureOwned = (await window.webContents.executeJavaScript(
+        `(() => {
+          const handle = document.querySelector(
+            '[data-finder-window="window-applications"] [data-window-drag-handle="true"]'
+          );
+          const pointerId = window.__macintoshSmokeNormalQuitMovePointerId;
+          return handle instanceof HTMLElement &&
+            typeof pointerId === 'number' &&
+            handle.hasPointerCapture(pointerId);
+        })()`,
+        true,
+      )) as boolean;
+      if (moveCaptureOwned) break;
+      await pause(10);
+    }
+    if (!moveCaptureOwned) {
+      window.webContents.sendInputEvent({
+        type: 'mouseUp',
+        button: 'left',
+        clickCount: 1,
+        ...committedMove.pointer,
+      });
+      await pause(20);
+    }
+  }
+  if (!moveCaptureOwned) {
+    throw new Error(
+      `Normal-quit presentation move did not acquire native pointer capture: ${JSON.stringify(moveInputReadiness)}.`,
+    );
+  }
+  for (let step = 1; step <= 3; step += 1) {
+    const progress = step / 3;
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: Math.round(
+        committedMove.pointer.x + (moveDestination.x - committedMove.pointer.x) * progress,
+      ),
+      y: Math.round(
+        committedMove.pointer.y + (moveDestination.y - committedMove.pointer.y) * progress,
+      ),
+    });
+    await pause(5);
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...moveDestination,
+  });
+  const mutationCommittedAt = Date.now();
+
+  type NormalQuitCommittedGeometry = {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    dragging: boolean;
+  };
+  let renderedCommittedGeometry: NormalQuitCommittedGeometry | null = null;
+  const commitDeadline = mutationCommittedAt + 120;
+  while (Date.now() < commitDeadline) {
+    renderedCommittedGeometry = (await window.webContents.executeJavaScript(
+      `(() => {
+        const finder = document.querySelector('[data-finder-window="window-applications"]');
+        if (!(finder instanceof HTMLElement)) return null;
+        return {
+          x: Number.parseFloat(finder.style.left),
+          y: Number.parseFloat(finder.style.top),
+          width: Number.parseFloat(finder.style.width),
+          height: Number.parseFloat(finder.style.height),
+          dragging: finder.dataset.windowDragging === 'true'
+        };
+      })()`,
+      true,
+    )) as NormalQuitCommittedGeometry | null;
+    if (
+      renderedCommittedGeometry?.x === committedMove.expected.x &&
+      renderedCommittedGeometry.y === committedMove.expected.y &&
+      renderedCommittedGeometry.width === committedMove.expected.width &&
+      renderedCommittedGeometry.height === committedMove.expected.height &&
+      !renderedCommittedGeometry.dragging
+    ) {
+      break;
+    }
+    await pause(5);
+  }
+  if (
+    renderedCommittedGeometry?.x !== committedMove.expected.x ||
+    renderedCommittedGeometry.y !== committedMove.expected.y ||
+    renderedCommittedGeometry.width !== committedMove.expected.width ||
+    renderedCommittedGeometry.height !== committedMove.expected.height ||
+    renderedCommittedGeometry.dragging
+  ) {
+    throw new Error(
+      `Normal-quit presentation move did not commit: ${JSON.stringify({ committedMove, renderedCommittedGeometry })}.`,
+    );
+  }
+
+  const provisionalResize = (await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-applications"]');
+      const grow = finder?.querySelector('[aria-label="Resize Applications"]');
+      if (!(finder instanceof HTMLElement) || !(grow instanceof HTMLElement)) return null;
+      const bounds = grow.getBoundingClientRect();
+      grow.addEventListener(
+        'pointerdown',
+        (event) => { window.__macintoshSmokeNormalQuitResizePointerId = event.pointerId; },
+        { once: true }
+      );
+      return {
+        pointer: {
+          x: Math.round(bounds.left + bounds.width / 2),
+          y: Math.round(bounds.top + bounds.height / 2)
+        },
+        expectedCommitted: {
+          x: Number.parseFloat(finder.style.left),
+          y: Number.parseFloat(finder.style.top),
+          width: Number.parseFloat(finder.style.width),
+          height: Number.parseFloat(finder.style.height)
+        }
+      };
+    })()`,
+    true,
+  )) as {
+    pointer: SmokePoint;
+    expectedCommitted: { x: number; y: number; width: number; height: number };
+  } | null;
+  if (!provisionalResize) throw new Error('Normal-quit provisional resize was unavailable.');
+
+  const provisionalDestination = {
+    x: provisionalResize.pointer.x + 48,
+    y: provisionalResize.pointer.y + 32,
+  };
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...provisionalResize.pointer });
+  await pause(16);
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...provisionalResize.pointer,
+  });
+  let resizeCaptureOwned = false;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    resizeCaptureOwned = (await window.webContents.executeJavaScript(
+      `(() => {
+        const grow = document.querySelector(
+          '[data-finder-window="window-applications"] [aria-label="Resize Applications"]'
+        );
+        const pointerId = window.__macintoshSmokeNormalQuitResizePointerId;
+        return grow instanceof HTMLElement &&
+          typeof pointerId === 'number' &&
+          grow.hasPointerCapture(pointerId);
+      })()`,
+      true,
+    )) as boolean;
+    if (resizeCaptureOwned) break;
+    await pause(5);
+  }
+  if (!resizeCaptureOwned) {
+    window.webContents.sendInputEvent({
+      type: 'mouseUp',
+      button: 'left',
+      clickCount: 1,
+      ...provisionalResize.pointer,
+    });
+    throw new Error('Normal-quit provisional resize did not acquire native pointer capture.');
+  }
+  for (let step = 1; step <= 3; step += 1) {
+    const progress = step / 3;
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      x: Math.round(
+        provisionalResize.pointer.x +
+          (provisionalDestination.x - provisionalResize.pointer.x) * progress,
+      ),
+      y: Math.round(
+        provisionalResize.pointer.y +
+          (provisionalDestination.y - provisionalResize.pointer.y) * progress,
+      ),
+    });
+    await pause(5);
+  }
+  const provisionalResizeState = (await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-applications"]');
+      const grow = finder?.querySelector('[aria-label="Resize Applications"]');
+      const pointerId = window.__macintoshSmokeNormalQuitResizePointerId;
+      if (!(finder instanceof HTMLElement) || !(grow instanceof HTMLElement)) return null;
+      return {
+        width: Number.parseFloat(finder.style.width),
+        height: Number.parseFloat(finder.style.height),
+        captureOwned: typeof pointerId === 'number' && grow.hasPointerCapture(pointerId)
+      };
+    })()`,
+    true,
+  )) as { width: number; height: number; captureOwned: boolean } | null;
+  const quitDelay = Date.now() - mutationCommittedAt;
+  if (
+    !provisionalResizeState?.captureOwned ||
+    provisionalResizeState.width <= provisionalResize.expectedCommitted.width ||
+    provisionalResizeState.height <= provisionalResize.expectedCommitted.height ||
+    quitDelay >= 200
+  ) {
+    throw new Error(
+      `Normal quit did not begin from an uncommitted resize inside the persistence debounce: ${JSON.stringify({ provisionalResize, provisionalResizeState, quitDelay })}.`,
+    );
+  }
+
   app.quit();
+  app.quit();
+  setTimeout(() => {
+    if (!window.isDestroyed()) {
+      console.error('Normal quit did not complete after the final presentation flush.');
+      app.exit(1);
+    }
+  }, 8_000);
 };
 
 const captureScreen = async (window: BrowserWindow, destination: string): Promise<void> => {
@@ -2723,7 +4356,7 @@ const captureScreen = async (window: BrowserWindow, destination: string): Promis
   const image = await window.webContents.capturePage();
   await mkdir(path.dirname(destination), { recursive: true });
   await writeFile(destination, image.toPNG());
-  app.quit();
+  normalQuit.quitWithoutFlush();
 };
 
 const captureStartup = async (window: BrowserWindow, destination: string): Promise<void> => {
@@ -2731,7 +4364,7 @@ const captureStartup = async (window: BrowserWindow, destination: string): Promi
   const image = await window.webContents.capturePage();
   await mkdir(path.dirname(destination), { recursive: true });
   await writeFile(destination, image.toPNG());
-  app.quit();
+  normalQuit.quitWithoutFlush();
 };
 
 const createWindow = async (): Promise<void> => {
@@ -2759,6 +4392,11 @@ const createWindow = async (): Promise<void> => {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.on('close', (event) => {
+    if (!normalQuit.shouldPreventQuit()) return;
+    event.preventDefault();
+    requestNormalQuit();
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -2770,6 +4408,11 @@ const createWindow = async (): Promise<void> => {
 
   if (smokeMode) {
     void runSmokeDrag(mainWindow).catch((error) => {
+      console.error(error);
+      app.exit(1);
+    });
+  } else if (normalQuitProbeMode) {
+    void runNormalQuitProbe(mainWindow).catch((error) => {
       console.error(error);
       app.exit(1);
     });
@@ -2799,6 +4442,12 @@ app.whenReady().then(async () => {
   installApplicationMenu();
   registerIpc();
   await createWindow();
+});
+
+app.on('before-quit', (event) => {
+  if (!normalQuit.shouldPreventQuit()) return;
+  event.preventDefault();
+  requestNormalQuit();
 });
 
 app.on('window-all-closed', () => app.quit());

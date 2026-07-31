@@ -1,4 +1,5 @@
 import type { Point } from '../../shared/state';
+import type { IconDragPreviewItem } from './icon-drag-preview';
 
 export const VFS_DRAG_TYPE = 'application/x-macintosh-vfs-node-ids';
 
@@ -11,7 +12,8 @@ export interface VfsIconDragLayout {
 export interface VfsItemDragContext {
   parentId: string;
   nodeIds: string[];
-  layout: VfsIconDragLayout;
+  layout: VfsIconDragLayout | null;
+  previewItems: IconDragPreviewItem[];
   source: 'desktop' | 'finder';
 }
 

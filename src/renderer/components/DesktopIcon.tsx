@@ -6,6 +6,12 @@ import {
 } from 'react';
 
 import type { Point } from '../../shared/state';
+import {
+  beginPointerDrag,
+  releasePointerDrag,
+  updatePointerDrag,
+  type PointerDragIntent,
+} from '../model/pointer-drag';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
 
 interface DesktopIconProps {
@@ -21,7 +27,7 @@ interface DesktopIconProps {
   validDropTarget?: boolean;
   onSelect: (id: 'system-disk' | 'trash', additive: boolean) => void;
   onOpen: (id: 'system-disk' | 'trash', source: HTMLElement) => void;
-  onDragStart: (id: 'system-disk' | 'trash', origin: Point) => void;
+  onDragStart: (id: 'system-disk' | 'trash', origin: Point, pointerOrigin: Point) => void;
   onDrag: (id: 'system-disk' | 'trash', position: Point, pointer: Point) => void;
   onDragEnd: (id: 'system-disk' | 'trash', pointer: Point) => void;
   onDragCancel: (id: 'system-disk' | 'trash') => void;
@@ -32,8 +38,7 @@ interface DragSession {
   pointerId: number;
   captureTarget: HTMLButtonElement;
   origin: Point;
-  pointerOrigin: Point;
-  hasMoved: boolean;
+  intent: PointerDragIntent;
 }
 
 export function DesktopIcon({
@@ -65,38 +70,46 @@ export function DesktopIcon({
   useLayoutEffect(() => {
     const active = session.current;
     if (!active) return;
+    session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
     if (active.captureTarget.hasPointerCapture(active.pointerId)) {
       active.captureTarget.releasePointerCapture(active.pointerId);
     }
-    session.current = null;
     cancellationHandlers.current.onInteractionChange(false);
-    if (active.hasMoved) cancellationHandlers.current.onDragCancel(id);
+    if (releasePointerDrag(active.intent) === 'drag') {
+      cancellationHandlers.current.onDragCancel(id);
+    }
   }, [id, interactionCancelToken]);
 
   const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     if (event.button !== 0 || ejecting) return;
     event.stopPropagation();
     onInteractionChange(true);
+    event.currentTarget.classList.add('is-pointer-pressed');
     event.currentTarget.setPointerCapture(event.pointerId);
     session.current = {
       pointerId: event.pointerId,
       captureTarget: event.currentTarget,
       origin: position,
-      pointerOrigin: { x: event.clientX, y: event.clientY },
-      hasMoved: false,
+      intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
     };
   };
 
   const pointerMove = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
-    const deltaX = event.clientX - active.pointerOrigin.x;
-    const deltaY = event.clientY - active.pointerOrigin.y;
-    if (!active.hasMoved && Math.hypot(deltaX, deltaY) >= 4) {
-      active.hasMoved = true;
-      onDragStart(id, active.origin);
+    const deltaX = event.clientX - active.intent.origin.x;
+    const deltaY = event.clientY - active.intent.origin.y;
+    const previousPhase = active.intent.phase;
+    active.intent = updatePointerDrag(active.intent, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (previousPhase === 'pressed' && active.intent.phase === 'dragging') {
+      active.captureTarget.classList.remove('is-pointer-pressed');
+      onDragStart(id, active.origin, active.intent.origin);
     }
-    if (!active.hasMoved) return;
+    if (active.intent.phase !== 'dragging') return;
     onDrag(
       id,
       { x: Math.round(active.origin.x + deltaX), y: Math.round(active.origin.y + deltaY) },
@@ -107,12 +120,13 @@ export function DesktopIcon({
   const pointerUp = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
+    session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    session.current = null;
     onInteractionChange(false);
-    if (active.hasMoved) {
+    if (releasePointerDrag(active.intent) === 'drag') {
       onDragEnd(id, { x: event.clientX, y: event.clientY });
     } else {
       onSelect(id, event.shiftKey);
@@ -122,12 +136,22 @@ export function DesktopIcon({
   const pointerCancel = (event: ReactPointerEvent<HTMLButtonElement>): void => {
     const active = session.current;
     if (!active || active.pointerId !== event.pointerId) return;
+    session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    session.current = null;
     onInteractionChange(false);
-    if (active.hasMoved) onDragCancel(id);
+    if (releasePointerDrag(active.intent) === 'drag') onDragCancel(id);
+  };
+
+  const lostPointerCapture = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = session.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
+    onInteractionChange(false);
+    if (releasePointerDrag(active.intent) === 'drag') onDragCancel(id);
   };
 
   const style = {
@@ -153,6 +177,7 @@ export function DesktopIcon({
       data-drop-mode={id === 'trash' ? 'internal' : undefined}
       data-vfs-node-id={id}
       onDoubleClick={(event) => onOpen(id, event.currentTarget)}
+      onLostPointerCapture={lostPointerCapture}
       onPointerCancel={pointerCancel}
       onPointerDown={pointerDown}
       onPointerMove={pointerMove}

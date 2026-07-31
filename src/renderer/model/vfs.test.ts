@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createDefaultState } from '../../shared/state';
+import { createDefaultState, MAX_VFS_NODES } from '../../shared/state';
 import {
   addFolder,
   duplicateNodes,
@@ -8,7 +8,6 @@ import {
   executeVfsCommand,
   isVfsCommand,
   listChildren,
-  MAX_VFS_NODES,
   mergeImportedEntries,
   moveNodes,
   placeFinderIcons,
@@ -444,9 +443,9 @@ describe('virtual Finder helpers', () => {
     expect(state.nodes.find((node) => node.id === 'applications')?.parentId).toBe('system-disk');
   });
 
-  it('does not add a folder after the VFS node cap is reached', () => {
+  it('uses the final VFS node slot and rejects additions after the cap is reached', () => {
     const state = createDefaultState();
-    while (state.nodes.length < MAX_VFS_NODES) {
+    while (state.nodes.length < MAX_VFS_NODES - 1) {
       const index = state.nodes.length;
       state.nodes.push({
         id: `filler-${index}`,
@@ -458,14 +457,20 @@ describe('virtual Finder helpers', () => {
       });
     }
 
-    expect(addFolder(state, 'documents')).toBe(state);
-    expect(executeVfsCommand(state, { type: 'create-folder', parentId: 'documents' })).toEqual({
-      state,
-      affectedIds: [],
-      addedCount: 0,
-      skippedCount: 1,
-      truncatedCount: 0,
-    });
+    const atCapacity = addFolder(state, 'documents');
+
+    expect(atCapacity.nodes).toHaveLength(MAX_VFS_NODES);
+    expect(atCapacity).not.toBe(state);
+    expect(addFolder(atCapacity, 'documents')).toBe(atCapacity);
+    expect(executeVfsCommand(atCapacity, { type: 'create-folder', parentId: 'documents' })).toEqual(
+      {
+        state: atCapacity,
+        affectedIds: [],
+        addedCount: 0,
+        skippedCount: 1,
+        truncatedCount: 0,
+      },
+    );
   });
 
   it('terminates ancestor walks and duplication on malformed parent cycles', () => {
@@ -532,6 +537,64 @@ describe('virtual Finder helpers', () => {
       iconPosition: { x: 121, y: 88 },
     });
     expect(moved.state.nodes.find((node) => node.id === 'read-me')).toEqual(readMeBefore);
+  });
+
+  it('places list-view move roots from their Desktop release point', () => {
+    const state = createDefaultState();
+    const readMeBefore = state.nodes.find((node) => node.id === 'read-me');
+    const moved = executeVfsCommand(state, {
+      type: 'move-nodes',
+      nodeIds: ['applications', 'documents'],
+      parentId: 'desktop',
+      desktopPlacement: {
+        point: { x: 173, y: 119 },
+        surfaceSize: { width: 800, height: 538 },
+      },
+    });
+
+    expect(moved.affectedIds).toEqual(['applications', 'documents']);
+    expect(moved.state.nodes.find((node) => node.id === 'applications')).toMatchObject({
+      parentId: 'desktop',
+      iconPosition: { x: 173, y: 119 },
+    });
+    expect(moved.state.nodes.find((node) => node.id === 'documents')).toMatchObject({
+      parentId: 'desktop',
+      iconPosition: { x: 186, y: 130 },
+    });
+    expect(moved.state.nodes.find((node) => node.id === 'read-me')).toEqual(readMeBefore);
+  });
+
+  it('accepts Desktop move release points but rejects ambiguous or non-Desktop placement', () => {
+    const desktopPlacement = {
+      point: { x: 173, y: 119 },
+      surfaceSize: { width: 800, height: 538 },
+    };
+
+    expect(
+      isVfsCommand({
+        type: 'move-nodes',
+        nodeIds: ['applications'],
+        parentId: 'desktop',
+        desktopPlacement,
+      }),
+    ).toBe(true);
+    expect(
+      isVfsCommand({
+        type: 'move-nodes',
+        nodeIds: ['applications'],
+        parentId: 'documents',
+        desktopPlacement,
+      }),
+    ).toBe(false);
+    expect(
+      isVfsCommand({
+        type: 'move-nodes',
+        nodeIds: ['applications'],
+        parentId: 'desktop',
+        placements: [],
+        desktopPlacement,
+      }),
+    ).toBe(false);
   });
 
   it('clamps an explicit import cascade while retaining free-form offsets', () => {

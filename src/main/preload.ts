@@ -17,6 +17,9 @@ const IPC_CHANNELS = {
   mutateVfs: 'macintosh:vfs:mutate',
   importFiles: 'macintosh:files:import',
   requestPaste: 'macintosh:clipboard:paste',
+  normalQuitReady: 'macintosh:app:normal-quit-ready',
+  normalQuitRequested: 'macintosh:app:normal-quit-requested',
+  flushPresentationAndQuit: 'macintosh:app:flush-presentation-and-quit',
   saveAndQuitAfterEject: 'macintosh:app:save-and-quit-after-eject',
 } as const satisfies IpcChannels;
 
@@ -41,6 +44,14 @@ const api: MacintoshAPI = Object.freeze({
     return ipcRenderer.invoke(IPC_CHANNELS.importFiles, { ...options, paths });
   },
   requestPaste: () => ipcRenderer.invoke(IPC_CHANNELS.requestPaste),
+  signalNormalQuitReady: () => ipcRenderer.invoke(IPC_CHANNELS.normalQuitReady),
+  onNormalQuitRequested: (listener: () => void) => {
+    const handleRequest = (): void => listener();
+    ipcRenderer.on(IPC_CHANNELS.normalQuitRequested, handleRequest);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.normalQuitRequested, handleRequest);
+  },
+  flushPresentationAndQuit: (presentation: PresentationPatch | null) =>
+    ipcRenderer.invoke(IPC_CHANNELS.flushPresentationAndQuit, presentation),
   saveAndQuitAfterEject: (presentation: PresentationPatch) =>
     ipcRenderer.invoke(IPC_CHANNELS.saveAndQuitAfterEject, presentation),
 });

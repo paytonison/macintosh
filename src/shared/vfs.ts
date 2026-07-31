@@ -1,7 +1,13 @@
 import type { ImportedEntry } from './contracts';
-import type { FinderViewMode, MacintoshState, Point, VfsNode } from './state';
+import {
+  MAX_VFS_NODES,
+  type FinderViewMode,
+  type MacintoshState,
+  type Point,
+  type VfsNode,
+} from './state';
 
-export const MAX_VFS_NODES = 512;
+export { MAX_VFS_NODES };
 export const MAX_VFS_CONTENT = 192 * 1024;
 
 const MAX_DOCUMENT_CONTENT = 64 * 1024;
@@ -58,7 +64,7 @@ export interface CreateDocumentCommand extends DesktopPlacementCommand {
   content: string;
 }
 
-export interface MoveNodesCommand {
+export interface MoveNodesCommand extends DesktopPlacementCommand {
   type: 'move-nodes';
   nodeIds: string[];
   parentId: string;
@@ -231,10 +237,12 @@ export const isVfsCommand = (value: unknown): value is VfsCommand => {
       );
     case 'move-nodes':
       return (
-        hasOnlyKeys(value, ['type', 'nodeIds', 'parentId', 'placements']) &&
+        hasOnlyKeys(value, ['type', 'nodeIds', 'parentId', 'placements', 'desktopPlacement']) &&
         isNodeIdArray(value.nodeIds) &&
         isBoundedString(value.parentId, 96) &&
-        (value.placements === undefined || isNodeIconPlacements(value.placements))
+        (value.placements === undefined || isNodeIconPlacements(value.placements)) &&
+        hasValidOptionalDesktopPlacement(value, value.parentId) &&
+        (value.placements === undefined || value.desktopPlacement === undefined)
       );
     case 'duplicate-nodes':
       return (
@@ -848,7 +856,7 @@ export const executeVfsCommand = (
         moveNodes(state, value.nodeIds, value.parentId, safeTimestamp),
         value.parentId,
         value.placements,
-        undefined,
+        value.desktopPlacement,
       );
     case 'duplicate-nodes':
       return applyMutationPlacements(

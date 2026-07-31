@@ -4,6 +4,9 @@ export const IPC_CHANNELS = {
   mutateVfs: 'macintosh:vfs:mutate',
   importFiles: 'macintosh:files:import',
   requestPaste: 'macintosh:clipboard:paste',
+  normalQuitReady: 'macintosh:app:normal-quit-ready',
+  normalQuitRequested: 'macintosh:app:normal-quit-requested',
+  flushPresentationAndQuit: 'macintosh:app:flush-presentation-and-quit',
   saveAndQuitAfterEject: 'macintosh:app:save-and-quit-after-eject',
 } as const;
 
@@ -36,6 +39,10 @@ export interface PasteResult {
   accepted: true;
 }
 
+export interface NormalQuitReadyResult {
+  accepted: true;
+}
+
 export interface VfsMutationRequest {
   command: import('./vfs').VfsCommand;
   presentation: import('./presentation').PresentationPatch;
@@ -58,6 +65,11 @@ export interface MacintoshAPI {
     options: ImportFilesOptions,
   ) => Promise<import('./vfs').VfsMutationResult>;
   requestPaste: () => Promise<PasteResult>;
+  signalNormalQuitReady: () => Promise<NormalQuitReadyResult>;
+  onNormalQuitRequested: (listener: () => void) => () => void;
+  flushPresentationAndQuit: (
+    presentation: import('./presentation').PresentationPatch | null,
+  ) => Promise<QuitResult>;
   saveAndQuitAfterEject: (
     presentation: import('./presentation').PresentationPatch,
   ) => Promise<QuitResult>;

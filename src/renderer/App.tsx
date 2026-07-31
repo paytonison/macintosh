@@ -18,6 +18,7 @@ import {
 } from '../shared/state';
 import { mergePresentation, projectPresentation } from '../shared/presentation';
 import {
+  descendantsOf,
   listChildren,
   placeFinderIcons,
   type DesktopPlacement,
@@ -28,11 +29,21 @@ import { playEjectSound, playMenuTick } from './audio/sounds';
 import { CalculatorWindow } from './components/CalculatorWindow';
 import { AboutDialog, EjectTipDialog, InfoDialog, PersistenceAlert } from './components/Dialogs';
 import { DesktopIcon } from './components/DesktopIcon';
-import { DesktopSurface, type IconDropLocation } from './components/DesktopSurface';
+import {
+  DesktopSurface,
+  resolveDesktopDropTarget,
+  type IconDropLocation,
+} from './components/DesktopSurface';
 import { DesktopVfsIcon } from './components/DesktopVfsIcon';
-import { FinderWindow, type FinderWindowAnimation } from './components/FinderWindow';
+import {
+  FinderWindow,
+  FinderWindowAnimationShadow,
+  type FinderWindowAnimation,
+} from './components/FinderWindow';
 import { MenuBar, type MenuDefinition, type MenuEntry } from './components/MenuBar';
 import { StartupScreen } from './components/StartupScreen';
+import { SystemDiskDragPreview } from './components/SystemDiskDragPreview';
+import { VfsItemDragPreview } from './components/VfsItemDragPreview';
 import {
   deriveFinderCommandContext,
   finderCommandDestinationId,
@@ -41,8 +52,13 @@ import {
 import { resolveDesktopIconPosition, translateDesktopIconDrag } from './model/desktop-icon-layout';
 import { isTrashDropPoint } from './model/desktop-drop-target';
 import { translateFinderIconDrag } from './model/finder-icon-layout';
+import {
+  createIconDragPreviewItems,
+  resolveIconDragPreviewPosition,
+  type IconDragPreviewItem,
+} from './model/icon-drag-preview';
 import { resolveKeyboardOwner } from './model/input-owner';
-import { writeVfsDragPayload, type VfsItemDragContext } from './model/vfs-drag';
+import type { VfsItemDragContext } from './model/vfs-drag';
 
 type SpecialDesktopIconId = 'system-disk' | 'trash';
 type DialogState =
@@ -99,6 +115,20 @@ const findNodeAnimationSource = (nodeId: string): HTMLElement | null =>
     (element) => element.dataset.vfsNodeId === nodeId || element.dataset.vfsItem === nodeId,
   ) ?? null;
 
+const previewUsesSolidDesktopShadow = (item: IconDragPreviewItem, pointer: Point): boolean => {
+  const position = resolveIconDragPreviewPosition(item, pointer);
+  const target = document.elementFromPoint(
+    position.x + Math.round(item.size / 2),
+    position.y + Math.round(item.size / 2),
+  );
+  const surface = document.querySelector<HTMLElement>('.desktop-surface');
+  return (
+    target instanceof Element &&
+    surface?.contains(target) === true &&
+    !target.closest('[data-finder-window], [data-calculator-window], [role="dialog"]')
+  );
+};
+
 export default function App() {
   const automation = useMemo(
     () => new URLSearchParams(window.location.search).has('automation'),
@@ -112,6 +142,16 @@ export default function App() {
     Partial<Record<SpecialDesktopIconId, Point>>
   >({});
   const [draggingIcon, setDraggingIcon] = useState<SpecialDesktopIconId | null>(null);
+  const [systemDiskDragPreviewItem, setSystemDiskDragPreviewItem] =
+    useState<IconDragPreviewItem | null>(null);
+  const [systemDiskDragPointer, setSystemDiskDragPointer] = useState<Point | null>(null);
+  const [systemDiskDragSolidShadow, setSystemDiskDragSolidShadow] = useState(false);
+  const [vfsItemDragging, setVfsItemDragging] = useState(false);
+  const [vfsItemDragPreviewItems, setVfsItemDragPreviewItems] = useState<IconDragPreviewItem[]>([]);
+  const [vfsItemDragPointer, setVfsItemDragPointer] = useState<Point | null>(null);
+  const [vfsItemDragSolidShadowIds, setVfsItemDragSolidShadowIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [snappingIcon, setSnappingIcon] = useState<SpecialDesktopIconId | null>(null);
   const [trashHover, setTrashHover] = useState(false);
   const [ejecting, setEjecting] = useState(false);
@@ -121,20 +161,61 @@ export default function App() {
   const [pointerSessionActive, setPointerSessionActive] = useState(false);
   const [interactionCancelToken, setInteractionCancelToken] = useState(0);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [normalQuitPending, setNormalQuitPending] = useState(false);
   const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
   const [windowAnimations, setWindowAnimations] = useState<Record<string, FinderWindowAnimation>>(
     {},
   );
   const windowAnimationsRef = useRef<Record<string, FinderWindowAnimation>>({});
+  const windowAnimationToken = useRef(0);
   const dragOrigins = useRef<Partial<Record<SpecialDesktopIconId, Point>>>({});
+  const systemDiskDragPreviewItemRef = useRef<IconDragPreviewItem | null>(null);
   const vfsItemDrag = useRef<VfsItemDragContext | null>(null);
+  const vfsItemInvalidTargets = useRef<Set<string>>(new Set());
+  const vfsItemDraggingRef = useRef(false);
+  const vfsItemDropTarget = useRef<HTMLElement | null>(null);
   const zoomRestore = useRef<Map<string, WindowGeometry>>(new Map());
   const stateRef = useRef<MacintoshState | null>(null);
   const selectionEpoch = useRef(0);
   const clipboardNodeIds = useRef<string[]>([]);
+  const persistenceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const normalQuitFlush = useRef<Promise<void> | null>(null);
   const transferNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hydrated = useRef(false);
+  const pointerSessionActiveRef = useRef(false);
   const clock = useClock();
+
+  const setPointerInteractionActive = useCallback((active: boolean): void => {
+    pointerSessionActiveRef.current = active;
+    setPointerSessionActive(active);
+  }, []);
+
+  const setVfsItemDragActive = useCallback((active: boolean): void => {
+    vfsItemDraggingRef.current = active;
+    document.documentElement.classList.toggle('is-item-dragging', active);
+    setVfsItemDragging(active);
+  }, []);
+
+  const clearVfsItemDropTarget = useCallback((): void => {
+    vfsItemDropTarget.current?.classList.remove('is-file-drop-target');
+    vfsItemDropTarget.current = null;
+  }, []);
+
+  const cancelPointerInteractions = useCallback((): void => {
+    if (!pointerSessionActiveRef.current && !vfsItemDrag.current && !vfsItemDraggingRef.current) {
+      return;
+    }
+    pointerSessionActiveRef.current = false;
+    vfsItemDrag.current = null;
+    vfsItemInvalidTargets.current.clear();
+    clearVfsItemDropTarget();
+    setPointerSessionActive(false);
+    setVfsItemDragActive(false);
+    setVfsItemDragPreviewItems([]);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
+    setInteractionCancelToken((current) => current + 1);
+  }, [clearVfsItemDropTarget, setVfsItemDragActive]);
 
   const setDesktopSelection = useCallback((next: SetStateAction<Set<string>>): void => {
     selectionEpoch.current += 1;
@@ -146,7 +227,7 @@ export default function App() {
     setFinderSelectionState(next);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     stateRef.current = state;
   }, [state]);
 
@@ -155,8 +236,22 @@ export default function App() {
   }, [windowAnimations]);
 
   useEffect(() => {
-    vfsItemDrag.current = null;
-  }, [interactionCancelToken]);
+    if (!state) return;
+    const nodeIds = new Set(state.nodes.map((node) => node.id));
+    const renderedWindowIds = new Set(
+      state.desktop.windows
+        .filter((windowState) => nodeIds.has(windowState.nodeId))
+        .map((windowState) => windowState.id),
+    );
+    const staleWindowIds = Object.keys(windowAnimationsRef.current).filter(
+      (windowId) => !renderedWindowIds.has(windowId),
+    );
+    if (staleWindowIds.length === 0) return;
+    const nextAnimations = { ...windowAnimationsRef.current };
+    for (const windowId of staleWindowIds) delete nextAnimations[windowId];
+    windowAnimationsRef.current = nextAnimations;
+    setWindowAnimations(nextAnimations);
+  }, [state]);
 
   useEffect(
     () => () => {
@@ -198,12 +293,19 @@ export default function App() {
     [],
   );
 
-  const reportPersistenceError = useCallback((message: string): void => {
-    setOpenMenu(null);
-    setPointerSessionActive(false);
-    setInteractionCancelToken((current) => current + 1);
-    setPersistenceError(message);
+  const setNormalQuitInteraction = useCallback((active: boolean): void => {
+    document.documentElement.classList.toggle('is-normal-quit-pending', active);
+    setNormalQuitPending(active);
   }, []);
+
+  const reportPersistenceError = useCallback(
+    (message: string): void => {
+      setOpenMenu(null);
+      cancelPointerInteractions();
+      setPersistenceError(message);
+    },
+    [cancelPointerInteractions],
+  );
 
   const commitVfsMutation = useCallback(
     (
@@ -277,15 +379,53 @@ export default function App() {
   }, [replaceState, reportPersistenceError]);
 
   useEffect(() => {
-    if (!state || !hydrated.current || ejecting) return;
+    if (!state || !hydrated.current || ejecting || normalQuitPending) return;
     const timer = setTimeout(() => {
+      if (persistenceTimer.current === timer) persistenceTimer.current = null;
       void persistState(state).catch((error: unknown) => {
         console.error(error);
         reportPersistenceError('The desktop could not be saved.');
       });
     }, 220);
-    return () => clearTimeout(timer);
-  }, [state, ejecting, persistState, reportPersistenceError]);
+    persistenceTimer.current = timer;
+    return () => {
+      clearTimeout(timer);
+      if (persistenceTimer.current === timer) persistenceTimer.current = null;
+    };
+  }, [state, ejecting, normalQuitPending, persistState, reportPersistenceError]);
+
+  useEffect(() => {
+    const removeListener = window.macintosh.onNormalQuitRequested(() => {
+      if (normalQuitFlush.current) return;
+      if (persistenceTimer.current) {
+        clearTimeout(persistenceTimer.current);
+        persistenceTimer.current = null;
+      }
+      cancelPointerInteractions();
+      setOpenMenu(null);
+      setNormalQuitInteraction(true);
+      const finalPresentation = stateRef.current ? projectPresentation(stateRef.current) : null;
+      const flush = (async (): Promise<void> => {
+        try {
+          await window.macintosh.flushPresentationAndQuit(finalPresentation);
+        } catch (error) {
+          console.error(error);
+          setNormalQuitInteraction(false);
+          reportPersistenceError('The Macintosh could not quit because the desktop was not saved.');
+        } finally {
+          normalQuitFlush.current = null;
+        }
+      })();
+      normalQuitFlush.current = flush;
+    });
+    void window.macintosh.signalNormalQuitReady().catch((error: unknown) => {
+      console.error('Could not announce normal-quit readiness:', error);
+    });
+    return () => {
+      removeListener();
+      document.documentElement.classList.remove('is-normal-quit-pending');
+    };
+  }, [cancelPointerInteractions, reportPersistenceError, setNormalQuitInteraction]);
 
   const ready = Boolean(state && startupComplete);
   useEffect(() => {
@@ -310,6 +450,7 @@ export default function App() {
   );
   const keyboardOwner = resolveKeyboardOwner({
     persistenceAlertOpen: persistenceError !== null,
+    normalQuitInProgress: normalQuitPending,
     dialogOpen: dialog !== null,
     ejectionInProgress: ejecting,
     pointerSessionActive,
@@ -319,6 +460,7 @@ export default function App() {
   });
   const systemInputBlocked =
     keyboardOwner === 'persistence-alert' ||
+    keyboardOwner === 'normal-quit' ||
     keyboardOwner === 'dialog' ||
     keyboardOwner === 'ejection' ||
     keyboardOwner === 'pointer-session';
@@ -360,21 +502,24 @@ export default function App() {
           height: node.kind === 'document' ? 390 : 420,
         } satisfies FinderWindowState);
 
-      setWindowAnimations((animations) => {
-        if (!existing) {
-          return {
-            ...animations,
-            [windowId]: {
-              phase: 'opening',
-              origin: resolveWindowAnimationOrigin(source, nextWindow),
-            },
-          };
-        }
-        if (animations[windowId]?.phase !== 'closing') return animations;
-        const nextAnimations = { ...animations };
+      const currentAnimations = windowAnimationsRef.current;
+      if (!existing) {
+        const nextAnimations = {
+          ...currentAnimations,
+          [windowId]: {
+            phase: 'opening',
+            origin: resolveWindowAnimationOrigin(source, nextWindow),
+            token: (windowAnimationToken.current += 1),
+          } satisfies FinderWindowAnimation,
+        };
+        windowAnimationsRef.current = nextAnimations;
+        setWindowAnimations(nextAnimations);
+      } else if (currentAnimations[windowId]?.phase === 'closing') {
+        const nextAnimations = { ...currentAnimations };
         delete nextAnimations[windowId];
-        return nextAnimations;
-      });
+        windowAnimationsRef.current = nextAnimations;
+        setWindowAnimations(nextAnimations);
+      }
 
       replaceState({
         ...current,
@@ -391,30 +536,30 @@ export default function App() {
       const current = stateRef.current;
       const target = current?.desktop.windows.find((item) => item.id === windowId);
       if (!current || !target) return;
-      setWindowAnimations((animations) => {
-        if (animations[windowId]?.phase === 'closing') return animations;
-        return {
-          ...animations,
-          [windowId]: {
-            phase: 'closing',
-            origin: resolveWindowAnimationOrigin(findNodeAnimationSource(target.nodeId), target),
-          },
-        };
-      });
+      if (windowAnimationsRef.current[windowId]?.phase === 'closing') return;
+      const nextAnimations = {
+        ...windowAnimationsRef.current,
+        [windowId]: {
+          phase: 'closing',
+          origin: resolveWindowAnimationOrigin(findNodeAnimationSource(target.nodeId), target),
+          token: (windowAnimationToken.current += 1),
+        } satisfies FinderWindowAnimation,
+      };
+      windowAnimationsRef.current = nextAnimations;
+      setWindowAnimations(nextAnimations);
       setFinderSelection(new Set());
     },
     [setFinderSelection],
   );
 
   const finishWindowAnimation = useCallback(
-    (windowId: string, phase: FinderWindowAnimation['phase']): void => {
-      if (windowAnimationsRef.current[windowId]?.phase !== phase) return;
-      setWindowAnimations((animations) => {
-        if (animations[windowId]?.phase !== phase) return animations;
-        const nextAnimations = { ...animations };
-        delete nextAnimations[windowId];
-        return nextAnimations;
-      });
+    (windowId: string, phase: FinderWindowAnimation['phase'], token: number): void => {
+      const activeAnimation = windowAnimationsRef.current[windowId];
+      if (activeAnimation?.phase !== phase || activeAnimation.token !== token) return;
+      const nextAnimations = { ...windowAnimationsRef.current };
+      delete nextAnimations[windowId];
+      windowAnimationsRef.current = nextAnimations;
+      setWindowAnimations(nextAnimations);
       if (phase !== 'closing') return;
       zoomRestore.current.delete(windowId);
       updateState((current) => ({
@@ -499,60 +644,137 @@ export default function App() {
     });
   };
 
-  const startVfsItemDrag = (
-    id: string,
-    dataTransfer: DataTransfer,
-    context: VfsItemDragContext,
-  ): void => {
+  const startFinderItemDrag = (id: string, context: VfsItemDragContext): void => {
     const current = stateRef.current;
     if (!current) return;
-    vfsItemDrag.current = context;
-    setPointerSessionActive(true);
     const nodeIds = context.nodeIds.length > 0 ? context.nodeIds : [id];
-    if (context.source === 'desktop') {
-      setDesktopSelection(new Set(nodeIds));
-      setFinderSelection(new Set());
-    } else {
-      setFinderSelection(new Set(nodeIds));
-      setDesktopSelection(new Set());
+    vfsItemDrag.current = { ...context, nodeIds };
+    vfsItemInvalidTargets.current = new Set(nodeIds);
+    for (const nodeId of nodeIds) {
+      for (const descendantId of descendantsOf(current.nodes, nodeId)) {
+        vfsItemInvalidTargets.current.add(descendantId);
+      }
     }
-    const names = nodeIds.flatMap((nodeId) => {
-      const node = current.nodes.find((item) => item.id === nodeId);
-      return node ? [node.name] : [];
-    });
-    writeVfsDragPayload(dataTransfer, nodeIds, names);
+    setVfsItemDragActive(true);
+    setVfsItemDragPreviewItems(context.previewItems);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
+    setPointerInteractionActive(true);
+    setFinderSelection(new Set(nodeIds));
+    setDesktopSelection(new Set());
   };
 
-  const startDesktopItemDrag = (
-    id: string,
-    dataTransfer: DataTransfer,
-    pointerOffset: Point,
-  ): void => {
+  const startDesktopItemDrag = (id: string, pointerOffset: Point, pointerOrigin: Point): void => {
     const current = stateRef.current;
     if (!current) return;
     const items = listChildren(current.nodes, 'desktop', 'icons');
-    const selectedItems = desktopSelection.has(id)
-      ? items.filter((item) => desktopSelection.has(item.id))
-      : items.filter((item) => item.id === id);
-    const draggedItems =
-      selectedItems.length > 0 ? selectedItems : items.filter((item) => item.id === id);
-    startVfsItemDrag(id, dataTransfer, {
+    const selectedIds = desktopSelection.has(id) ? desktopSelection : new Set([id]);
+    const draggedItems = items.filter((item) => selectedIds.has(item.id));
+    if (draggedItems.length === 0) return;
+    const nodeIds = draggedItems.map((item) => item.id);
+    const renderedItems = [...document.querySelectorAll<HTMLElement>('[data-desktop-vfs-item]')];
+    const previewItems = createIconDragPreviewItems(
+      nodeIds.flatMap((nodeId) => {
+        const renderedItem = renderedItems.find(
+          (element) => element.dataset.desktopVfsItem === nodeId,
+        );
+        const icon = renderedItem?.querySelector('.pixel-icon');
+        if (!icon) return [];
+        const bounds = icon.getBoundingClientRect();
+        return [
+          {
+            nodeId,
+            bounds: {
+              left: bounds.left,
+              top: bounds.top,
+              width: bounds.width,
+              height: bounds.height,
+            },
+          },
+        ];
+      }),
+      pointerOrigin,
+    );
+    vfsItemDrag.current = {
       parentId: 'desktop',
-      nodeIds: draggedItems.map((item) => item.id),
+      nodeIds,
       layout: {
         anchorId: id,
         pointerOffset,
         positions: Object.fromEntries(
-          items.flatMap((item) =>
-            draggedItems.some((dragged) => dragged.id === item.id)
-              ? [[item.id, resolveDesktopIconPosition(item)]]
-              : [],
-          ),
+          draggedItems.map((item) => [item.id, resolveDesktopIconPosition(item)]),
         ),
       },
+      previewItems,
       source: 'desktop',
-    });
+    };
+    vfsItemInvalidTargets.current = new Set(nodeIds);
+    for (const nodeId of nodeIds) {
+      for (const descendantId of descendantsOf(current.nodes, nodeId)) {
+        vfsItemInvalidTargets.current.add(descendantId);
+      }
+    }
+    setVfsItemDragActive(true);
+    setVfsItemDragPreviewItems(previewItems);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
+    setPointerInteractionActive(true);
+    setDesktopSelection(new Set(nodeIds));
+    setFinderSelection(new Set());
   };
+
+  const resolveVfsItemDrop = useCallback((pointer: Point) => {
+    const surface = document.querySelector<HTMLElement>('.desktop-surface');
+    if (!surface) return null;
+    const target = resolveDesktopDropTarget(
+      surface,
+      document.elementFromPoint(pointer.x, pointer.y),
+      false,
+      vfsItemInvalidTargets.current,
+      pointer,
+    );
+    if (!target) return null;
+    const layoutParent = target.element.dataset.iconLayoutParent;
+    const bounds = layoutParent ? target.element.getBoundingClientRect() : null;
+    return {
+      ...target,
+      iconLocation:
+        layoutParent && bounds
+          ? {
+              parentId: layoutParent,
+              point: {
+                x: Math.round(pointer.x - bounds.left),
+                y: Math.round(pointer.y - bounds.top),
+              },
+              surfaceSize: {
+                width: Math.round(bounds.width),
+                height: Math.round(bounds.height),
+              },
+            }
+          : null,
+    };
+  }, []);
+
+  const previewVfsItemDrag = useCallback(
+    (pointer: Point): void => {
+      const previewPointer = { x: Math.round(pointer.x), y: Math.round(pointer.y) };
+      setVfsItemDragPointer(previewPointer);
+      setVfsItemDragSolidShadowIds(
+        new Set(
+          (vfsItemDrag.current?.previewItems ?? [])
+            .filter((item) => previewUsesSolidDesktopShadow(item, previewPointer))
+            .map((item) => item.nodeId),
+        ),
+      );
+      const target = resolveVfsItemDrop(pointer);
+      if (vfsItemDropTarget.current === target?.element) return;
+      clearVfsItemDropTarget();
+      if (!target) return;
+      vfsItemDropTarget.current = target.element;
+      target.element.classList.add('is-file-drop-target');
+    },
+    [clearVfsItemDropTarget, resolveVfsItemDrop],
+  );
 
   const performVfsMutation = useCallback(
     async (
@@ -619,16 +841,25 @@ export default function App() {
         const current = stateRef.current;
         if (!current) return;
         const dragContext = vfsItemDrag.current;
-        const translatedPositions =
-          iconLocation && iconLocation.parentId === destinationId && dragContext
-            ? destinationId === 'desktop'
-              ? translateDesktopIconDrag(
-                  dragContext.layout,
-                  iconLocation.point,
-                  iconLocation.surfaceSize,
-                )
-              : translateFinderIconDrag(dragContext.layout, iconLocation.point)
-            : null;
+        let translatedPositions: Record<string, Point> | null = null;
+        if (iconLocation?.parentId === destinationId && dragContext?.layout) {
+          if (destinationId === 'desktop') {
+            translatedPositions = translateDesktopIconDrag(
+              dragContext.layout,
+              iconLocation.point,
+              iconLocation.surfaceSize,
+            );
+            if (!translatedPositions) {
+              showTransferNotice('The selected items do not fit on the Desktop.', true);
+              return;
+            }
+          } else {
+            translatedPositions = translateFinderIconDrag(dragContext.layout, iconLocation.point);
+          }
+        }
+        const desktopPlacement = translatedPositions
+          ? undefined
+          : desktopPlacementFrom(destinationId, iconLocation);
         const placementsFor = (ids: string[]) =>
           ids.flatMap((nodeId) => {
             const position = translatedPositions?.[nodeId];
@@ -662,6 +893,7 @@ export default function App() {
             ...(translatedPositions
               ? { placements: placementsFor(dragContext?.nodeIds ?? nodeIds) }
               : {}),
+            ...(desktopPlacement ? { desktopPlacement } : {}),
           },
           destinationId,
           'Moved',
@@ -671,18 +903,82 @@ export default function App() {
       }
       void importHostFiles(files, destinationId, iconLocation);
     },
-    [importHostFiles, performVfsMutation, replaceState, setDesktopSelection, setFinderSelection],
+    [
+      importHostFiles,
+      performVfsMutation,
+      replaceState,
+      setDesktopSelection,
+      setFinderSelection,
+      showTransferNotice,
+    ],
   );
 
-  const finishVfsItemDrag = (): void => {
+  const finishVfsItemDrag = (pointer: Point): void => {
+    const context = vfsItemDrag.current;
+    const target = resolveVfsItemDrop(pointer);
+    clearVfsItemDropTarget();
+    if (context && target) {
+      dropItems(target.destinationId, context.nodeIds, [], target.iconLocation);
+    }
     vfsItemDrag.current = null;
-    setPointerSessionActive(false);
+    vfsItemInvalidTargets.current.clear();
+    setVfsItemDragActive(false);
+    setVfsItemDragPreviewItems([]);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
+    setPointerInteractionActive(false);
   };
 
-  const startIconDrag = (id: SpecialDesktopIconId, origin: Point): void => {
+  const cancelVfsItemDrag = useCallback((): void => {
+    vfsItemDrag.current = null;
+    vfsItemInvalidTargets.current.clear();
+    clearVfsItemDropTarget();
+    setVfsItemDragActive(false);
+    setVfsItemDragPreviewItems([]);
+    setVfsItemDragPointer(null);
+    setVfsItemDragSolidShadowIds(new Set());
+    setPointerInteractionActive(false);
+  }, [clearVfsItemDropTarget, setPointerInteractionActive, setVfsItemDragActive]);
+
+  const clearSystemDiskDragPreview = (): void => {
+    systemDiskDragPreviewItemRef.current = null;
+    setSystemDiskDragPreviewItem(null);
+    setSystemDiskDragPointer(null);
+    setSystemDiskDragSolidShadow(false);
+  };
+
+  const startIconDrag = (id: SpecialDesktopIconId, origin: Point, pointerOrigin: Point): void => {
     dragOrigins.current[id] = origin;
     setDraggingIcon(id);
     setSnappingIcon(null);
+    if (id === 'system-disk') {
+      const icon = document.querySelector<SVGElement>(
+        '[data-desktop-icon="system-disk"] .pixel-icon',
+      );
+      const bounds = icon?.getBoundingClientRect();
+      const [previewItem] = bounds
+        ? createIconDragPreviewItems(
+            [
+              {
+                nodeId: id,
+                bounds: {
+                  left: bounds.left,
+                  top: bounds.top,
+                  width: bounds.width,
+                  height: bounds.height,
+                },
+              },
+            ],
+            pointerOrigin,
+          )
+        : [];
+      systemDiskDragPreviewItemRef.current = previewItem ?? null;
+      setSystemDiskDragPreviewItem(previewItem ?? null);
+      setSystemDiskDragPointer(pointerOrigin);
+      setSystemDiskDragSolidShadow(
+        previewItem ? previewUsesSolidDesktopShadow(previewItem, pointerOrigin) : false,
+      );
+    }
     selectDesktopIcon(id, false);
   };
 
@@ -700,6 +996,12 @@ export default function App() {
     setPreviewPositions((current) => ({ ...current, [id]: next }));
 
     if (id !== 'system-disk') return;
+    setSystemDiskDragPointer(pointer);
+    setSystemDiskDragSolidShadow(
+      systemDiskDragPreviewItemRef.current
+        ? previewUsesSolidDesktopShadow(systemDiskDragPreviewItemRef.current, pointer)
+        : false,
+    );
     setTrashHover(pointerTargetsTrash(pointer));
   };
 
@@ -713,6 +1015,7 @@ export default function App() {
     setDraggingIcon(null);
     setSnappingIcon(null);
     setTrashHover(false);
+    if (id === 'system-disk') clearSystemDiskDragPreview();
   };
 
   const restoreIcon = (id: SpecialDesktopIconId): void => {
@@ -721,6 +1024,7 @@ export default function App() {
     setDraggingIcon(null);
     setSnappingIcon(id);
     setTrashHover(false);
+    if (id === 'system-disk') clearSystemDiskDragPreview();
     setTimeout(() => {
       setPreviewPositions((current) => {
         const next = { ...current };
@@ -738,6 +1042,7 @@ export default function App() {
     setOpenMenu(null);
     setEjecting(true);
     setDraggingIcon(null);
+    clearSystemDiskDragPreview();
     setTrashHover(true);
     playEjectSound();
     await pause(automation ? 280 : 920);
@@ -787,6 +1092,7 @@ export default function App() {
     delete dragOrigins.current[id];
     setDraggingIcon(null);
     setTrashHover(false);
+    if (id === 'system-disk') clearSystemDiskDragPreview();
   };
 
   const createFolder = useCallback((): void => {
@@ -938,10 +1244,11 @@ export default function App() {
   useEffect(() => {
     const clearInternalClipboard = (): void => {
       clipboardNodeIds.current = [];
+      cancelPointerInteractions();
     };
     window.addEventListener('blur', clearInternalClipboard);
     return () => window.removeEventListener('blur', clearInternalClipboard);
-  }, []);
+  }, [cancelPointerInteractions]);
 
   useEffect(() => {
     const preventFileNavigation = (event: DragEvent): void => {
@@ -1185,14 +1492,28 @@ export default function App() {
     return <StartupScreen automation={automation} onComplete={() => setStartupComplete(true)} />;
   }
 
-  const diskPosition = previewPositions['system-disk'] ?? state.desktop.diskPosition;
+  const diskPosition =
+    draggingIcon === 'system-disk'
+      ? state.desktop.diskPosition
+      : (previewPositions['system-disk'] ?? state.desktop.diskPosition);
   const trashPosition = previewPositions.trash ?? state.desktop.trashPosition;
   const activeWindowId = state.desktop.windows.at(-1)?.id ?? null;
+  const itemDragging = draggingIcon !== null || vfsItemDragging;
 
   return (
     <main
-      className={automation ? 'macintosh is-automation' : 'macintosh'}
       aria-label="The Macintosh desktop"
+      aria-busy={normalQuitPending}
+      className={[
+        'macintosh',
+        automation ? 'is-automation' : '',
+        itemDragging ? 'is-item-dragging' : '',
+        normalQuitPending ? 'is-normal-quit-pending' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      data-item-dragging={itemDragging ? 'true' : undefined}
+      data-normal-quit-pending={normalQuitPending ? 'true' : undefined}
     >
       <MenuBar
         clock={clock}
@@ -1212,9 +1533,22 @@ export default function App() {
           setFinderSelection(new Set());
         }}
         onDropItems={dropItems}
-        onInteractionChange={setPointerSessionActive}
+        onInteractionChange={setPointerInteractionActive}
         vfsCount={state.nodes.length}
       >
+        {state.desktop.windows.map((windowState, index) => {
+          const animation = windowAnimations[windowState.id];
+          const node = state.nodes.find((item) => item.id === windowState.nodeId);
+          if (!animation || !node || node.kind === 'desktop') return null;
+          return (
+            <FinderWindowAnimationShadow
+              animation={animation}
+              key={`${windowState.id}-animation-shadow`}
+              stackIndex={index}
+              windowState={windowState}
+            />
+          );
+        })}
         {state.desktop.windows.map((windowState, index) => {
           const node = state.nodes.find((item) => item.id === windowState.nodeId);
           if (!node || node.kind === 'desktop') return null;
@@ -1228,14 +1562,16 @@ export default function App() {
               key={windowState.id}
               node={node}
               onActivate={activateWindow}
+              onAnimationComplete={finishWindowAnimation}
               onClose={closeWindow}
               onGeometry={setWindowGeometry}
-              onItemDragStart={startVfsItemDrag}
+              onItemDragCancel={cancelVfsItemDrag}
+              onItemDragMove={previewVfsItemDrag}
+              onItemDragStart={startFinderItemDrag}
               onItemDragEnd={finishVfsItemDrag}
               onItemOpen={openNode}
               onItemSelect={selectFinderItem}
-              onInteractionChange={setPointerSessionActive}
-              onAnimationEnd={finishWindowAnimation}
+              onInteractionChange={setPointerInteractionActive}
               onZoom={zoomWindow}
               selectedIds={finderSelection}
               stackIndex={index}
@@ -1249,7 +1585,7 @@ export default function App() {
             interactionCancelToken={interactionCancelToken}
             keyboardEnabled={keyboardOwner === 'calculator'}
             onClose={closeCalculator}
-            onInteractionChange={setPointerSessionActive}
+            onInteractionChange={setPointerInteractionActive}
           />
         ) : null}
         {desktopItems.map((item) => (
@@ -1257,8 +1593,11 @@ export default function App() {
             interactionCancelToken={interactionCancelToken}
             key={item.id}
             node={item}
+            onDragCancel={cancelVfsItemDrag}
             onDragEnd={finishVfsItemDrag}
+            onDragMove={previewVfsItemDrag}
             onDragStart={startDesktopItemDrag}
+            onInteractionChange={setPointerInteractionActive}
             onOpen={openNode}
             onSelect={selectDesktopIcon}
             position={resolveDesktopIconPosition(item)}
@@ -1266,7 +1605,6 @@ export default function App() {
           />
         ))}
         <DesktopIcon
-          dragging={draggingIcon === 'system-disk'}
           ejecting={ejecting}
           icon="disk"
           id="system-disk"
@@ -1276,7 +1614,7 @@ export default function App() {
           onDragCancel={cancelIconDrag}
           onDragEnd={finishIconDrag}
           onDragStart={startIconDrag}
-          onInteractionChange={setPointerSessionActive}
+          onInteractionChange={setPointerInteractionActive}
           onOpen={openNode}
           onSelect={selectDesktopIcon}
           position={diskPosition}
@@ -1297,7 +1635,7 @@ export default function App() {
           onDragCancel={cancelIconDrag}
           onDragEnd={finishIconDrag}
           onDragStart={startIconDrag}
-          onInteractionChange={setPointerSessionActive}
+          onInteractionChange={setPointerInteractionActive}
           onOpen={openNode}
           onSelect={selectDesktopIcon}
           position={trashPosition}
@@ -1306,17 +1644,27 @@ export default function App() {
           validDropTarget={trashHover}
         />
         {!persistenceError && dialog?.type === 'about' && (
-          <AboutDialog onClose={() => setDialog(null)} />
+          <AboutDialog
+            interactionCancelToken={interactionCancelToken}
+            onClose={() => setDialog(null)}
+            onInteractionChange={setPointerInteractionActive}
+          />
         )}
         {!persistenceError && dialog?.type === 'info' && (
           <InfoDialog
+            interactionCancelToken={interactionCancelToken}
             node={dialog.node}
             onClose={() => setDialog(null)}
+            onInteractionChange={setPointerInteractionActive}
             where={state.nodes.find((node) => node.id === dialog.node.parentId)?.name ?? 'Desktop'}
           />
         )}
         {!persistenceError && dialog?.type === 'eject-tip' && (
-          <EjectTipDialog onClose={() => setDialog(null)} />
+          <EjectTipDialog
+            interactionCancelToken={interactionCancelToken}
+            onClose={() => setDialog(null)}
+            onInteractionChange={setPointerInteractionActive}
+          />
         )}
         {persistenceError && (
           <PersistenceAlert message={persistenceError} onClose={() => setPersistenceError(null)} />
@@ -1334,6 +1682,21 @@ export default function App() {
           </div>
         )}
       </DesktopSurface>
+      {vfsItemDragging && vfsItemDragPointer ? (
+        <VfsItemDragPreview
+          items={vfsItemDragPreviewItems}
+          nodes={state.nodes}
+          pointer={vfsItemDragPointer}
+          solidShadowIds={vfsItemDragSolidShadowIds}
+        />
+      ) : null}
+      {draggingIcon === 'system-disk' && systemDiskDragPreviewItem && systemDiskDragPointer ? (
+        <SystemDiskDragPreview
+          item={systemDiskDragPreviewItem}
+          pointer={systemDiskDragPointer}
+          solidShadow={systemDiskDragSolidShadow}
+        />
+      ) : null}
     </main>
   );
 }

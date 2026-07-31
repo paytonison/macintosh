@@ -33,7 +33,21 @@ export const translateDesktopIconDrag = (
   layout: VfsIconDragLayout,
   dropPoint: Point,
   surface: DesktopSurfaceSize,
-): Record<string, Point> => translateVfsIconDrag(layout, dropPoint, desktopDragBounds(surface));
+): Record<string, Point> | null => {
+  const positions = Object.values(layout.positions);
+  if (positions.length > 0) {
+    const bounds = desktopDragBounds(surface);
+    const spanX =
+      Math.max(...positions.map(({ x }) => x)) - Math.min(...positions.map(({ x }) => x));
+    const spanY =
+      Math.max(...positions.map(({ y }) => y)) - Math.min(...positions.map(({ y }) => y));
+    if (spanX > bounds.maximumX - bounds.minimumX || spanY > bounds.maximumY - bounds.minimumY) {
+      return null;
+    }
+  }
+
+  return translateVfsIconDrag(layout, dropPoint, desktopDragBounds(surface));
+};
 
 export const desktopIconIdsInRectangle = (
   selection: Rectangle,

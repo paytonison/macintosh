@@ -1,11 +1,18 @@
 import {
+  useCallback,
   useLayoutEffect,
   useRef,
   type CSSProperties,
-  type DragEvent as ReactDragEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react';
 
 import type { Point, VfsNode } from '../../shared/state';
+import {
+  beginPointerDrag,
+  releasePointerDrag,
+  updatePointerDrag,
+  type PointerDragIntent,
+} from '../model/pointer-drag';
 import { VfsNodeIcon } from './VfsNodeIcon';
 
 interface DesktopVfsIconProps {
@@ -15,8 +22,18 @@ interface DesktopVfsIconProps {
   selected: boolean;
   onSelect: (id: string, additive: boolean) => void;
   onOpen: (id: string, source: HTMLElement) => void;
-  onDragStart: (id: string, dataTransfer: DataTransfer, pointerOffset: Point) => void;
-  onDragEnd: () => void;
+  onDragStart: (id: string, pointerOffset: Point, pointerOrigin: Point) => void;
+  onDragMove: (pointer: Point) => void;
+  onDragEnd: (pointer: Point) => void;
+  onDragCancel: () => void;
+  onInteractionChange: (active: boolean) => void;
+}
+
+interface DragSession {
+  pointerId: number;
+  captureTarget: HTMLButtonElement;
+  pointerOffset: Point;
+  intent: PointerDragIntent;
 }
 
 export function DesktopVfsIcon({
@@ -27,26 +44,111 @@ export function DesktopVfsIcon({
   onSelect,
   onOpen,
   onDragStart,
+  onDragMove,
   onDragEnd,
+  onDragCancel,
+  onInteractionChange,
 }: DesktopVfsIconProps) {
-  const icon = useRef<HTMLButtonElement>(null);
+  const session = useRef<DragSession | null>(null);
+  const cancellationHandlers = useRef({ onDragCancel, onInteractionChange });
 
   useLayoutEffect(() => {
-    icon.current?.classList.remove('is-dragging');
-  }, [interactionCancelToken]);
+    cancellationHandlers.current = { onDragCancel, onInteractionChange };
+  }, [onDragCancel, onInteractionChange]);
 
-  const beginDrag = (event: ReactDragEvent<HTMLButtonElement>): void => {
+  const cancelActiveSession = useCallback((): void => {
+    const active = session.current;
+    if (!active) return;
+    session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
+    if (active.captureTarget.hasPointerCapture(active.pointerId)) {
+      active.captureTarget.releasePointerCapture(active.pointerId);
+    }
+    if (releasePointerDrag(active.intent) === 'drag') {
+      cancellationHandlers.current.onDragCancel();
+    } else {
+      cancellationHandlers.current.onInteractionChange(false);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    cancelActiveSession();
+  }, [cancelActiveSession, interactionCancelToken]);
+
+  useLayoutEffect(() => () => cancelActiveSession(), [cancelActiveSession]);
+
+  const pointerDown = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    onInteractionChange(true);
+    event.currentTarget.classList.add('is-pointer-pressed');
+    event.currentTarget.setPointerCapture(event.pointerId);
     const bounds = event.currentTarget.getBoundingClientRect();
-    event.currentTarget.classList.add('is-dragging');
-    onDragStart(node.id, event.dataTransfer, {
-      x: Math.round(event.clientX - bounds.left),
-      y: Math.round(event.clientY - bounds.top),
-    });
+    session.current = {
+      pointerId: event.pointerId,
+      captureTarget: event.currentTarget,
+      pointerOffset: {
+        x: Math.round(event.clientX - bounds.left),
+        y: Math.round(event.clientY - bounds.top),
+      },
+      intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
+    };
   };
 
-  const finishDrag = (event: ReactDragEvent<HTMLButtonElement>): void => {
-    event.currentTarget.classList.remove('is-dragging');
-    onDragEnd();
+  const pointerMove = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = session.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    const previousPhase = active.intent.phase;
+    active.intent = updatePointerDrag(active.intent, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (previousPhase === 'pressed' && active.intent.phase === 'dragging') {
+      active.captureTarget.classList.remove('is-pointer-pressed');
+      onDragStart(node.id, active.pointerOffset, active.intent.origin);
+    }
+    if (active.intent.phase !== 'dragging') return;
+    event.preventDefault();
+    onDragMove({ x: event.clientX, y: event.clientY });
+  };
+
+  const pointerUp = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = session.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (releasePointerDrag(active.intent) === 'drag') {
+      event.preventDefault();
+      event.stopPropagation();
+      onDragEnd({ x: event.clientX, y: event.clientY });
+    } else {
+      onInteractionChange(false);
+      onSelect(node.id, event.shiftKey);
+    }
+  };
+
+  const cancelPointer = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = session.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (releasePointerDrag(active.intent) === 'drag') onDragCancel();
+    else onInteractionChange(false);
+  };
+
+  const lostPointerCapture = (event: ReactPointerEvent<HTMLButtonElement>): void => {
+    const active = session.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    session.current = null;
+    active.captureTarget.classList.remove('is-pointer-pressed');
+    if (releasePointerDrag(active.intent) === 'drag') onDragCancel();
+    else onInteractionChange(false);
   };
 
   const style = {
@@ -67,12 +169,17 @@ export function DesktopVfsIcon({
       data-icon-x={position.x}
       data-icon-y={position.y}
       data-vfs-node-id={node.id}
-      draggable
-      onClick={(event) => onSelect(node.id, event.shiftKey)}
+      onClick={(event) => {
+        // Pointer releases select inside the captured session above. A zero-detail
+        // click is keyboard or programmatic activation and has no pointer release.
+        if (event.detail === 0) onSelect(node.id, event.shiftKey);
+      }}
       onDoubleClick={(event) => onOpen(node.id, event.currentTarget)}
-      onDragEnd={finishDrag}
-      onDragStart={beginDrag}
-      ref={icon}
+      onLostPointerCapture={lostPointerCapture}
+      onPointerCancel={cancelPointer}
+      onPointerDown={pointerDown}
+      onPointerMove={pointerMove}
+      onPointerUp={pointerUp}
       style={style}
       type="button"
     >

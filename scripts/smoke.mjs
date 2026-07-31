@@ -6,9 +6,34 @@ import { fileURLToPath } from 'node:url';
 
 import { getBrandedElectronExecutable } from './macos-runtime.mjs';
 
+const SYSTEM_DISK_CREATED_AT = '1984-01-24T00:00:00.000Z';
+const BUILT_IN_ITEM_CREATED_AT = '1984-01-24T00:00:00.000Z';
+const NORMAL_QUIT_WINDOW_DELTA = { x: 37, y: 23 };
+const CANONICAL_CREATED_AT_BY_NODE_ID = new Map([
+  ['system-disk', SYSTEM_DISK_CREATED_AT],
+  ['trash', BUILT_IN_ITEM_CREATED_AT],
+  ['system-folder', BUILT_IN_ITEM_CREATED_AT],
+  ['applications', BUILT_IN_ITEM_CREATED_AT],
+  ['documents', BUILT_IN_ITEM_CREATED_AT],
+  ['utilities', BUILT_IN_ITEM_CREATED_AT],
+  ['welcome', BUILT_IN_ITEM_CREATED_AT],
+  ['finder-notes', BUILT_IN_ITEM_CREATED_AT],
+  ['read-me', BUILT_IN_ITEM_CREATED_AT],
+]);
 const electronPath = await getBrandedElectronExecutable();
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const userData = await mkdtemp(path.join(tmpdir(), 'macintosh-workbench-smoke-'));
+
+const assertCanonicalCreationMetadata = (state, label) => {
+  for (const [nodeId, expected] of CANONICAL_CREATED_AT_BY_NODE_ID) {
+    const node = state.nodes.find((candidate) => candidate.id === nodeId);
+    if (node?.createdAt !== expected) {
+      throw new Error(
+        `${label} ${nodeId} creation metadata was not canonical: ${node?.createdAt ?? 'missing'}.`,
+      );
+    }
+  }
+};
 
 const runElectron = (flag) =>
   new Promise((resolve, reject) => {
@@ -51,6 +76,7 @@ try {
     throw new Error('The persisted state was not migrated to schema 3.');
   const disk = state.nodes.find((node) => node.id === 'system-disk');
   if (!disk || disk.kind !== 'disk') throw new Error('The persisted virtual disk was removed.');
+  assertCanonicalCreationMetadata(state, 'Smoke state');
   const desktop = state.nodes.find((node) => node.id === 'desktop');
   if (!desktop || desktop.kind !== 'desktop' || desktop.parentId !== null) {
     throw new Error('The hidden Desktop root was not persisted.');
@@ -117,6 +143,9 @@ try {
   ) {
     throw new Error('The direct folder drop did not preserve the moved hierarchy.');
   }
+  if (!state.nodes.some((node) => node.id === 'documents' && node.parentId === 'trash')) {
+    throw new Error('The scaled pointer-owned VFS item drop into Trash was not persisted.');
+  }
   const desktopUtilities = state.nodes.find(
     (node) => node.id === 'utilities' && node.parentId === 'desktop',
   );
@@ -146,16 +175,44 @@ try {
     );
   }
 
+  await runElectron('--normal-quit-probe');
+  const normalQuitState = JSON.parse(
+    await readFile(path.join(userData, 'macintosh-state.json'), 'utf8'),
+  );
+  assertCanonicalCreationMetadata(normalQuitState, 'Normal-quit state');
+  if (normalQuitState.nodes.length !== state.nodes.length) {
+    throw new Error('Normal quit unexpectedly changed the authoritative virtual filesystem.');
+  }
+  const normalQuitWindow = normalQuitState.desktop.windows.find(
+    (item) => item.id === 'window-applications',
+  );
+  if (
+    !normalQuitWindow ||
+    normalQuitWindow.x !== savedWindow.x + NORMAL_QUIT_WINDOW_DELTA.x ||
+    normalQuitWindow.y !== savedWindow.y + NORMAL_QUIT_WINDOW_DELTA.y ||
+    normalQuitWindow.width !== savedWindow.width ||
+    normalQuitWindow.height !== savedWindow.height
+  ) {
+    throw new Error(
+      `Normal quit did not persist the committed presentation geometry while rejecting the provisional resize: ${JSON.stringify(normalQuitWindow)}.`,
+    );
+  }
+
   await runElectron('--persistence-probe');
   const proof = JSON.parse(await readFile(path.join(userData, 'persistence-proof.json'), 'utf8'));
   if (!proof?.loaded || !proof.diskVisible || proof.diskLabel !== 'System Disk') {
     throw new Error(`Persistence relaunch probe failed: ${JSON.stringify(proof)}`);
   }
-  if (!Number.isFinite(proof.vfsCount) || proof.vfsCount !== state.nodes.length) {
+  if (!Number.isFinite(proof.vfsCount) || proof.vfsCount !== normalQuitState.nodes.length) {
     throw new Error('The persisted virtual filesystem was not loaded by the renderer.');
   }
-  if (proof.windowLeft !== savedWindow.x || proof.windowTop !== savedWindow.y) {
-    throw new Error('The persisted Finder window position was not restored on relaunch.');
+  if (
+    proof.windowLeft !== normalQuitWindow.x ||
+    proof.windowTop !== normalQuitWindow.y ||
+    proof.windowWidth !== normalQuitWindow.width ||
+    proof.windowHeight !== normalQuitWindow.height
+  ) {
+    throw new Error('The normal-quit Finder geometry was not restored on relaunch.');
   }
   if (
     proof.diskX !== state.desktop.diskPosition.x ||
@@ -181,10 +238,10 @@ try {
   }
 
   console.log(
-    'Electron smoke passed: native The Macintosh identity/icon, pixel cursor assets/hotspots, pointer menu selection, Finder zoom/resize controls, host file/folder Desktop placement, Desktop selection/open/info, direct System Disk import, blocked document fall-through, external Trash rejection, Finder-to-Desktop move and free reposition, document paste and duplication, free Finder icon placement, direct folder move, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled and committed Trash movement, precise glyph-edge/label/internal/scaled Trash hit testing, free System Disk placement, disk pointer-follow, eject animation, persisted quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, pixel cursor assets/hotspots, pointer menu selection, Finder zoom/resize controls, host file/folder Desktop placement, Desktop selection/open/info, direct System Disk import, blocked document fall-through, external Trash rejection, pointer-owned Finder-to-Desktop movement and free reposition, document paste and duplication, free Finder icon placement, direct folder move, drag-session input ownership, focus-loss preview/cursor cleanup, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled and committed Trash movement, precise glyph-edge/label/internal/scaled Trash hit testing with an ordinary VFS commit at 1.25x, free System Disk placement with an icon-only preview, eject animation, persisted eject, normal-quit save failure recovery, repeated quit coalescing, canonical built-in metadata, committed presentation persistence inside the debounce window, and provisional resize cancellation before quit.',
   );
   console.log(
-    'Persistence relaunch passed: Finder geometry, exact Desktop and Finder icon positions, System Disk, and virtual filesystem reloaded.',
+    'Persistence relaunch passed: normal-quit committed Finder geometry, exact Desktop and Finder icon positions, canonical System Disk metadata, and virtual filesystem reloaded.',
   );
 } finally {
   await rm(userData, { recursive: true, force: true });

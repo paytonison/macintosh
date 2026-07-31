@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -7,22 +8,33 @@ import {
   type ReactNode,
 } from 'react';
 
-import type { VfsNode } from '../../shared/state';
+import { canonicalCreatedAtForNodeId, type VfsNode } from '../../shared/state';
+import { beginPointerDrag, updatePointerDrag, type PointerDragIntent } from '../model/pointer-drag';
 import { PixelIcon } from './PixelIcon';
+
+export const formatInfoCreatedDate = (node: VfsNode): string => {
+  const date = new Date(node.createdAt);
+  if (canonicalCreatedAtForNodeId(node.id)) {
+    return `${date.getUTCMonth() + 1}/${date.getUTCDate()}/${date.getUTCFullYear()}`;
+  }
+  return date.toLocaleDateString();
+};
 
 interface ClassicDialogProps {
   title: string;
   children: ReactNode;
+  interactionCancelToken: number;
   onClose: () => void;
+  onInteractionChange: (active: boolean) => void;
   width?: number;
 }
 
 interface DragState {
   pointerId: number;
-  startX: number;
-  startY: number;
+  captureTarget: HTMLDivElement;
   originX: number;
   originY: number;
+  intent: PointerDragIntent;
 }
 
 interface ModalLayerProps {
@@ -98,36 +110,86 @@ function ModalLayer({ children, kind, onClose, persistenceAlert = false }: Modal
   );
 }
 
-function ClassicDialog({ title, children, onClose, width = 430 }: ClassicDialogProps) {
+function ClassicDialog({
+  title,
+  children,
+  interactionCancelToken,
+  onClose,
+  onInteractionChange,
+  width = 430,
+}: ClassicDialogProps) {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
   const drag = useRef<DragState | null>(null);
+
+  useLayoutEffect(() => {
+    const active = drag.current;
+    if (!active) return;
+    drag.current = null;
+    if (active.captureTarget.hasPointerCapture(active.pointerId)) {
+      active.captureTarget.releasePointerCapture(active.pointerId);
+    }
+    setOffset({ x: active.originX, y: active.originY });
+    setDragging(false);
+    onInteractionChange(false);
+  }, [interactionCancelToken, onInteractionChange]);
+
+  useEffect(
+    () => () => {
+      if (!drag.current) return;
+      drag.current = null;
+      onInteractionChange(false);
+    },
+    [onInteractionChange],
+  );
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return;
+    onInteractionChange(true);
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = {
       pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
+      captureTarget: event.currentTarget,
       originX: offset.x,
       originY: offset.y,
+      intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
     };
   };
 
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
+    active.intent = updatePointerDrag(active.intent, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    if (active.intent.phase !== 'dragging') return;
+    setDragging(true);
     setOffset({
-      x: Math.round(active.originX + event.clientX - active.startX),
-      y: Math.round(active.originY + event.clientY - active.startY),
+      x: Math.round(active.originX + event.clientX - active.intent.origin.x),
+      y: Math.round(active.originY + event.clientY - active.intent.origin.y),
     });
   };
 
-  const pointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
+  const finishDrag = (event: ReactPointerEvent<HTMLDivElement>, commit: boolean): void => {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    drag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (!commit) setOffset({ x: active.originX, y: active.originY });
+    setDragging(false);
+    onInteractionChange(false);
+  };
+
+  const lostPointerCapture = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
     drag.current = null;
+    setOffset({ x: active.originX, y: active.originY });
+    setDragging(false);
+    onInteractionChange(false);
   };
 
   return (
@@ -135,16 +197,17 @@ function ClassicDialog({ title, children, onClose, width = 430 }: ClassicDialogP
       <section
         aria-label={title}
         aria-modal="true"
-        className="classic-dialog"
+        className={`classic-dialog ${dragging ? 'is-dragging' : ''}`.trim()}
         role="dialog"
         style={{ marginLeft: offset.x, marginTop: offset.y, width }}
       >
         <div
           className="dialog-titlebar"
-          onPointerCancel={pointerUp}
+          onLostPointerCapture={lostPointerCapture}
+          onPointerCancel={(event) => finishDrag(event, false)}
           onPointerDown={pointerDown}
           onPointerMove={pointerMove}
-          onPointerUp={pointerUp}
+          onPointerUp={(event) => finishDrag(event, true)}
         >
           <button
             aria-label={`Close ${title}`}
@@ -161,9 +224,25 @@ function ClassicDialog({ title, children, onClose, width = 430 }: ClassicDialogP
   );
 }
 
-export function AboutDialog({ onClose }: { onClose: () => void }) {
+interface MovableDialogProps {
+  interactionCancelToken: number;
+  onClose: () => void;
+  onInteractionChange: (active: boolean) => void;
+}
+
+export function AboutDialog({
+  interactionCancelToken,
+  onClose,
+  onInteractionChange,
+}: MovableDialogProps) {
   return (
-    <ClassicDialog onClose={onClose} title="About This Macintosh" width={456}>
+    <ClassicDialog
+      interactionCancelToken={interactionCancelToken}
+      onClose={onClose}
+      onInteractionChange={onInteractionChange}
+      title="About This Macintosh"
+      width={456}
+    >
       <div className="about-content">
         <PixelIcon name="computer" size={64} />
         <div className="about-copy">
@@ -197,16 +276,20 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
 }
 
 export function InfoDialog({
+  interactionCancelToken,
   node,
-  where,
   onClose,
-}: {
-  node: VfsNode;
-  where: string;
-  onClose: () => void;
-}) {
+  onInteractionChange,
+  where,
+}: MovableDialogProps & { node: VfsNode; where: string }) {
   return (
-    <ClassicDialog onClose={onClose} title={`${node.name} Info`} width={384}>
+    <ClassicDialog
+      interactionCancelToken={interactionCancelToken}
+      onClose={onClose}
+      onInteractionChange={onInteractionChange}
+      title={`${node.name} Info`}
+      width={384}
+    >
       <div className="info-content">
         <PixelIcon
           name={node.kind === 'document' ? 'document' : node.kind === 'disk' ? 'disk' : 'folder'}
@@ -223,7 +306,7 @@ export function InfoDialog({
           </div>
           <div>
             <dt>Created:</dt>
-            <dd>{new Date(node.createdAt).toLocaleDateString()}</dd>
+            <dd>{formatInfoCreatedDate(node)}</dd>
           </div>
         </dl>
       </div>
@@ -236,9 +319,19 @@ export function InfoDialog({
   );
 }
 
-export function EjectTipDialog({ onClose }: { onClose: () => void }) {
+export function EjectTipDialog({
+  interactionCancelToken,
+  onClose,
+  onInteractionChange,
+}: MovableDialogProps) {
   return (
-    <ClassicDialog onClose={onClose} title="Eject System Disk" width={420}>
+    <ClassicDialog
+      interactionCancelToken={interactionCancelToken}
+      onClose={onClose}
+      onInteractionChange={onInteractionChange}
+      title="Eject System Disk"
+      width={420}
+    >
       <div className="message-content">
         <PixelIcon name="disk" size={48} />
         <p>Drag System Disk onto Trash to eject it and shut down The Macintosh.</p>

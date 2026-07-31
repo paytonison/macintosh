@@ -32,7 +32,7 @@ body,
 
 body {
   -webkit-font-smoothing: none;
-  cursor: var(--arrow-cursor), default;
+  cursor: var(--system-arrow-cursor), default;
   user-select: none;
 }
 
@@ -44,7 +44,7 @@ textarea {
 }
 
 button {
-  cursor: var(--arrow-cursor), default;
+  cursor: var(--system-arrow-cursor), default;
 }
 
 button:focus {
@@ -68,6 +68,11 @@ button:focus-visible {
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+html.is-normal-quit-pending .macintosh,
+.macintosh.is-normal-quit-pending {
+  pointer-events: none;
 }
 
 .menu-bar {
@@ -217,7 +222,7 @@ button:focus-visible {
   padding: 2px 2px 4px;
   border: 0;
   background: transparent;
-  cursor: var(--grab-cursor), grab;
+  cursor: var(--pointing-hand-cursor), default;
   touch-action: none;
 }
 
@@ -226,9 +231,13 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+.desktop-icon.is-pointer-pressed {
+  cursor: var(--open-hand-cursor), default;
+}
+
 .desktop-icon.is-dragging {
   z-index: 4000;
-  cursor: var(--grabbing-cursor), grabbing;
+  cursor: var(--closed-fist-cursor), default;
   filter: drop-shadow(3px 3px 0 #fff) drop-shadow(1px 1px 0 #000);
 }
 
@@ -242,6 +251,11 @@ button:focus-visible {
   width: 44px;
   height: 42px;
   place-items: center;
+}
+
+.pixel-icon-drag-artwork {
+  position: relative;
+  z-index: 1;
 }
 
 .desktop-icon-label {
@@ -319,27 +333,35 @@ button:focus-visible {
 
 .finder-window.is-opening,
 .finder-window.is-closing {
+  box-shadow: none;
   pointer-events: none;
   will-change: transform;
 }
 
-.finder-window.is-opening {
+.window-animation-shadow {
+  position: absolute;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.finder-window.is-opening,
+.window-animation-shadow.is-opening {
   animation: finder-window-open 180ms steps(6, end) both;
 }
 
-.finder-window.is-closing {
+.finder-window.is-closing,
+.window-animation-shadow.is-closing {
   animation: finder-window-close 180ms steps(6, end) both;
 }
 
-.macintosh.is-automation .finder-window.is-closing {
-  animation-duration: 1ms;
+.macintosh.is-automation .finder-window.is-opening,
+.macintosh.is-automation .finder-window.is-closing,
+.macintosh.is-automation .window-animation-shadow {
+  animation-duration: 20ms;
 }
 
+.window-animation-shadow,
 .window-drag-shadow {
-  position: absolute;
-  z-index: 100;
-  inset: -1px;
-  display: none;
   border: 1px solid #000;
   outline: 1px dotted #000;
   outline-offset: 1px;
@@ -349,6 +371,14 @@ button:focus-visible {
   will-change: transform;
 }
 
+.window-drag-shadow {
+  position: absolute;
+  z-index: 100;
+  inset: -1px;
+  display: none;
+}
+
+.window-animation-shadow::before,
 .window-drag-shadow::before {
   position: absolute;
   inset: 2px;
@@ -356,6 +386,7 @@ button:focus-visible {
   content: '';
 }
 
+.window-animation-shadow > span,
 .window-drag-shadow > span {
   position: absolute;
   top: 19px;
@@ -364,6 +395,7 @@ button:focus-visible {
   border-top: 1px solid #000;
 }
 
+.window-animation-shadow > span::before,
 .window-drag-shadow > span::before {
   position: absolute;
   top: -16px;
@@ -377,6 +409,10 @@ button:focus-visible {
 
 .finder-window.is-shadow-dragging .window-drag-shadow {
   display: block;
+}
+
+.finder-window.is-shadow-dragging .window-titlebar {
+  cursor: var(--grabbing-cursor), grabbing;
 }
 
 .window-titlebar,
@@ -400,7 +436,7 @@ button:focus-visible {
 .window-titlebar > button,
 .dialog-titlebar > button,
 .calculator-titlebar > button {
-  cursor: var(--arrow-cursor), default;
+  cursor: var(--system-arrow-cursor), default;
 }
 
 .is-active .window-titlebar,
@@ -525,14 +561,49 @@ button:focus-visible {
   background: #fff;
 }
 
-.finder-item[draggable='true'],
-.finder-list-row[draggable='true'] {
-  cursor: var(--grab-cursor), grab;
+.finder-item,
+.finder-list-row {
+  cursor: var(--pointing-hand-cursor), default;
 }
 
-.finder-item[draggable='true']:active,
-.finder-list-row[draggable='true']:active {
-  cursor: var(--grabbing-cursor), grabbing;
+.finder-item.is-pointer-pressed,
+.finder-list-row.is-pointer-pressed {
+  cursor: var(--open-hand-cursor), default;
+}
+
+html.is-item-dragging,
+html.is-item-dragging *,
+.macintosh.is-item-dragging,
+.macintosh.is-item-dragging * {
+  cursor: var(--closed-fist-cursor), default !important;
+}
+
+.vfs-item-drag-preview {
+  position: absolute;
+  z-index: 6950;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.vfs-item-drag-preview-icon {
+  position: absolute;
+  display: block;
+}
+
+.vfs-item-drag-preview-icon > .pixel-icon {
+  position: absolute;
+  inset: 0;
+}
+
+.vfs-item-drag-preview-icon > .pixel-icon-drag-shadow {
+  transform: translate3d(3px, 3px, 0);
+}
+
+.vfs-item-drag-preview-icon.is-solid-shadow > .pixel-icon-drag-shadow rect {
+  fill: #000;
 }
 
 .finder-item span {
@@ -1202,6 +1273,7 @@ button:focus-visible {
   .startup-scanline,
   .finder-window.is-opening,
   .finder-window.is-closing,
+  .window-animation-shadow,
   .selection-marquee,
   .desktop-icon.is-drop-target .desktop-icon-glyph,
   .desktop-surface.is-file-drop-target::after {

@@ -2,7 +2,26 @@ import { initialDesktopIconPosition } from './desktop-icon-position';
 
 export const STATE_SCHEMA_VERSION = 3 as const;
 const LEGACY_STATE_SCHEMA_VERSIONS = new Set([1, 2]);
-const MAX_STATE_NODES = 512;
+// Schema 2 allowed two required roots plus 510 ordinary nodes. Schema 3 keeps
+// that user-visible capacity while adding the hidden Desktop root.
+export const MAX_VFS_NODES = 513;
+export const SYSTEM_DISK_CREATED_AT = '1984-01-24T00:00:00.000Z';
+export const BUILT_IN_ITEM_CREATED_AT = '1984-01-24T00:00:00.000Z';
+
+const CANONICAL_CREATED_AT_BY_NODE_ID = new Map<string, string>([
+  ['system-disk', SYSTEM_DISK_CREATED_AT],
+  ['trash', BUILT_IN_ITEM_CREATED_AT],
+  ['system-folder', BUILT_IN_ITEM_CREATED_AT],
+  ['applications', BUILT_IN_ITEM_CREATED_AT],
+  ['documents', BUILT_IN_ITEM_CREATED_AT],
+  ['utilities', BUILT_IN_ITEM_CREATED_AT],
+  ['welcome', BUILT_IN_ITEM_CREATED_AT],
+  ['finder-notes', BUILT_IN_ITEM_CREATED_AT],
+  ['read-me', BUILT_IN_ITEM_CREATED_AT],
+]);
+
+export const canonicalCreatedAtForNodeId = (nodeId: string): string | null =>
+  CANONICAL_CREATED_AT_BY_NODE_ID.get(nodeId) ?? null;
 
 export type VfsNodeKind = 'desktop' | 'disk' | 'trash' | 'folder' | 'document';
 export type FinderViewMode = 'icons' | 'list';
@@ -61,7 +80,7 @@ const seedNode = (
   name,
   kind,
   ...(content ? { content } : {}),
-  createdAt: seedTimestamp,
+  createdAt: canonicalCreatedAtForNodeId(id) ?? seedTimestamp,
   modifiedAt: seedTimestamp,
 });
 
@@ -238,7 +257,7 @@ const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNod
     if (fallback) repaired.push({ ...fallback });
   }
 
-  let overflow = repaired.length - MAX_STATE_NODES;
+  let overflow = repaired.length - MAX_VFS_NODES;
   for (let index = repaired.length - 1; index >= 0 && overflow > 0; index -= 1) {
     if (requirements.has(repaired[index]!.id)) continue;
     repaired.splice(index, 1);
@@ -257,6 +276,11 @@ const materializeDesktopIconPositions = (nodes: VfsNode[]): VfsNode[] =>
       : node,
   );
 
+const normalizeCanonicalCreatedAt = (node: VfsNode): VfsNode => {
+  const createdAt = canonicalCreatedAtForNodeId(node.id);
+  return createdAt && createdAt !== node.createdAt ? { ...node, createdAt } : node;
+};
+
 export const sanitizeState = (value: unknown): MacintoshState => {
   const fallback = createDefaultState();
   if (
@@ -272,10 +296,12 @@ export const sanitizeState = (value: unknown): MacintoshState => {
     ? value.nodes
         .map(sanitizeNode)
         .filter((node): node is VfsNode => node !== null)
-        .slice(0, MAX_STATE_NODES)
+        .slice(0, MAX_VFS_NODES)
     : fallback.nodes;
 
-  const safeNodes = materializeDesktopIconPositions(ensureRequiredRoots(nodes, fallback.nodes));
+  const safeNodes = materializeDesktopIconPositions(
+    ensureRequiredRoots(nodes, fallback.nodes).map(normalizeCanonicalCreatedAt),
+  );
   const nodeIds = new Set(
     safeNodes.filter((node) => node.kind !== 'desktop').map((node) => node.id),
   );

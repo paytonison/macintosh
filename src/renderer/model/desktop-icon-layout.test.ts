@@ -69,6 +69,43 @@ describe('Desktop free icon layout', () => {
     });
   });
 
+  it.each([
+    ['horizontal', { first: { x: 0, y: 20 }, second: { x: 719, y: 20 } }],
+    ['vertical', { first: { x: 20, y: 0 }, second: { x: 20, y: 461 } }],
+  ])('refuses an oversized %s group that cannot fit the desktop', (_axis, positions) => {
+    expect(
+      translateDesktopIconDrag(
+        {
+          anchorId: 'first',
+          pointerOffset: { x: 0, y: 0 },
+          positions,
+        },
+        { x: 100, y: 100 },
+        { width: 800, height: 538 },
+      ),
+    ).toBeNull();
+  });
+
+  it('allows a group whose span exactly fits the usable desktop bounds', () => {
+    expect(
+      translateDesktopIconDrag(
+        {
+          anchorId: 'first',
+          pointerOffset: { x: 0, y: 0 },
+          positions: {
+            first: { x: 0, y: 0 },
+            second: { x: 718, y: 460 },
+          },
+        },
+        { x: 100, y: 100 },
+        { width: 800, height: 538 },
+      ),
+    ).toEqual({
+      first: { x: 0, y: 0 },
+      second: { x: 718, y: 460 },
+    });
+  });
+
   it('returns arbitrary stable desktop node IDs from marquee overlap', () => {
     expect(
       desktopIconIdsInRectangle({ left: 90, top: 90, right: 220, bottom: 180 }, [
