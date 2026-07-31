@@ -23,6 +23,7 @@ import {
 import { DesktopVfsIcon } from './components/DesktopVfsIcon';
 import {
   FinderWindow,
+  FinderWindowAnimationShadow,
   type FinderItemDragContext,
   type FinderWindowAnimation,
 } from './components/FinderWindow';
@@ -1334,6 +1335,19 @@ export default function App() {
         onInteractionChange={setPointerInteractionActive}
         vfsCount={state.nodes.length}
       >
+        {state.desktop.windows.map((windowState, index) => {
+          const animation = windowAnimations[windowState.id];
+          const node = state.nodes.find((item) => item.id === windowState.nodeId);
+          if (!animation || !node || node.kind === 'desktop') return null;
+          return (
+            <FinderWindowAnimationShadow
+              animation={animation}
+              key={`${windowState.id}-animation-shadow`}
+              stackIndex={index}
+              windowState={windowState}
+            />
+          );
+        })}
         {state.desktop.windows.map((windowState, index) => {
           const node = state.nodes.find((item) => item.id === windowState.nodeId);
           if (!node || node.kind === 'desktop') return null;

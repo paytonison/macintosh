@@ -195,6 +195,20 @@ interface SmokePoint {
   y: number;
 }
 
+interface SmokeWindowAnimationRect {
+  bottom: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  width: number;
+}
+
+interface SmokeWindowAnimationSample {
+  frame: SmokeWindowAnimationRect;
+  shadow: SmokeWindowAnimationRect;
+}
+
 interface SmokeWindowAnimation {
   phase: 'opening' | 'closing';
   animationName: string;
@@ -208,8 +222,27 @@ interface SmokeWindowAnimation {
   expectedOffsetX: string;
   expectedOffsetY: string;
   boxShadow: string;
+  zIndex: string;
+  shadowAnimationName: string;
+  shadowDuration: string;
+  shadowTimingFunction: string;
+  shadowKeyframeTransforms: string[];
+  shadowTransformOrigin: string;
+  shadowOffsetX: string;
+  shadowOffsetY: string;
+  shadowBackgroundColor: string;
+  shadowBoxShadow: string;
+  shadowPaintMatchesMovePreview: boolean;
+  shadowPointerEvents: string;
+  shadowZIndex: string;
+  shadowAriaHidden: string | null;
+  shadowPrecedesWindow: boolean;
+  expectedShadowTransformOrigin: string;
+  shadowSamples: SmokeWindowAnimationSample[];
   mounted: boolean;
+  shadowMounted: boolean;
   endedWhileMounted: boolean;
+  shadowEndedWhileMounted: boolean;
 }
 
 interface SmokeCursorValues {
@@ -697,20 +730,35 @@ const observeFinderWindowAnimation = async (
             (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
           );
           const source = document.querySelector(${JSON.stringify(sourceSelector)});
+          const shadow = [...document.querySelectorAll('[data-window-animation-shadow]')].find(
+            (candidate) =>
+              candidate.getAttribute('data-window-animation-shadow') ===
+              finder?.getAttribute('data-finder-window')
+          );
           if (
             !(finder instanceof HTMLElement) ||
             !(source instanceof HTMLElement) ||
+            !(shadow instanceof HTMLElement) ||
             finder.getAttribute(animationAttribute) !== 'true'
           ) return false;
           observer.disconnect();
           const style = getComputedStyle(finder);
+          const shadowStyle = getComputedStyle(shadow);
           const activeAnimation = finder.getAnimations().find(
+            (animation) => animation.animationName === expectedAnimationName
+          );
+          const activeShadowAnimation = shadow.getAnimations().find(
             (animation) => animation.animationName === expectedAnimationName
           );
           const effect = activeAnimation?.effect;
           const keyframes = effect && typeof effect.getKeyframes === 'function'
             ? effect.getKeyframes()
             : [];
+          const shadowEffect = activeShadowAnimation?.effect;
+          const shadowKeyframes =
+            shadowEffect && typeof shadowEffect.getKeyframes === 'function'
+              ? shadowEffect.getKeyframes()
+              : [];
           const sourceBounds = source.getBoundingClientRect();
           const surfaceBounds = surface.getBoundingClientRect();
           const originX = Math.round(
@@ -719,6 +767,73 @@ const observeFinderWindowAnimation = async (
           const originY = Math.round(
             sourceBounds.top + sourceBounds.height / 2 - surfaceBounds.top
           );
+          const toRect = (rect) => ({
+            bottom: rect.bottom,
+            height: rect.height,
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            width: rect.width
+          });
+          const dragPreview = finder.querySelector('.window-drag-shadow');
+          const shadowTitlebar = shadow.querySelector(':scope > span');
+          const dragTitlebar = dragPreview?.querySelector(':scope > span');
+          const stylesMatch = (left, right, properties) =>
+            properties.every((property) => left[property] === right[property]);
+          const borderProperties = [
+            'borderTopColor',
+            'borderTopStyle',
+            'borderTopWidth'
+          ];
+          const shadowPaintMatchesMovePreview =
+            dragPreview instanceof HTMLElement &&
+            shadowTitlebar instanceof HTMLElement &&
+            dragTitlebar instanceof HTMLElement &&
+            stylesMatch(shadowStyle, getComputedStyle(dragPreview), [
+              ...borderProperties,
+              'outlineColor',
+              'outlineOffset',
+              'outlineStyle',
+              'outlineWidth',
+              'backgroundColor',
+              'boxShadow'
+            ]) &&
+            stylesMatch(
+              getComputedStyle(shadow, '::before'),
+              getComputedStyle(dragPreview, '::before'),
+              ['inset', ...borderProperties]
+            ) &&
+            stylesMatch(getComputedStyle(shadowTitlebar), getComputedStyle(dragTitlebar), [
+              'top',
+              'right',
+              'left',
+              ...borderProperties
+            ]) &&
+            stylesMatch(
+              getComputedStyle(shadowTitlebar, '::before'),
+              getComputedStyle(dragTitlebar, '::before'),
+              ['top', 'left', 'width', 'height', ...borderProperties, 'backgroundColor']
+            );
+          const durationValue = effect?.getTiming().duration;
+          const duration = typeof durationValue === 'number' ? durationValue : 20;
+          const shadowSamples = [];
+          if (activeAnimation && activeShadowAnimation) {
+            activeAnimation.pause();
+            activeShadowAnimation.pause();
+            for (const step of [1, 3, 5, 7, 9, 11]) {
+              const currentTime = (duration * step) / 12;
+              activeAnimation.currentTime = currentTime;
+              activeShadowAnimation.currentTime = currentTime;
+              shadowSamples.push({
+                frame: toRect(finder.getBoundingClientRect()),
+                shadow: toRect(shadow.getBoundingClientRect())
+              });
+            }
+            activeAnimation.currentTime = 0;
+            activeShadowAnimation.currentTime = 0;
+            activeAnimation.play();
+            activeShadowAnimation.play();
+          }
           const snapshot = {
             phase: ${JSON.stringify(phase)},
             animationName: style.animationName,
@@ -736,12 +851,39 @@ const observeFinderWindowAnimation = async (
               originY - (finder.offsetTop + finder.offsetHeight / 2)
             ) + 'px',
             boxShadow: style.boxShadow,
-            mounted: finder.isConnected
+            zIndex: style.zIndex,
+            shadowAnimationName: shadowStyle.animationName,
+            shadowDuration: shadowStyle.animationDuration,
+            shadowTimingFunction: shadowStyle.animationTimingFunction,
+            shadowKeyframeTransforms: shadowKeyframes.map(
+              (keyframe) => String(keyframe.transform ?? '')
+            ),
+            shadowTransformOrigin: shadowStyle.transformOrigin,
+            shadowOffsetX: shadowStyle.getPropertyValue('--window-animation-offset-x').trim(),
+            shadowOffsetY: shadowStyle.getPropertyValue('--window-animation-offset-y').trim(),
+            shadowBackgroundColor: shadowStyle.backgroundColor,
+            shadowBoxShadow: shadowStyle.boxShadow,
+            shadowPaintMatchesMovePreview,
+            shadowPointerEvents: shadowStyle.pointerEvents,
+            shadowZIndex: shadowStyle.zIndex,
+            shadowAriaHidden: shadow.getAttribute('aria-hidden'),
+            shadowPrecedesWindow: Boolean(
+              shadow.compareDocumentPosition(finder) & Node.DOCUMENT_POSITION_FOLLOWING
+            ),
+            expectedShadowTransformOrigin:
+              shadow.offsetWidth / 2 + 'px ' + shadow.offsetHeight / 2 + 'px',
+            shadowSamples,
+            mounted: finder.isConnected,
+            shadowMounted: shadow.isConnected
           };
           animationElement = finder;
           animationEndHandler = (event) => {
             if (event.target !== finder || event.animationName !== expectedAnimationName) return;
-            settle({ ...snapshot, endedWhileMounted: finder.isConnected });
+            settle({
+              ...snapshot,
+              endedWhileMounted: finder.isConnected,
+              shadowEndedWhileMounted: shadow.isConnected
+            });
           };
           finder.addEventListener('animationend', animationEndHandler);
           return true;
@@ -781,6 +923,18 @@ const assertFinderWindowAnimation = (
   const expectedOriginTranslation = animation
     ? `translate3d(${animation.expectedOffsetX}, ${animation.expectedOffsetY}, 0px)`
     : '';
+  const nearlyEqual = (left: number, right: number): boolean => Math.abs(left - right) <= 0.05;
+  const shadowSamplesAreAligned =
+    animation?.shadowSamples.length === 6 &&
+    animation.shadowSamples.every(
+      ({ frame, shadow }) =>
+        nearlyEqual(shadow.left, frame.left) &&
+        nearlyEqual(shadow.top, frame.top) &&
+        nearlyEqual(shadow.right, frame.right) &&
+        nearlyEqual(shadow.bottom, frame.bottom) &&
+        nearlyEqual(shadow.width, frame.width) &&
+        nearlyEqual(shadow.height, frame.height),
+    );
   if (
     animation?.phase !== phase ||
     animation.animationName !== expectedName ||
@@ -794,10 +948,28 @@ const assertFinderWindowAnimation = (
     animation.offsetX !== animation.expectedOffsetX ||
     animation.offsetY !== animation.expectedOffsetY ||
     (animation.offsetX === '0px' && animation.offsetY === '0px') ||
-    !animation.boxShadow.startsWith('rgb(0, 0, 0) ') ||
-    !animation.boxShadow.endsWith(' 3px 3px 0px 0px') ||
+    animation.boxShadow !== 'none' ||
+    animation.shadowAnimationName !== animation.animationName ||
+    animation.shadowDuration !== animation.duration ||
+    animation.shadowTimingFunction !== animation.timingFunction ||
+    JSON.stringify(animation.shadowKeyframeTransforms) !==
+      JSON.stringify(animation.keyframeTransforms) ||
+    animation.shadowTransformOrigin !== animation.expectedShadowTransformOrigin ||
+    animation.shadowOffsetX !== animation.offsetX ||
+    animation.shadowOffsetY !== animation.offsetY ||
+    animation.shadowBackgroundColor !== 'rgba(0, 0, 0, 0)' ||
+    !animation.shadowBoxShadow.startsWith('rgb(0, 0, 0) ') ||
+    !animation.shadowBoxShadow.endsWith(' 3px 3px 0px 0px') ||
+    !animation.shadowPaintMatchesMovePreview ||
+    animation.shadowPointerEvents !== 'none' ||
+    animation.shadowZIndex !== animation.zIndex ||
+    animation.shadowAriaHidden !== 'true' ||
+    !animation.shadowPrecedesWindow ||
+    !shadowSamplesAreAligned ||
     !animation.mounted ||
-    !animation.endedWhileMounted
+    !animation.shadowMounted ||
+    !animation.endedWhileMounted ||
+    !animation.shadowEndedWhileMounted
   ) {
     throw new Error(`${label} animation was incorrect: ${JSON.stringify(animation)}.`);
   }
@@ -826,6 +998,40 @@ const waitForFinderWindowState = async (
     await pause(10);
   }
   throw new Error(`${windowLabel} did not reach its expected ${expected} state.`);
+};
+
+const assertFinderWindowSettledShadow = async (
+  window: BrowserWindow,
+  windowLabel: string,
+): Promise<void> => {
+  const state = (await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = [...document.querySelectorAll('[data-finder-window]')].find(
+        (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
+      );
+      if (!(finder instanceof HTMLElement)) return null;
+      const shadowPresent = [...document.querySelectorAll('[data-window-animation-shadow]')].some(
+        (candidate) =>
+          candidate.getAttribute('data-window-animation-shadow') ===
+          finder.getAttribute('data-finder-window')
+      );
+      return {
+        boxShadow: getComputedStyle(finder).boxShadow,
+        shadowPresent
+      };
+    })()`,
+    true,
+  )) as { boxShadow: string; shadowPresent: boolean } | null;
+  if (
+    state === null ||
+    state.shadowPresent ||
+    !state.boxShadow.startsWith('rgb(0, 0, 0) ') ||
+    !state.boxShadow.endsWith(' 3px 3px 0px 0px')
+  ) {
+    throw new Error(
+      `${windowLabel} did not restore its settled pixel shadow: ${JSON.stringify(state)}.`,
+    );
+  }
 };
 
 const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
@@ -1699,6 +1905,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   assertFinderWindowAnimation(desktopFolderOpenAnimation, 'opening', 'Desktop folder opening');
   await waitForFinderWindowState(window, 'Drop Folder window', 'settled');
+  await assertFinderWindowSettledShadow(window, 'Drop Folder window');
   const desktopFolderHierarchyVisible = await window.webContents.executeJavaScript(
     `document.querySelector('[aria-label="Drop Folder window"] [data-vfs-item]')
       ?.textContent?.includes('Nested Note.txt') === true`,
@@ -1727,6 +1934,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     'Nested Finder document opening',
   );
   await waitForFinderWindowState(window, 'Nested Note.txt window', 'settled');
+  await assertFinderWindowSettledShadow(window, 'Nested Note.txt window');
   const nestedDocumentCloseAnimation = await observeFinderWindowAnimation(
     window,
     'Nested Note.txt window',
@@ -1795,7 +2003,14 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         sameElement: windows[0] === originalWindow && originalWindow.isConnected,
         replayedOpening,
         opening: originalWindow.dataset.opening === 'true',
-        closing: originalWindow.dataset.closing === 'true'
+        closing: originalWindow.dataset.closing === 'true',
+        animationShadowPresent: [...document.querySelectorAll(
+          '[data-window-animation-shadow]'
+        )].some(
+          (candidate) =>
+            candidate.getAttribute('data-window-animation-shadow') ===
+            originalWindow.getAttribute('data-finder-window')
+        )
       };
     })()`,
     true,
@@ -1805,13 +2020,15 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     replayedOpening: boolean;
     opening: boolean;
     closing: boolean;
+    animationShadowPresent: boolean;
   } | null;
   if (
     closeCancellationState?.count !== 1 ||
     !closeCancellationState.sameElement ||
     closeCancellationState.replayedOpening ||
     closeCancellationState.opening ||
-    closeCancellationState.closing
+    closeCancellationState.closing ||
+    closeCancellationState.animationShadowPresent
   ) {
     throw new Error(
       `Reopening did not cancel the pending Finder close: ${JSON.stringify(closeCancellationState)}.`,

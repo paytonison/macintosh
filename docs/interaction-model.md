@@ -164,12 +164,13 @@ There is at most one Finder window for a given virtual filesystem node. The wind
 
 Disk, folder, and Trash windows list their children. Document windows display read-only document content until editing is deliberately introduced.
 
-Creating a Finder window uses a short stepped scale from the opening icon to the final window frame,
-with its hard pixel shadow following the frame. Commands without a visible source scale from the
-final frame's center. Bringing an existing window to the front does not replay the effect, and window
-animation state is transient. Closing reverses that scale toward the node's currently rendered icon,
-or toward the window center when no source icon is available. The window leaves the Finder stack only
-after the close animation finishes; reopening it during that transition cancels the pending close.
+Creating a Finder window uses a short stepped scale from the opening icon to the final window frame.
+The same transparent outline and hard pixel shadow used for Finder window-move previews follow behind
+the scaling frame. Commands without a visible source scale from the final frame's center. Bringing an
+existing window to the front does not replay the effect, and window animation state is transient.
+Closing reverses that scale toward the node's currently rendered icon, or toward the window center when
+no source icon is available. The window leaves the Finder stack only after the close animation finishes;
+reopening it during that transition cancels the pending close.
 
 ### Moving
 

@@ -328,28 +328,35 @@ html.is-normal-quit-pending .macintosh,
 
 .finder-window.is-opening,
 .finder-window.is-closing {
+  box-shadow: none;
   pointer-events: none;
   will-change: transform;
 }
 
-.finder-window.is-opening {
+.window-animation-shadow {
+  position: absolute;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.finder-window.is-opening,
+.window-animation-shadow.is-opening {
   animation: finder-window-open 180ms steps(6, end) both;
 }
 
-.finder-window.is-closing {
+.finder-window.is-closing,
+.window-animation-shadow.is-closing {
   animation: finder-window-close 180ms steps(6, end) both;
 }
 
 .macintosh.is-automation .finder-window.is-opening,
-.macintosh.is-automation .finder-window.is-closing {
+.macintosh.is-automation .finder-window.is-closing,
+.macintosh.is-automation .window-animation-shadow {
   animation-duration: 20ms;
 }
 
+.window-animation-shadow,
 .window-drag-shadow {
-  position: absolute;
-  z-index: 100;
-  inset: -1px;
-  display: none;
   border: 1px solid #000;
   outline: 1px dotted #000;
   outline-offset: 1px;
@@ -359,6 +366,14 @@ html.is-normal-quit-pending .macintosh,
   will-change: transform;
 }
 
+.window-drag-shadow {
+  position: absolute;
+  z-index: 100;
+  inset: -1px;
+  display: none;
+}
+
+.window-animation-shadow::before,
 .window-drag-shadow::before {
   position: absolute;
   inset: 2px;
@@ -366,6 +381,7 @@ html.is-normal-quit-pending .macintosh,
   content: '';
 }
 
+.window-animation-shadow > span,
 .window-drag-shadow > span {
   position: absolute;
   top: 19px;
@@ -374,6 +390,7 @@ html.is-normal-quit-pending .macintosh,
   border-top: 1px solid #000;
 }
 
+.window-animation-shadow > span::before,
 .window-drag-shadow > span::before {
   position: absolute;
   top: -16px;
@@ -1225,6 +1242,7 @@ html.is-item-dragging *,
   .startup-scanline,
   .finder-window.is-opening,
   .finder-window.is-closing,
+  .window-animation-shadow,
   .selection-marquee,
   .desktop-icon.is-drop-target .desktop-icon-glyph,
   .desktop-surface.is-file-drop-target::after {

@@ -64,6 +64,12 @@ interface FinderWindowProps {
   onInteractionChange: (active: boolean) => void;
 }
 
+interface FinderWindowAnimationShadowProps {
+  animation: FinderWindowAnimation;
+  stackIndex: number;
+  windowState: FinderWindowState;
+}
+
 interface GeometrySession {
   pointerId: number;
   captureTarget: HTMLElement;
@@ -85,6 +91,45 @@ const iconForNode = (node: VfsNode): PixelIconName => {
   if (node.kind === 'folder' || node.kind === 'disk' || node.kind === 'trash') return 'folder';
   return 'document';
 };
+
+const windowAnimationOffsets = (
+  windowState: FinderWindowState,
+  animation: FinderWindowAnimation,
+): CSSProperties =>
+  ({
+    '--window-animation-offset-x': `${Math.round(
+      animation.origin.x - (windowState.x + windowState.width / 2),
+    )}px`,
+    '--window-animation-offset-y': `${Math.round(
+      animation.origin.y - (windowState.y + windowState.height / 2),
+    )}px`,
+  }) as CSSProperties;
+
+export function FinderWindowAnimationShadow({
+  animation,
+  stackIndex,
+  windowState,
+}: FinderWindowAnimationShadowProps) {
+  return (
+    <div
+      aria-hidden="true"
+      className={`window-animation-shadow is-${animation.phase}`}
+      data-window-animation-shadow={windowState.id}
+      style={
+        {
+          left: windowState.x,
+          top: windowState.y,
+          width: windowState.width,
+          height: windowState.height,
+          zIndex: 300 + stackIndex,
+          ...windowAnimationOffsets(windowState, animation),
+        } as CSSProperties
+      }
+    >
+      <span />
+    </div>
+  );
+}
 
 export function FinderWindow({
   windowState,
@@ -359,24 +404,15 @@ export function FinderWindow({
     onInteractionChange(false);
   };
 
+  const animationOffsets = animation ? windowAnimationOffsets(windowState, animation) : {};
   const style = {
     left: windowState.x,
     top: windowState.y,
     width: windowState.width,
     height: windowState.height,
     zIndex: 300 + stackIndex,
-    ...(animation
-      ? {
-          '--window-animation-offset-x': `${Math.round(
-            animation.origin.x - (windowState.x + windowState.width / 2),
-          )}px`,
-          '--window-animation-offset-y': `${Math.round(
-            animation.origin.y - (windowState.y + windowState.height / 2),
-          )}px`,
-        }
-      : {}),
+    ...animationOffsets,
   } as CSSProperties;
-
   const isDocument = node.kind === 'document';
   const iconItems = items.map((item, index) => ({
     item,
