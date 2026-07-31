@@ -1,15 +1,40 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { getBrandedElectronExecutable } from './macos-runtime.mjs';
 
-const SYSTEM_DISK_CREATED_AT = '1984-01-04T00:00:00.000Z';
+const SYSTEM_DISK_CREATED_AT = '1984-01-24T00:00:00.000Z';
+const BUILT_IN_ITEM_CREATED_AT = '1984-01-24T00:00:00.000Z';
+const CANONICAL_CREATED_AT_BY_NODE_ID = new Map([
+  ['system-disk', SYSTEM_DISK_CREATED_AT],
+  ['trash', BUILT_IN_ITEM_CREATED_AT],
+  ['system-folder', BUILT_IN_ITEM_CREATED_AT],
+  ['applications', BUILT_IN_ITEM_CREATED_AT],
+  ['documents', BUILT_IN_ITEM_CREATED_AT],
+  ['utilities', BUILT_IN_ITEM_CREATED_AT],
+  ['welcome', BUILT_IN_ITEM_CREATED_AT],
+  ['finder-notes', BUILT_IN_ITEM_CREATED_AT],
+  ['read-me', BUILT_IN_ITEM_CREATED_AT],
+]);
+const CANONICAL_CREATED_AT_VALUES = new Set(CANONICAL_CREATED_AT_BY_NODE_ID.values());
 const electronPath = await getBrandedElectronExecutable();
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const userData = await mkdtemp(path.join(tmpdir(), 'macintosh-workbench-smoke-'));
+const stateFilePath = path.join(userData, 'macintosh-state.json');
+
+const assertCanonicalCreationMetadata = (state, label) => {
+  for (const [nodeId, expected] of CANONICAL_CREATED_AT_BY_NODE_ID) {
+    const node = state.nodes.find((candidate) => candidate.id === nodeId);
+    if (node?.createdAt !== expected) {
+      throw new Error(
+        `${label} ${nodeId} creation metadata was not canonical: ${node?.createdAt ?? 'missing'}.`,
+      );
+    }
+  }
+};
 
 const runElectron = (flag) =>
   new Promise((resolve, reject) => {
@@ -46,23 +71,25 @@ const runElectron = (flag) =>
 try {
   await runElectron('--smoke-test');
 
-  const state = JSON.parse(await readFile(path.join(userData, 'macintosh-state.json'), 'utf8'));
+  const state = JSON.parse(await readFile(stateFilePath, 'utf8'));
   if (state.schemaVersion !== 3)
     throw new Error('The persisted state was not migrated to schema 3.');
   const disk = state.nodes.find((node) => node.id === 'system-disk');
   if (!disk || disk.kind !== 'disk') throw new Error('The persisted virtual disk was removed.');
-  if (disk.createdAt !== SYSTEM_DISK_CREATED_AT) {
-    throw new Error(`System Disk creation metadata was not canonical: ${disk.createdAt}.`);
-  }
+  assertCanonicalCreationMetadata(state, 'Initial persisted state');
   const desktop = state.nodes.find((node) => node.id === 'desktop');
   if (!desktop || desktop.kind !== 'desktop' || desktop.parentId !== null) {
     throw new Error('The hidden Desktop root was not persisted.');
   }
   if (!state.desktop.lastEjectAt) throw new Error('The eject timestamp was not persisted.');
-  if (
-    !state.nodes.some((node) => node.parentId === 'system-disk' && node.name === 'untitled folder')
-  ) {
+  const createdFolder = state.nodes.find(
+    (node) => node.parentId === 'system-disk' && node.name === 'untitled folder',
+  );
+  if (!createdFolder) {
     throw new Error('The folder created through the File menu was not persisted.');
+  }
+  if (CANONICAL_CREATED_AT_VALUES.has(createdFolder.createdAt)) {
+    throw new Error('The user-created folder received canonical built-in creation metadata.');
   }
   const desktopDocument = state.nodes.find(
     (node) => node.parentId === 'desktop' && node.name === 'Dropped Note.txt',
@@ -70,9 +97,12 @@ try {
   if (
     !desktopDocument?.content?.includes('external Electron drop') ||
     desktopDocument.iconPosition?.x !== 121 ||
-    desktopDocument.iconPosition?.y !== 591
+    desktopDocument.iconPosition?.y !== 591 ||
+    CANONICAL_CREATED_AT_VALUES.has(desktopDocument.createdAt)
   ) {
-    throw new Error('The externally dropped Desktop document and its position were not persisted.');
+    throw new Error(
+      'The externally dropped Desktop document, timestamp, and position were not persisted.',
+    );
   }
   const droppedDocument = state.nodes.find(
     (node) => node.parentId === 'system-disk' && node.name === 'Dropped Note.txt',
@@ -151,10 +181,27 @@ try {
     );
   }
 
+  const userCreationSentinel = '2026-07-31T18:45:00.000Z';
+  const staleState = JSON.parse(JSON.stringify(state));
+  for (const nodeId of CANONICAL_CREATED_AT_BY_NODE_ID.keys()) {
+    const node = staleState.nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) throw new Error(`Could not prepare stale metadata for ${nodeId}.`);
+    node.createdAt = '1989-01-24T09:00:00.000Z';
+  }
+  const staleUserNode = staleState.nodes.find((node) => node.id === desktopDocument.id);
+  if (!staleUserNode) throw new Error('Could not prepare the user timestamp migration fixture.');
+  staleUserNode.createdAt = userCreationSentinel;
+  await writeFile(stateFilePath, `${JSON.stringify(staleState, null, 2)}\n`, { mode: 0o600 });
+
   await runElectron('--normal-quit-probe');
-  const normalQuitState = JSON.parse(
-    await readFile(path.join(userData, 'macintosh-state.json'), 'utf8'),
-  );
+  const normalQuitState = JSON.parse(await readFile(stateFilePath, 'utf8'));
+  assertCanonicalCreationMetadata(normalQuitState, 'Migrated persisted state');
+  const migratedUserNode = normalQuitState.nodes.find((node) => node.id === desktopDocument.id);
+  if (migratedUserNode?.createdAt !== userCreationSentinel) {
+    throw new Error(
+      `The migrated user timestamp was rewritten: ${migratedUserNode?.createdAt ?? 'missing'}.`,
+    );
+  }
   if (normalQuitState.nodes.length !== state.nodes.length + 1) {
     throw new Error(
       'Normal quit did not persist the mutation made inside the 220 ms debounce window.',
@@ -165,6 +212,11 @@ try {
   const proof = JSON.parse(await readFile(path.join(userData, 'persistence-proof.json'), 'utf8'));
   if (!proof?.loaded || !proof.diskVisible || proof.diskLabel !== 'System Disk') {
     throw new Error(`Persistence relaunch probe failed: ${JSON.stringify(proof)}`);
+  }
+  if (proof.systemDiskCreatedDate !== '1/24/1984') {
+    throw new Error(
+      `Persistence relaunch rendered the wrong System Disk date: ${proof.systemDiskCreatedDate}.`,
+    );
   }
   if (!Number.isFinite(proof.vfsCount) || proof.vfsCount !== normalQuitState.nodes.length) {
     throw new Error('The persisted virtual filesystem was not loaded by the renderer.');
@@ -208,7 +260,7 @@ try {
     'Electron smoke passed: native The Macintosh identity/icon, System 1 bitmap cursor bindings, native closed-fist drag continuity, backdrop-contrasted icon shadows without boundary boxes for virtual items and System Disk, file/folder pointer transitions, thresholded click-hold/drag, off-center pointer alignment, focus-loss cleanup, host file/folder Desktop placement, Desktop selection/info/stepped folder and document opening and closing with the Finder move-preview outline and hard shadow, direct System Disk import, blocked document fall-through, external Trash rejection, Finder-to-Desktop move and free reposition, document paste and duplication, free Finder icon placement, direct folder and Trash moves, drag-session input ownership, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled Trash drag, free System Disk placement, disk icon-preview following, Trash hover, eject animation, persisted eject, normal-quit save failure recovery, repeated quit coalescing, and quit-inside-debounce persistence.',
   );
   console.log(
-    'Persistence relaunch passed: normal-quit mutation, Finder geometry, exact Desktop and Finder icon positions, Desktop content and hierarchy, canonical System Disk metadata, and virtual filesystem reloaded.',
+    'Persistence relaunch passed: normal-quit mutation, Finder geometry, exact Desktop and Finder icon positions, Desktop content and hierarchy, canonical built-in creation metadata and Get Info rendering, preserved user timestamps, and virtual filesystem reloaded.',
   );
 } finally {
   await rm(userData, { recursive: true, force: true });

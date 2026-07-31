@@ -2,7 +2,23 @@ import { initialDesktopIconPosition } from './desktop-icon-position';
 
 export const STATE_SCHEMA_VERSION = 3 as const;
 const LEGACY_STATE_SCHEMA_VERSIONS = new Set([1, 2]);
-export const SYSTEM_DISK_CREATED_AT = '1984-01-04T00:00:00.000Z';
+export const SYSTEM_DISK_CREATED_AT = '1984-01-24T00:00:00.000Z';
+export const BUILT_IN_ITEM_CREATED_AT = '1984-01-24T00:00:00.000Z';
+
+const CANONICAL_CREATED_AT_BY_NODE_ID = new Map<string, string>([
+  ['system-disk', SYSTEM_DISK_CREATED_AT],
+  ['trash', BUILT_IN_ITEM_CREATED_AT],
+  ['system-folder', BUILT_IN_ITEM_CREATED_AT],
+  ['applications', BUILT_IN_ITEM_CREATED_AT],
+  ['documents', BUILT_IN_ITEM_CREATED_AT],
+  ['utilities', BUILT_IN_ITEM_CREATED_AT],
+  ['welcome', BUILT_IN_ITEM_CREATED_AT],
+  ['finder-notes', BUILT_IN_ITEM_CREATED_AT],
+  ['read-me', BUILT_IN_ITEM_CREATED_AT],
+]);
+
+export const canonicalCreatedAtForNodeId = (nodeId: string): string | null =>
+  CANONICAL_CREATED_AT_BY_NODE_ID.get(nodeId) ?? null;
 
 // Schema 2 allowed two required roots plus 510 ordinary nodes. Schema 3 keeps
 // that user-visible capacity while adding the hidden Desktop root.
@@ -65,13 +81,8 @@ const seedNode = (
   name,
   kind,
   ...(content ? { content } : {}),
-  createdAt: seedTimestamp,
+  createdAt: canonicalCreatedAtForNodeId(id) ?? seedTimestamp,
   modifiedAt: seedTimestamp,
-});
-
-const seedSystemDisk = (): VfsNode => ({
-  ...seedNode('system-disk', null, 'System Disk', 'disk'),
-  createdAt: SYSTEM_DISK_CREATED_AT,
 });
 
 export const createDefaultState = (): MacintoshState => ({
@@ -93,7 +104,7 @@ export const createDefaultState = (): MacintoshState => ({
     lastEjectAt: null,
   },
   nodes: [
-    seedSystemDisk(),
+    seedNode('system-disk', null, 'System Disk', 'disk'),
     seedNode('trash', null, 'Trash', 'trash'),
     seedNode('desktop', null, 'Desktop', 'desktop'),
     seedNode('system-folder', 'system-disk', 'System Folder', 'folder'),
@@ -216,7 +227,12 @@ const requiredRoots = [
 const normalizeRequiredRoot = (node: VfsNode): VfsNode => {
   const root = { ...node, parentId: null };
   delete root.iconPosition;
-  return root.id === 'system-disk' ? { ...root, createdAt: SYSTEM_DISK_CREATED_AT } : root;
+  return root;
+};
+
+const normalizeCanonicalCreatedAt = (node: VfsNode): VfsNode => {
+  const createdAt = canonicalCreatedAtForNodeId(node.id);
+  return createdAt && createdAt !== node.createdAt ? { ...node, createdAt } : node;
 };
 
 const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNode[] => {
@@ -288,7 +304,9 @@ export const sanitizeState = (value: unknown): MacintoshState => {
         .slice(0, MAX_VFS_NODES)
     : fallback.nodes;
 
-  const safeNodes = materializeDesktopIconPositions(ensureRequiredRoots(nodes, fallback.nodes));
+  const safeNodes = materializeDesktopIconPositions(
+    ensureRequiredRoots(nodes, fallback.nodes).map(normalizeCanonicalCreatedAt),
+  );
   const nodeIds = new Set(
     safeNodes.filter((node) => node.kind !== 'desktop').map((node) => node.id),
   );

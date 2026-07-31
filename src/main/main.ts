@@ -1151,6 +1151,78 @@ const assertFinderWindowSettledShadow = async (
   }
 };
 
+const readInfoCreatedDate = async (
+  window: BrowserWindow,
+  dialogLabel: string,
+): Promise<string | null> =>
+  (await window.webContents.executeJavaScript(
+    `(() => {
+      const dialog = document.querySelector('[aria-label=${JSON.stringify(dialogLabel)}]');
+      if (!(dialog instanceof HTMLElement)) return null;
+      const label = [...dialog.querySelectorAll('dt')].find(
+        (candidate) => candidate.textContent?.trim() === 'Created:'
+      );
+      return label?.nextElementSibling?.textContent?.trim() ?? null;
+    })()`,
+    true,
+  )) as string | null;
+
+const assertInfoCreatedDate = async (
+  window: BrowserWindow,
+  dialogLabel: string,
+  expected: string,
+): Promise<void> => {
+  const actual = await readInfoCreatedDate(window, dialogLabel);
+  if (actual !== expected) {
+    throw new Error(
+      `${dialogLabel} rendered Created: ${actual ?? 'missing'} instead of ${expected}.`,
+    );
+  }
+};
+
+const openSystemDiskInfo = async (window: BrowserWindow): Promise<void> => {
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu="system"]\')?.click()',
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu-action="system-info"]\')?.click()',
+    true,
+  );
+  await pause(40);
+};
+
+const openFinderItemInfo = async (window: BrowserWindow, nodeId: string): Promise<void> => {
+  const selected = await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector('[data-vfs-item=${JSON.stringify(nodeId)}]');
+      if (!(item instanceof HTMLElement)) return false;
+      item.click();
+      return true;
+    })()`,
+    true,
+  );
+  if (!selected) throw new Error(`${nodeId} could not be selected for Get Info.`);
+  await pause(20);
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu="file"]\')?.click()',
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu-action="get-info"]\')?.click()',
+    true,
+  );
+  await pause(40);
+};
+
+const closeInfoDialog = async (window: BrowserWindow, dialogLabel: string): Promise<void> => {
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label=${JSON.stringify(dialogLabel)}] .classic-default-button')?.click()`,
+    true,
+  );
+  await pause(20);
+};
+
 const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   await waitForRenderer(window);
   window.show();
@@ -1294,6 +1366,58 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     cursorBindings.bareDesktopPoint,
     'lostpointercapture',
   );
+
+  await openSystemDiskInfo(window);
+  await assertInfoCreatedDate(window, 'System Disk Info', '1/24/1984');
+  await closeInfoDialog(window, 'System Disk Info');
+
+  await openFinderItemInfo(window, 'system-folder');
+  await assertInfoCreatedDate(window, 'System Folder Info', '1/24/1984');
+  await closeInfoDialog(window, 'System Folder Info');
+
+  await openFinderItemInfo(window, 'welcome');
+  await assertInfoCreatedDate(window, 'Welcome Info', '1/24/1984');
+  await closeInfoDialog(window, 'Welcome Info');
+
+  const trashInfoPoint = (await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return null;
+      const bounds = trash.getBoundingClientRect();
+      return {
+        x: Math.round(bounds.left + bounds.width / 2),
+        y: Math.round(bounds.top + bounds.height / 2)
+      };
+    })()`,
+    true,
+  )) as SmokePoint | null;
+  if (!trashInfoPoint) throw new Error('Trash could not be located for Get Info.');
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...trashInfoPoint });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...trashInfoPoint,
+  });
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...trashInfoPoint,
+  });
+  await pause(40);
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu="file"]\')?.click()',
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[data-menu-action="get-info"]\')?.click()',
+    true,
+  );
+  await pause(40);
+  await assertInfoCreatedDate(window, 'Trash Info', '1/24/1984');
+  await closeInfoDialog(window, 'Trash Info');
+
   const initialVfsCount = (await window.webContents.executeJavaScript(
     "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
     true,
@@ -1994,14 +2118,26 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'I', modifiers: ['meta'] });
   window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'I', modifiers: ['meta'] });
   await pause(60);
-  const desktopInfoOpened = await window.webContents.executeJavaScript(
+  const desktopInfo = (await window.webContents.executeJavaScript(
     `(() => {
       const dialog = document.querySelector('[aria-label="Dropped Note.txt Info"]');
-      return dialog instanceof HTMLElement && dialog.textContent?.includes('Desktop');
+      if (!(dialog instanceof HTMLElement)) return null;
+      const createdLabel = [...dialog.querySelectorAll('dt')].find(
+        (candidate) => candidate.textContent?.trim() === 'Created:'
+      );
+      return {
+        created: createdLabel?.nextElementSibling?.textContent?.trim() ?? null,
+        whereDesktop: dialog.textContent?.includes('Desktop') === true
+      };
     })()`,
     true,
-  );
-  if (!desktopInfoOpened) throw new Error('Get Info did not use the selected Desktop document.');
+  )) as { created: string | null; whereDesktop: boolean } | null;
+  if (!desktopInfo?.whereDesktop) {
+    throw new Error('Get Info did not use the selected Desktop document.');
+  }
+  if (desktopInfo.created === '1/24/1984') {
+    throw new Error(`Imported Desktop Get Info received a canonical date: ${desktopInfo.created}.`);
+  }
   await window.webContents.executeJavaScript(
     `document.querySelector('[aria-label="Dropped Note.txt Info"] .classic-default-button')?.click()`,
     true,
@@ -3823,6 +3959,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
 const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
   await waitForRenderer(window);
+  await openSystemDiskInfo(window);
+  const systemDiskCreatedDate = await readInfoCreatedDate(window, 'System Disk Info');
+  await closeInfoDialog(window, 'System Disk Info');
+
   const geometryProof = (await window.webContents.executeJavaScript(
     `(() => {
     const disk = document.querySelector('[data-desktop-icon="system-disk"]');
@@ -3935,6 +4075,7 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
     : null;
   const proof = {
     ...geometryProof,
+    systemDiskCreatedDate,
     desktopDocumentContent,
     desktopFolderNestedVisible,
     desktopNestedDocumentContent,

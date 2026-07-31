@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BUILT_IN_ITEM_CREATED_AT,
+  canonicalCreatedAtForNodeId,
   createDefaultState,
   MAX_VFS_NODES,
   sanitizeState,
@@ -9,19 +11,34 @@ import {
   type VfsNode,
 } from './state';
 
+const BUILT_IN_ITEM_IDS = [
+  'trash',
+  'system-folder',
+  'applications',
+  'documents',
+  'utilities',
+  'welcome',
+  'finder-notes',
+  'read-me',
+] as const;
+
 describe('persistent Macintosh state', () => {
-  it('creates the three required roots, including a hidden Desktop container', () => {
+  it('creates the required roots and canonical built-in creation metadata', () => {
     const state = createDefaultState();
 
     expect(state.nodes.find((node) => node.id === 'system-disk')).toMatchObject({
       kind: 'disk',
       createdAt: SYSTEM_DISK_CREATED_AT,
     });
-    expect(state.nodes.find((node) => node.id === 'trash')?.kind).toBe('trash');
+    for (const id of BUILT_IN_ITEM_IDS) {
+      expect(state.nodes.find((node) => node.id === id)?.createdAt).toBe(BUILT_IN_ITEM_CREATED_AT);
+    }
     expect(state.nodes.find((node) => node.id === 'desktop')).toMatchObject({
       kind: 'desktop',
       parentId: null,
+      createdAt: '1989-01-24T09:00:00.000Z',
     });
+    expect(canonicalCreatedAtForNodeId('desktop')).toBeNull();
     expect(state.desktop.windows.some((windowState) => windowState.nodeId === 'desktop')).toBe(
       false,
     );
@@ -40,23 +57,99 @@ describe('persistent Macintosh state', () => {
   });
 
   it.each([1, 2, STATE_SCHEMA_VERSION])(
-    'normalizes the System Disk creation date in schema %i without rewriting other nodes',
+    'normalizes canonical creation dates in schema %i without rewriting other metadata',
     (schemaVersion) => {
       const saved = createDefaultState();
-      const disk = saved.nodes.find((node) => node.id === 'system-disk');
+      const canonicalIds = ['system-disk', ...BUILT_IN_ITEM_IDS];
+      const systemFolder = saved.nodes.find((node) => node.id === 'system-folder');
       const welcome = saved.nodes.find((node) => node.id === 'welcome');
-      if (!disk || !welcome) throw new Error('Missing timestamp fixtures.');
-      disk.createdAt = '1989-01-24T09:00:00.000Z';
-      welcome.createdAt = '2026-07-30T18:45:00.000Z';
+      const applications = saved.nodes.find((node) => node.id === 'applications');
+      const desktop = saved.nodes.find((node) => node.id === 'desktop');
+      if (!systemFolder || !welcome || !applications || !desktop) {
+        throw new Error('Missing timestamp fixtures.');
+      }
+
+      const duplicateCreatedAt = '2026-07-30T18:45:00.000Z';
+      const customCreatedAt = '2026-07-31T14:20:00.000Z';
+      const importedCreatedAt = '2026-07-31T15:30:00.000Z';
+      const desktopCreatedAt = '2026-07-31T16:40:00.000Z';
+      const builtInModifiedAt = '2026-07-31T17:50:00.000Z';
+      const applicationsCopy: VfsNode = {
+        ...applications,
+        id: 'folder-applications-copy',
+        name: 'Applications copy',
+        createdAt: duplicateCreatedAt,
+        modifiedAt: duplicateCreatedAt,
+      };
+      const customDocument: VfsNode = {
+        id: 'document-custom',
+        parentId: 'system-disk',
+        name: 'Custom Note',
+        kind: 'document',
+        content: 'Preserve this custom document.',
+        createdAt: customCreatedAt,
+        modifiedAt: customCreatedAt,
+      };
+      const importedDocument: VfsNode = {
+        id: 'document-imported',
+        parentId: 'system-disk',
+        name: 'Imported Note',
+        kind: 'document',
+        content: 'Preserve this import.',
+        iconPosition: { x: 211, y: 137 },
+        createdAt: importedCreatedAt,
+        modifiedAt: importedCreatedAt,
+      };
+
+      for (const id of canonicalIds) {
+        const node = saved.nodes.find((candidate) => candidate.id === id);
+        if (!node) throw new Error(`Missing canonical fixture ${id}.`);
+        node.createdAt = '1989-01-24T09:00:00.000Z';
+        node.modifiedAt = builtInModifiedAt;
+      }
+      systemFolder.parentId = 'desktop';
+      systemFolder.name = 'Moved System Folder';
+      systemFolder.iconPosition = { x: 173, y: 119 };
+      welcome.content = 'Preserve this built-in content.';
+      desktop.createdAt = desktopCreatedAt;
+      saved.nodes.push(applicationsCopy, customDocument, importedDocument);
+
+      const canonicalNodesBeforeNormalization = new Map(
+        canonicalIds.map((id) => {
+          const node = saved.nodes.find((candidate) => candidate.id === id);
+          if (!node) throw new Error(`Missing canonical fixture ${id}.`);
+          return [
+            id,
+            {
+              ...node,
+              ...(node.iconPosition ? { iconPosition: { ...node.iconPosition } } : {}),
+            },
+          ] as const;
+        }),
+      );
 
       const normalized = sanitizeState({ ...saved, schemaVersion });
 
-      expect(normalized.nodes.find((node) => node.id === 'system-disk')?.createdAt).toBe(
-        SYSTEM_DISK_CREATED_AT,
+      for (const id of canonicalIds) {
+        expect(normalized.nodes.find((node) => node.id === id)).toEqual({
+          ...canonicalNodesBeforeNormalization.get(id),
+          createdAt: id === 'system-disk' ? SYSTEM_DISK_CREATED_AT : BUILT_IN_ITEM_CREATED_AT,
+        });
+      }
+      expect(normalized.nodes.find((node) => node.id === applicationsCopy.id)).toMatchObject({
+        createdAt: duplicateCreatedAt,
+        modifiedAt: duplicateCreatedAt,
+      });
+      expect(normalized.nodes.find((node) => node.id === customDocument.id)).toEqual(
+        customDocument,
       );
-      expect(normalized.nodes.find((node) => node.id === 'welcome')?.createdAt).toBe(
-        '2026-07-30T18:45:00.000Z',
+      expect(normalized.nodes.find((node) => node.id === importedDocument.id)).toEqual(
+        importedDocument,
       );
+      expect(normalized.nodes.find((node) => node.id === 'desktop')?.createdAt).toBe(
+        desktopCreatedAt,
+      );
+      expect(canonicalCreatedAtForNodeId(applicationsCopy.id)).toBeNull();
     },
   );
 

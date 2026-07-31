@@ -8,13 +8,13 @@ import {
   type ReactNode,
 } from 'react';
 
-import type { VfsNode } from '../../shared/state';
+import { canonicalCreatedAtForNodeId, type VfsNode } from '../../shared/state';
 import { beginPointerDrag, updatePointerDrag, type PointerDragIntent } from '../model/pointer-drag';
 import { PixelIcon } from './PixelIcon';
 
 export const formatInfoCreatedDate = (node: VfsNode): string => {
   const date = new Date(node.createdAt);
-  if (node.id === 'system-disk') {
+  if (canonicalCreatedAtForNodeId(node.id)) {
     return `${date.getUTCMonth() + 1}/${date.getUTCDate()}/${date.getUTCFullYear()}`;
   }
   return date.toLocaleDateString();
