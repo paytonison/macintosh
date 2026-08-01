@@ -1158,6 +1158,7 @@ html.is-item-dragging *,
   border-left: 1px solid #000;
   font-size: 8px;
   line-height: 9px;
+  pointer-events: none;
   text-indent: 3px;
 }
 
@@ -1200,6 +1201,29 @@ html.is-item-dragging *,
   height: 5px;
   border-top: 0;
   border-right: 0;
+}
+
+.write-ruler-marker-preview {
+  pointer-events: none;
+}
+
+.write-ruler-marker.is-tab.is-removal-preview {
+  border: 1px solid #000;
+  background-color: #fff;
+  background-image: var(--mac-pattern-50);
+}
+
+.write-ruler-mixed-indicator {
+  position: absolute;
+  z-index: 4;
+  top: 2px;
+  right: 4px;
+  width: 12px;
+  height: 7px;
+  border: 1px solid #000;
+  background-color: #fff;
+  background-image: var(--mac-pattern-50);
+  pointer-events: none;
 }
 
 .write-document-viewport {
@@ -1248,6 +1272,8 @@ html.is-item-dragging *,
   min-height: 648px;
   outline: 0;
   color: #000;
+  font-family: Helvetica, Arial, sans-serif;
+  font-size: 12px;
   caret-color: #000;
   cursor: text;
   user-select: text;
@@ -1262,21 +1288,60 @@ html.is-item-dragging *,
   padding: 0;
 }
 
-.write-editor-layer [data-font-family='serif'] {
+.write-editor-layer [data-write-paragraph][data-font-family='serif'],
+.write-editor-layer [data-write-font-family='serif'] {
   font-family: 'Times New Roman', Times, serif;
 }
 
-.write-editor-layer [data-font-family='sans'] {
-  font-family: Geneva, Arial, sans-serif;
+.write-editor-layer [data-write-paragraph][data-font-family='sans'],
+.write-editor-layer [data-write-font-family='sans'] {
+  font-family: Helvetica, Arial, sans-serif;
 }
 
-.write-editor-layer [data-font-family='mono'] {
+.write-editor-layer [data-write-paragraph][data-font-family='mono'],
+.write-editor-layer [data-write-font-family='mono'] {
   font-family: Monaco, 'Courier New', monospace;
+}
+
+.write-editor-layer [data-write-paragraph][data-font-size='9'],
+.write-editor-layer [data-write-font-size='9'] {
+  font-size: 9px;
+}
+
+.write-editor-layer [data-write-paragraph][data-font-size='10'],
+.write-editor-layer [data-write-font-size='10'] {
+  font-size: 10px;
+}
+
+.write-editor-layer [data-write-paragraph][data-font-size='12'],
+.write-editor-layer [data-write-font-size='12'] {
+  font-size: 12px;
+}
+
+.write-editor-layer [data-write-paragraph][data-font-size='14'],
+.write-editor-layer [data-write-font-size='14'] {
+  font-size: 14px;
+}
+
+.write-editor-layer [data-write-paragraph][data-font-size='18'],
+.write-editor-layer [data-write-font-size='18'] {
+  font-size: 18px;
+}
+
+.write-editor-layer [data-write-paragraph][data-font-size='24'],
+.write-editor-layer [data-write-font-size='24'] {
+  font-size: 24px;
 }
 
 .write-underline {
   text-decoration: underline;
   text-decoration-thickness: 1px;
+}
+
+.write-editor-layer .ProseMirror::selection,
+.write-editor-layer .ProseMirror *::selection {
+  color: #fff;
+  background: #000;
 }
 
 .write-tab {

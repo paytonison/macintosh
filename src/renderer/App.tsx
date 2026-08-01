@@ -20,7 +20,6 @@ import { mergePresentation, projectPresentation } from '../shared/presentation';
 import {
   createDefaultWriteParagraphStyle,
   documentPayloadEqual,
-  reconcileCommittedDocument,
   type DocumentPayload,
 } from '../shared/write';
 import {
@@ -51,16 +50,26 @@ import { StartupScreen } from './components/StartupScreen';
 import { SystemDiskDragPreview } from './components/SystemDiskDragPreview';
 import { VfsItemDragPreview } from './components/VfsItemDragPreview';
 import { UnsavedChangesDialog, VirtualFileDialog } from './components/WriteDialogs';
-import type {
-  WriteEditorCommand,
-  WriteEditorContext,
-  WriteEditorHandle,
-} from './components/WriteEditor';
-import { WriteWindow, type WriteWindowState } from './components/WriteWindow';
 import {
+  WriteLayoutConvergenceError,
+  type WriteEditorCommand,
+  type WriteEditorContext,
+  type WriteEditorHandle,
+} from './components/WriteEditor';
+import {
+  WriteWindow,
+  WriteWindowAnimationShadow,
+  type WriteWindowAnimation,
+  type WriteWindowState,
+} from './components/WriteWindow';
+import type { WriteSaveQueue, VersionedWriteSnapshot } from './model/write-save-queue';
+import { createWriteSaveQueue } from './model/write-save-queue';
+import {
+  commandShortcut,
   deriveFinderCommandContext,
   finderCommandDestinationId,
   findMenuShortcutEntry,
+  hasOpenDocumentInTrash,
 } from './model/command-context';
 import { resolveDesktopIconPosition, translateDesktopIconDrag } from './model/desktop-icon-layout';
 import { isTrashDropPoint } from './model/desktop-drop-target';
@@ -70,18 +79,31 @@ import {
   resolveIconDragPreviewPosition,
   type IconDragPreviewItem,
 } from './model/icon-drag-preview';
-import { resolveKeyboardOwner } from './model/input-owner';
+import {
+  activeApplicationAfterTarget,
+  finderOrdinaryWindowId,
+  raiseOrdinaryWindow,
+  reconcileOrdinaryWindowOrder,
+  resolveKeyboardOwner,
+  writeOrdinaryWindowId,
+  type ActiveApplication,
+  type ActiveTarget,
+  type KeyboardOwner,
+  type OrdinaryWindowId,
+} from './model/input-owner';
 import type { VfsItemDragContext } from './model/vfs-drag';
+import {
+  applyWriteCommittedSnapshot,
+  applyWriteDraftPayload,
+  canFinalizeWriteClose,
+  type WriteCloseAuthorization,
+} from './model/write-session-state';
 
 type SpecialDesktopIconId = 'system-disk' | 'trash';
 type DialogState =
   { type: 'about' } | { type: 'info'; node: VfsNode } | { type: 'eject-tip' } | null;
 type TransferNotice = { message: string; error: boolean } | null;
 type WindowAnimationSource = HTMLElement | null;
-type ActiveOwner =
-  | { type: 'finder'; id: string | null }
-  | { type: 'write'; id: string }
-  | { type: 'calculator'; id: 'calculator' };
 type WriteFileDialogState =
   | { type: 'open' }
   | { type: 'save-as'; windowId: string; after: 'none' | 'close' | 'quit' | 'eject' }
@@ -94,6 +116,44 @@ type PendingWriteClose = {
 } | null;
 type WriteExitIntent = { type: 'normal-quit' } | { type: 'eject'; diskOrigin: Point } | null;
 
+interface CommittedWriteDocument {
+  documentId: string;
+  title: string;
+  payload: DocumentPayload;
+}
+
+interface WriteSaveBinding {
+  documentId: string;
+  queue: WriteSaveQueue<DocumentPayload, CommittedWriteDocument>;
+  token: object;
+}
+
+const committedWriteDocumentFromResult = (
+  result: VfsMutationResult,
+  documentId: string,
+  expectedPayload: DocumentPayload,
+): CommittedWriteDocument => {
+  if (
+    !result.affectedIds.includes(documentId) ||
+    result.skippedCount > 0 ||
+    result.truncatedCount > 0
+  ) {
+    throw new Error('The virtual disk could not store the complete document.');
+  }
+  const savedNode = result.state.nodes.find((node) => node.id === documentId);
+  if (!savedNode || savedNode.kind !== 'document' || !savedNode.payload) {
+    throw new Error('The saved document was not returned by the virtual disk.');
+  }
+  if (!documentPayloadEqual(savedNode.payload, expectedPayload)) {
+    throw new Error('The virtual disk did not return the exact saved document.');
+  }
+  return {
+    documentId: savedNode.id,
+    title: savedNode.name,
+    payload: savedNode.payload,
+  };
+};
+
 const defaultWriteContext = (): WriteEditorContext => ({
   style: {
     ...createDefaultWriteParagraphStyle(),
@@ -104,6 +164,7 @@ const defaultWriteContext = (): WriteEditorContext => ({
   canUndo: false,
   canRedo: false,
   canFormat: true,
+  canClear: false,
 });
 
 const pause = (milliseconds: number): Promise<void> =>
@@ -150,7 +211,7 @@ const desktopPlacementFrom = (
 
 const resolveWindowAnimationOrigin = (
   source: WindowAnimationSource,
-  windowState: FinderWindowState,
+  windowState: WindowGeometry,
 ): Point => {
   const surfaceBounds = source?.closest<HTMLElement>('.desktop-surface')?.getBoundingClientRect();
   const sourceBounds = source?.getBoundingClientRect();
@@ -167,7 +228,33 @@ const resolveWindowAnimationOrigin = (
 
 const findNodeAnimationSource = (nodeId: string): HTMLElement | null =>
   [...document.querySelectorAll<HTMLElement>('[data-vfs-node-id], [data-vfs-item]')].find(
-    (element) => element.dataset.vfsNodeId === nodeId || element.dataset.vfsItem === nodeId,
+    (element) => {
+      if (element.dataset.vfsNodeId !== nodeId && element.dataset.vfsItem !== nodeId) return false;
+      const surface = element.closest<HTMLElement>('.desktop-surface');
+      if (!surface) return false;
+      const bounds = element.getBoundingClientRect();
+      const surfaceBounds = surface.getBoundingClientRect();
+      if (
+        bounds.width <= 0 ||
+        bounds.height <= 0 ||
+        bounds.right <= surfaceBounds.left ||
+        bounds.left >= surfaceBounds.right ||
+        bounds.bottom <= surfaceBounds.top ||
+        bounds.top >= surfaceBounds.bottom
+      ) {
+        return false;
+      }
+      const centerX = Math.max(
+        surfaceBounds.left,
+        Math.min(surfaceBounds.right - 1, bounds.left + bounds.width / 2),
+      );
+      const centerY = Math.max(
+        surfaceBounds.top,
+        Math.min(surfaceBounds.bottom - 1, bounds.top + bounds.height / 2),
+      );
+      const hit = document.elementFromPoint(centerX, centerY);
+      return hit !== null && element.contains(hit);
+    },
   ) ?? null;
 
 const previewUsesSolidDesktopShadow = (item: IconDragPreviewItem, pointer: Point): boolean => {
@@ -216,10 +303,16 @@ export default function App() {
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [writeWindows, setWriteWindows] = useState<WriteWindowState[]>([]);
   const [writeContexts, setWriteContexts] = useState<Record<string, WriteEditorContext>>({});
-  const [activeOwner, setActiveOwner] = useState<ActiveOwner>({ type: 'finder', id: null });
+  const [activeApplication, setActiveApplication] = useState<ActiveApplication>({
+    type: 'finder',
+    windowId: null,
+  });
+  const [activeTarget, setActiveTarget] = useState<ActiveTarget>({ type: 'desktop' });
+  const [ordinaryWindowOrder, setOrdinaryWindowOrder] = useState<OrdinaryWindowId[]>([]);
   const [writeFileDialog, setWriteFileDialog] = useState<WriteFileDialogState>(null);
-  const [pendingWriteClose, setPendingWriteClose] = useState<PendingWriteClose>(null);
-  const [writeSaving, setWriteSaving] = useState(false);
+  const [pendingWriteClose, setPendingWriteCloseState] = useState<PendingWriteClose>(null);
+  const [writeSavingIds, setWriteSavingIds] = useState<Set<string>>(() => new Set());
+  const [writeLayoutErrors, setWriteLayoutErrors] = useState<Record<string, string | null>>({});
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [pointerSessionActive, setPointerSessionActive] = useState(false);
   const [interactionCancelToken, setInteractionCancelToken] = useState(0);
@@ -229,9 +322,14 @@ export default function App() {
   const [windowAnimations, setWindowAnimations] = useState<Record<string, FinderWindowAnimation>>(
     {},
   );
+  const [writeWindowAnimations, setWriteWindowAnimations] = useState<
+    Record<string, WriteWindowAnimation>
+  >({});
   const windowAnimationsRef = useRef<Record<string, FinderWindowAnimation>>({});
+  const writeWindowAnimationsRef = useRef<Record<string, WriteWindowAnimation>>({});
+  const writeCloseAuthorizations = useRef<Map<string, WriteCloseAuthorization>>(new Map());
   const windowAnimationToken = useRef(0);
-  const calculatorReturnOwner = useRef<ActiveOwner>({ type: 'finder', id: null });
+  const calculatorReturnTarget = useRef<ActiveTarget>({ type: 'desktop' });
   const dragOrigins = useRef<Partial<Record<SpecialDesktopIconId, Point>>>({});
   const systemDiskDragPreviewItemRef = useRef<IconDragPreviewItem | null>(null);
   const vfsItemDrag = useRef<VfsItemDragContext | null>(null);
@@ -242,11 +340,18 @@ export default function App() {
   const writeZoomRestore = useRef<Map<string, WindowGeometry>>(new Map());
   const writeWindowsRef = useRef<WriteWindowState[]>([]);
   const writeEditors = useRef<Map<string, WriteEditorHandle>>(new Map());
-  const writeSaveInFlight = useRef(false);
+  const writeSaveQueues = useRef<Map<string, WriteSaveBinding>>(new Map());
+  const writeSaveAsOperations = useRef<Map<string, Promise<boolean>>>(new Map());
+  const writeSavingCounts = useRef<Map<string, number>>(new Map());
+  const writeSavingIdsRef = useRef<Set<string>>(new Set());
   const untitledCounter = useRef(0);
   const quitWriteQueue = useRef<string[]>([]);
   const quitWriteTotal = useRef(0);
   const writeExitIntent = useRef<WriteExitIntent>(null);
+  const pendingWriteCloseRef = useRef<PendingWriteClose>(null);
+  const continueQuitReviewRef = useRef<() => void>(() => undefined);
+  const activeTargetRef = useRef<ActiveTarget>(activeTarget);
+  const keyboardOwnerRef = useRef<KeyboardOwner>('desktop');
   const stateRef = useRef<MacintoshState | null>(null);
   const selectionEpoch = useRef(0);
   const clipboardNodeIds = useRef<string[]>([]);
@@ -256,6 +361,22 @@ export default function App() {
   const hydrated = useRef(false);
   const pointerSessionActiveRef = useRef(false);
   const clock = useClock();
+
+  const activateTarget = useCallback((target: ActiveTarget): void => {
+    activeTargetRef.current = target;
+    setActiveTarget(target);
+    setActiveApplication((current) => activeApplicationAfterTarget(current, target));
+    setOrdinaryWindowOrder((current) => raiseOrdinaryWindow(current, target));
+  }, []);
+
+  useLayoutEffect(() => {
+    activeTargetRef.current = activeTarget;
+  }, [activeTarget]);
+
+  const setPendingWriteClose = useCallback((next: PendingWriteClose): void => {
+    pendingWriteCloseRef.current = next;
+    setPendingWriteCloseState(next);
+  }, []);
 
   const setPointerInteractionActive = useCallback((active: boolean): void => {
     pointerSessionActiveRef.current = active;
@@ -310,6 +431,10 @@ export default function App() {
   useLayoutEffect(() => {
     windowAnimationsRef.current = windowAnimations;
   }, [windowAnimations]);
+
+  useLayoutEffect(() => {
+    writeWindowAnimationsRef.current = writeWindowAnimations;
+  }, [writeWindowAnimations]);
 
   useEffect(() => {
     if (!state) return;
@@ -439,7 +564,14 @@ export default function App() {
         if (cancelled) return;
         hydrated.current = true;
         replaceState(loaded);
-        setActiveOwner({ type: 'finder', id: loaded.desktop.windows.at(-1)?.id ?? null });
+        const finderWindowId = loaded.desktop.windows.at(-1)?.id ?? null;
+        setActiveApplication({ type: 'finder', windowId: finderWindowId });
+        setActiveTarget(
+          finderWindowId ? { type: 'finder-window', id: finderWindowId } : { type: 'desktop' },
+        );
+        setOrdinaryWindowOrder(
+          loaded.desktop.windows.map((windowState) => finderOrdinaryWindowId(windowState.id)),
+        );
         document.body.dataset.stateLoaded = 'true';
       })
       .catch((error: unknown) => {
@@ -448,7 +580,14 @@ export default function App() {
         hydrated.current = true;
         const fallback = createDefaultState();
         replaceState(fallback);
-        setActiveOwner({ type: 'finder', id: fallback.desktop.windows.at(-1)?.id ?? null });
+        const finderWindowId = fallback.desktop.windows.at(-1)?.id ?? null;
+        setActiveApplication({ type: 'finder', windowId: finderWindowId });
+        setActiveTarget(
+          finderWindowId ? { type: 'finder-window', id: finderWindowId } : { type: 'desktop' },
+        );
+        setOrdinaryWindowOrder(
+          fallback.desktop.windows.map((windowState) => finderOrdinaryWindowId(windowState.id)),
+        );
         reportPersistenceError('The saved desktop could not be read. A fresh desktop was opened.');
         document.body.dataset.stateLoaded = 'false';
       });
@@ -478,7 +617,8 @@ export default function App() {
     document.body.dataset.macReady = ready ? 'true' : 'false';
   }, [ready]);
 
-  const activeFinderWindowId = activeOwner.type === 'finder' ? activeOwner.id : null;
+  const activeFinderWindowId =
+    activeApplication.type === 'finder' ? activeApplication.windowId : null;
   const finderCommandContext = useMemo(
     () => deriveFinderCommandContext(state, finderSelection, activeFinderWindowId),
     [activeFinderWindowId, finderSelection, state],
@@ -487,6 +627,15 @@ export default function App() {
     () => (state ? listChildren(state.nodes, 'desktop', 'icons') : []),
     [state],
   );
+  const renderedOrdinaryWindowOrder = useMemo(() => {
+    if (!state) return ordinaryWindowOrder;
+    const validWindowIds: OrdinaryWindowId[] = [
+      ...state.desktop.windows.map((windowState) => finderOrdinaryWindowId(windowState.id)),
+      ...writeWindows.map((windowState) => writeOrdinaryWindowId(windowState.id)),
+      ...(calculatorOpen ? (['calculator'] as const) : []),
+    ];
+    return reconcileOrdinaryWindowOrder(ordinaryWindowOrder, validWindowIds);
+  }, [calculatorOpen, ordinaryWindowOrder, state, writeWindows]);
   const { activeWindow, activeNode, visibleSelection } = finderCommandContext;
   const copyableFinderSelectionIds = useMemo(
     () =>
@@ -502,10 +651,11 @@ export default function App() {
     ejectionInProgress: ejecting,
     pointerSessionActive,
     menuOpen: openMenu !== null,
-    writeWindowOpen: activeOwner.type === 'write',
-    calculatorOpen: calculatorOpen && activeOwner.type === 'calculator',
-    finderWindowOpen: activeWindow !== null && activeOwner.type === 'finder',
+    activeTarget,
   });
+  useLayoutEffect(() => {
+    keyboardOwnerRef.current = keyboardOwner;
+  }, [keyboardOwner]);
   const systemInputBlocked =
     keyboardOwner === 'persistence-alert' ||
     keyboardOwner === 'normal-quit' ||
@@ -530,6 +680,29 @@ export default function App() {
     [],
   );
 
+  const beginWriteSaving = useCallback((windowId: string): void => {
+    const nextCount = (writeSavingCounts.current.get(windowId) ?? 0) + 1;
+    writeSavingCounts.current.set(windowId, nextCount);
+    if (nextCount !== 1) return;
+    const nextIds = new Set(writeSavingIdsRef.current);
+    nextIds.add(windowId);
+    writeSavingIdsRef.current = nextIds;
+    setWriteSavingIds(nextIds);
+  }, []);
+
+  const finishWriteSaving = useCallback((windowId: string): void => {
+    const nextCount = Math.max(0, (writeSavingCounts.current.get(windowId) ?? 0) - 1);
+    if (nextCount > 0) {
+      writeSavingCounts.current.set(windowId, nextCount);
+      return;
+    }
+    writeSavingCounts.current.delete(windowId);
+    const nextIds = new Set(writeSavingIdsRef.current);
+    nextIds.delete(windowId);
+    writeSavingIdsRef.current = nextIds;
+    setWriteSavingIds(nextIds);
+  }, []);
+
   const activateWriteWindow = useCallback(
     (windowId: string): void => {
       replaceWriteWindows((current) => {
@@ -538,43 +711,64 @@ export default function App() {
           ? [...current.filter((item) => item.id !== windowId), target]
           : current;
       });
-      setActiveOwner({ type: 'write', id: windowId });
+      activateTarget({ type: 'write-window', id: windowId });
       setDesktopSelection(new Set());
       setFinderSelection(new Set());
     },
-    [replaceWriteWindows, setDesktopSelection, setFinderSelection],
+    [activateTarget, replaceWriteWindows, setDesktopSelection, setFinderSelection],
   );
 
-  const newWriteDocument = useCallback((): void => {
-    untitledCounter.current += 1;
-    const id = `write-untitled-${Date.now().toString(36)}-${untitledCounter.current}`;
-    const surface = document.querySelector<HTMLElement>('.desktop-surface');
-    const surfaceWidth = surface?.clientWidth ?? window.innerWidth;
-    const surfaceHeight = surface?.clientHeight ?? window.innerHeight - 22;
-    const cascade = writeWindowsRef.current.length % 5;
-    const payload: DocumentPayload = { format: 'plain-text', text: '' };
-    const geometry = initialWriteWindowGeometry(surfaceWidth, surfaceHeight, cascade);
-    const windowState: WriteWindowState = {
-      id,
-      documentId: null,
-      title: 'Untitled',
-      draft: payload,
-      saved: payload,
-      dirty: false,
-      zoom: 75,
-      pageNumber: 1,
-      pageCount: 1,
-      ...geometry,
-    };
-    replaceWriteWindows((current) => [...current, windowState]);
-    setWriteContexts((current) => ({ ...current, [id]: defaultWriteContext() }));
-    setActiveOwner({ type: 'write', id });
-  }, [replaceWriteWindows]);
+  const newWriteDocument = useCallback(
+    (source: WindowAnimationSource = null): void => {
+      untitledCounter.current += 1;
+      const id = `write-untitled-${Date.now().toString(36)}-${untitledCounter.current}`;
+      const surface = document.querySelector<HTMLElement>('.desktop-surface');
+      const surfaceWidth = surface?.clientWidth ?? window.innerWidth;
+      const surfaceHeight = surface?.clientHeight ?? window.innerHeight - 22;
+      const cascade = writeWindowsRef.current.length % 5;
+      const payload: DocumentPayload = { format: 'plain-text', text: '' };
+      const geometry = initialWriteWindowGeometry(surfaceWidth, surfaceHeight, cascade);
+      const windowState: WriteWindowState = {
+        id,
+        documentId: null,
+        title: 'Untitled',
+        draft: payload,
+        saved: payload,
+        generation: 0,
+        dirty: false,
+        zoom: 75,
+        pageNumber: 1,
+        pageCount: 1,
+        ...geometry,
+      };
+      const nextAnimations = {
+        ...writeWindowAnimationsRef.current,
+        [id]: {
+          phase: 'opening',
+          origin: resolveWindowAnimationOrigin(source, windowState),
+          token: (windowAnimationToken.current += 1),
+        } satisfies WriteWindowAnimation,
+      };
+      writeWindowAnimationsRef.current = nextAnimations;
+      setWriteWindowAnimations(nextAnimations);
+      replaceWriteWindows((current) => [...current, windowState]);
+      setWriteContexts((current) => ({ ...current, [id]: defaultWriteContext() }));
+      activateTarget({ type: 'write-window', id });
+    },
+    [activateTarget, replaceWriteWindows],
+  );
 
   const openWriteDocument = useCallback(
-    (documentId: string): void => {
+    (documentId: string, source: WindowAnimationSource = null): void => {
       const existing = writeWindowsRef.current.find((item) => item.documentId === documentId);
       if (existing) {
+        if (writeWindowAnimationsRef.current[existing.id]?.phase === 'closing') {
+          const nextAnimations = { ...writeWindowAnimationsRef.current };
+          delete nextAnimations[existing.id];
+          writeWindowAnimationsRef.current = nextAnimations;
+          setWriteWindowAnimations(nextAnimations);
+          writeCloseAuthorizations.current.delete(existing.id);
+        }
         activateWriteWindow(existing.id);
         return;
       }
@@ -592,43 +786,193 @@ export default function App() {
         title: node.name,
         draft: node.payload,
         saved: node.payload,
+        generation: 0,
         dirty: false,
         zoom: 75,
         pageNumber: 1,
         pageCount: 1,
         ...geometry,
       };
+      const nextAnimations = {
+        ...writeWindowAnimationsRef.current,
+        [id]: {
+          phase: 'opening',
+          origin: resolveWindowAnimationOrigin(source, windowState),
+          token: (windowAnimationToken.current += 1),
+        } satisfies WriteWindowAnimation,
+      };
+      writeWindowAnimationsRef.current = nextAnimations;
+      setWriteWindowAnimations(nextAnimations);
       replaceWriteWindows((current) => [...current, windowState]);
       setWriteContexts((current) => ({ ...current, [id]: defaultWriteContext() }));
-      setActiveOwner({ type: 'write', id });
+      activateTarget({ type: 'write-window', id });
       setDesktopSelection(new Set());
       setFinderSelection(new Set());
     },
-    [activateWriteWindow, replaceWriteWindows, setDesktopSelection, setFinderSelection],
+    [
+      activateTarget,
+      activateWriteWindow,
+      replaceWriteWindows,
+      setDesktopSelection,
+      setFinderSelection,
+    ],
   );
 
-  const removeWriteWindow = useCallback(
+  const finalizeWriteWindowRemoval = useCallback(
     (windowId: string): void => {
       writeZoomRestore.current.delete(windowId);
       writeEditors.current.delete(windowId);
-      replaceWriteWindows((current) => current.filter((item) => item.id !== windowId));
+      writeSaveQueues.current.delete(windowId);
+      writeSaveAsOperations.current.delete(windowId);
+      writeCloseAuthorizations.current.delete(windowId);
+      if (pendingWriteCloseRef.current?.windowId === windowId) setPendingWriteClose(null);
+      setWriteFileDialog((current) =>
+        current?.type === 'save-as' && current.windowId === windowId ? null : current,
+      );
+      writeSavingCounts.current.delete(windowId);
+      if (writeSavingIdsRef.current.has(windowId)) {
+        const nextSavingIds = new Set(writeSavingIdsRef.current);
+        nextSavingIds.delete(windowId);
+        writeSavingIdsRef.current = nextSavingIds;
+        setWriteSavingIds(nextSavingIds);
+      }
+      const nextAnimations = { ...writeWindowAnimationsRef.current };
+      delete nextAnimations[windowId];
+      writeWindowAnimationsRef.current = nextAnimations;
+      setWriteWindowAnimations(nextAnimations);
+      const remaining = writeWindowsRef.current.filter((item) => item.id !== windowId);
+      replaceWriteWindows(() => remaining);
       setWriteContexts((current) => {
         const next = { ...current };
         delete next[windowId];
         return next;
       });
-      const remaining = writeWindowsRef.current.filter((item) => item.id !== windowId);
-      if (remaining.length > 0) {
-        setActiveOwner({ type: 'write', id: remaining.at(-1)!.id });
-      } else {
-        setActiveOwner({
-          type: 'finder',
-          id: stateRef.current?.desktop.windows.at(-1)?.id ?? null,
-        });
+      setWriteLayoutErrors((current) => {
+        if (!(windowId in current)) return current;
+        const next = { ...current };
+        delete next[windowId];
+        return next;
+      });
+      const nextWriteWindowId = remaining.at(-1)?.id ?? null;
+      const finderWindowId = stateRef.current?.desktop.windows.at(-1)?.id ?? null;
+      const fallbackTarget: ActiveTarget = nextWriteWindowId
+        ? { type: 'write-window', id: nextWriteWindowId }
+        : finderWindowId
+          ? { type: 'finder-window', id: finderWindowId }
+          : { type: 'desktop' };
+      const removedOwnedTarget =
+        activeTarget.type === 'write-window' && activeTarget.id === windowId;
+      setActiveApplication((current) =>
+        current.type === 'write' && current.windowId === windowId
+          ? activeApplicationAfterTarget(current, fallbackTarget)
+          : current,
+      );
+      setActiveTarget((current) =>
+        current.type === 'write-window' && current.id === windowId ? fallbackTarget : current,
+      );
+      setOrdinaryWindowOrder((current) => {
+        const withoutRemoved = current.filter(
+          (candidate) => candidate !== writeOrdinaryWindowId(windowId),
+        );
+        return removedOwnedTarget
+          ? raiseOrdinaryWindow(withoutRemoved, fallbackTarget)
+          : withoutRemoved;
+      });
+      if (
+        calculatorReturnTarget.current.type === 'write-window' &&
+        calculatorReturnTarget.current.id === windowId
+      ) {
+        calculatorReturnTarget.current = fallbackTarget;
       }
     },
-    [replaceWriteWindows],
+    [activeTarget, replaceWriteWindows, setPendingWriteClose],
   );
+
+  const removeWriteWindow = useCallback((windowId: string, discard = false): void => {
+    const target = writeWindowsRef.current.find((item) => item.id === windowId);
+    if (!target || writeWindowAnimationsRef.current[windowId]?.phase === 'closing') return;
+    const source = target.documentId ? findNodeAnimationSource(target.documentId) : null;
+    const token = (windowAnimationToken.current += 1);
+    const nextAnimations = {
+      ...writeWindowAnimationsRef.current,
+      [windowId]: {
+        phase: 'closing',
+        origin: resolveWindowAnimationOrigin(source, target),
+        token,
+      } satisfies WriteWindowAnimation,
+    };
+    writeCloseAuthorizations.current.set(windowId, {
+      token,
+      generation: target.generation,
+      discard,
+    });
+    writeWindowAnimationsRef.current = nextAnimations;
+    setWriteWindowAnimations(nextAnimations);
+  }, []);
+
+  const finishWriteWindowAnimation = useCallback(
+    (windowId: string, phase: WriteWindowAnimation['phase'], token: number): void => {
+      const activeAnimation = writeWindowAnimationsRef.current[windowId];
+      if (activeAnimation?.phase !== phase || activeAnimation.token !== token) return;
+      const nextAnimations = { ...writeWindowAnimationsRef.current };
+      delete nextAnimations[windowId];
+      writeWindowAnimationsRef.current = nextAnimations;
+      setWriteWindowAnimations(nextAnimations);
+      if (phase === 'closing') {
+        const target = writeWindowsRef.current.find((item) => item.id === windowId);
+        const authorization = writeCloseAuthorizations.current.get(windowId);
+        const pendingReview = pendingWriteCloseRef.current;
+        writeCloseAuthorizations.current.delete(windowId);
+        if (target && !canFinalizeWriteClose(target, authorization, token)) {
+          if (writeExitIntent.current) {
+            const alreadyTracked =
+              pendingReview?.windowId === windowId || quitWriteQueue.current.includes(windowId);
+            if (!alreadyTracked) {
+              quitWriteQueue.current.push(windowId);
+              quitWriteTotal.current += 1;
+            }
+            if (!pendingReview) continueQuitReviewRef.current();
+          } else if (!pendingReview) {
+            setPendingWriteClose({ windowId, reason: 'close', position: 1, total: 1 });
+          }
+          if (pendingReview) {
+            activateTarget({ type: 'write-window', id: pendingReview.windowId });
+          } else if (!writeExitIntent.current) {
+            activateTarget({ type: 'write-window', id: windowId });
+          }
+          return;
+        }
+        finalizeWriteWindowRemoval(windowId);
+        if (
+          pendingReview?.windowId === windowId &&
+          pendingReview.reason !== 'close' &&
+          writeExitIntent.current
+        ) {
+          continueQuitReviewRef.current();
+        }
+      }
+    },
+    [activateTarget, finalizeWriteWindowRemoval, setPendingWriteClose],
+  );
+
+  const cancelDirtyWriteCloseAnimations = useCallback((): void => {
+    const dirtyWindowIds = new Set(
+      writeWindowsRef.current
+        .filter((item) => item.dirty || writeSavingIdsRef.current.has(item.id))
+        .map((item) => item.id),
+    );
+    const nextAnimations = { ...writeWindowAnimationsRef.current };
+    let changed = false;
+    for (const [windowId, animation] of Object.entries(nextAnimations)) {
+      if (animation.phase !== 'closing' || !dirtyWindowIds.has(windowId)) continue;
+      delete nextAnimations[windowId];
+      writeCloseAuthorizations.current.delete(windowId);
+      changed = true;
+    }
+    if (!changed) return;
+    writeWindowAnimationsRef.current = nextAnimations;
+    setWriteWindowAnimations(nextAnimations);
+  }, []);
 
   const mutateWriteDocument = useCallback(
     async (command: VfsCommand): Promise<VfsMutationResult> => {
@@ -646,58 +990,118 @@ export default function App() {
     [replaceState],
   );
 
+  const capturePreparedWriteSnapshot = useCallback(
+    async (
+      windowId: string,
+      expectedDocumentId: string | null,
+    ): Promise<VersionedWriteSnapshot<DocumentPayload>> => {
+      const editor = writeEditors.current.get(windowId);
+      if (!editor) throw new Error('The Write editor is not available.');
+      const preparedPayload = await editor.prepareSave();
+      const latest = writeWindowsRef.current.find((item) => item.id === windowId);
+      if (!latest || latest.documentId !== expectedDocumentId) {
+        throw new Error('The Write document changed while its save was being prepared.');
+      }
+
+      let snapshot: VersionedWriteSnapshot<DocumentPayload> | null = null;
+      replaceWriteWindows((current) =>
+        current.map((item) => {
+          if (item.id !== windowId) return item;
+          if (item.documentId !== expectedDocumentId) return item;
+          const next = applyWriteDraftPayload(item, preparedPayload);
+          snapshot = { generation: next.generation, value: preparedPayload };
+          return next;
+        }),
+      );
+      if (!snapshot) throw new Error('The Write document closed before it could be saved.');
+      return snapshot;
+    },
+    [replaceWriteWindows],
+  );
+
+  const writeSaveQueueFor = useCallback(
+    (
+      windowId: string,
+      documentId: string,
+      initialCommittedGeneration = 0,
+    ): WriteSaveQueue<DocumentPayload, CommittedWriteDocument> => {
+      const existing = writeSaveQueues.current.get(windowId);
+      if (existing?.documentId === documentId) return existing.queue;
+      if (existing?.queue.saving()) {
+        throw new Error('The Write document is already saving to another file.');
+      }
+
+      const token = {};
+      const queue = createWriteSaveQueue({
+        initialCommittedGeneration,
+        capture: () => capturePreparedWriteSnapshot(windowId, documentId),
+        commit: async (snapshot) => {
+          const result = await mutateWriteDocument({
+            type: 'update-document',
+            nodeId: documentId,
+            payload: snapshot.value,
+          });
+          return committedWriteDocumentFromResult(result, documentId, snapshot.value);
+        },
+        onCommitted: ({ result }) => {
+          const binding = writeSaveQueues.current.get(windowId);
+          if (binding?.token !== token || binding.documentId !== documentId) return;
+          replaceWriteWindows((current) =>
+            current.map((item) =>
+              item.id === windowId
+                ? applyWriteCommittedSnapshot(item, {
+                    documentId: result.documentId,
+                    title: result.title,
+                    payload: result.payload,
+                  })
+                : item,
+            ),
+          );
+        },
+      });
+      writeSaveQueues.current.set(windowId, { documentId, queue, token });
+      return queue;
+    },
+    [capturePreparedWriteSnapshot, mutateWriteDocument, replaceWriteWindows],
+  );
+
   const saveWriteDocument = useCallback(
     async (windowId: string): Promise<boolean> => {
+      if (writeWindowAnimationsRef.current[windowId]?.phase === 'closing') return false;
+      const saveAsOperation = writeSaveAsOperations.current.get(windowId);
+      if (saveAsOperation) {
+        const saved = await saveAsOperation;
+        const current = writeWindowsRef.current.find((item) => item.id === windowId);
+        return Boolean(saved && current && !current.dirty);
+      }
       const target = writeWindowsRef.current.find((item) => item.id === windowId);
       if (!target) return false;
       if (!target.documentId) {
         setWriteFileDialog({ type: 'save-as', windowId, after: 'none' });
         return false;
       }
-      if (writeSaveInFlight.current) return false;
-      writeSaveInFlight.current = true;
-      setWriteSaving(true);
+      const documentId = target.documentId;
+      const existingQueue = writeSaveQueues.current.get(windowId);
+      if (!target.dirty && !existingQueue?.queue.saving()) return true;
+      beginWriteSaving(windowId);
       try {
-        const result = await mutateWriteDocument({
-          type: 'update-document',
-          nodeId: target.documentId,
-          payload: target.draft,
-        });
-        if (
-          !result.affectedIds.includes(target.documentId) ||
-          result.skippedCount > 0 ||
-          result.truncatedCount > 0
-        ) {
-          throw new Error('The virtual disk could not store the complete document.');
-        }
-        const savedNode = result.state.nodes.find((node) => node.id === target.documentId);
-        if (!savedNode || savedNode.kind !== 'document' || !savedNode.payload) {
-          throw new Error('The saved document was not returned by the virtual disk.');
-        }
-        let currentDraftSaved = false;
-        replaceWriteWindows((current) =>
-          current.map((item) => {
-            if (item.id !== windowId) return item;
-            const reconciliation = reconcileCommittedDocument(item.draft, savedNode.payload!);
-            currentDraftSaved = !reconciliation.dirty;
-            return {
-              ...item,
-              ...reconciliation,
-              title: savedNode.name,
-            };
-          }),
-        );
-        return currentDraftSaved;
+        const queue = writeSaveQueueFor(windowId, documentId);
+        await queue.request(target.generation);
+        const current = writeWindowsRef.current.find((item) => item.id === windowId);
+        return Boolean(current && current.documentId === documentId && !current.dirty);
       } catch (error) {
         console.error(error);
-        reportPersistenceError(`“${target.title}” could not be saved.`);
+        reportPersistenceError(
+          error instanceof WriteLayoutConvergenceError
+            ? `“${target.title}” could not be saved because Write could not settle its page layout. Edit the document and try again.`
+            : `“${target.title}” could not be saved.`,
+        );
         return false;
       } finally {
-        writeSaveInFlight.current = false;
-        setWriteSaving(false);
+        finishWriteSaving(windowId);
       }
     },
-    [mutateWriteDocument, replaceWriteWindows, reportPersistenceError],
+    [beginWriteSaving, finishWriteSaving, reportPersistenceError, writeSaveQueueFor],
   );
 
   const clearSystemDiskDragPreview = useCallback((): void => {
@@ -764,6 +1168,26 @@ export default function App() {
     [automation, clearSystemDiskDragPreview, ejecting, reportPersistenceError, restoreIcon],
   );
 
+  const cancelWriteExitReview = useCallback((): void => {
+    const normalQuit = writeExitIntent.current?.type === 'normal-quit';
+    writeExitIntent.current = null;
+    quitWriteQueue.current = [];
+    quitWriteTotal.current = 0;
+    setPendingWriteClose(null);
+    setWriteFileDialog(null);
+    if (!normalQuit) return;
+    const current = stateRef.current;
+    if (current) {
+      void persistState(current).catch((error: unknown) => {
+        console.error(error);
+        reportPersistenceError('The desktop could not be saved.');
+      });
+    }
+    void window.macintosh.cancelNormalQuit().catch((error: unknown) => {
+      console.error('Could not cancel normal Quit:', error);
+    });
+  }, [persistState, reportPersistenceError, setPendingWriteClose]);
+
   const finalizeNormalQuit = useCallback((): void => {
     if (normalQuitFlush.current) return;
     writeExitIntent.current = null;
@@ -783,7 +1207,7 @@ export default function App() {
       }
     })();
     normalQuitFlush.current = flush;
-  }, [reportPersistenceError, setNormalQuitInteraction]);
+  }, [reportPersistenceError, setNormalQuitInteraction, setPendingWriteClose]);
 
   const continueQuitReview = useCallback((): void => {
     setPendingWriteClose(null);
@@ -792,7 +1216,7 @@ export default function App() {
     while (quitWriteQueue.current.length > 0) {
       const windowId = quitWriteQueue.current.shift()!;
       const target = writeWindowsRef.current.find((item) => item.id === windowId);
-      if (!target?.dirty) continue;
+      if (!target || (!target.dirty && !writeSavingIdsRef.current.has(windowId))) continue;
       const position = quitWriteTotal.current - quitWriteQueue.current.length;
       setPendingWriteClose({
         windowId,
@@ -800,7 +1224,19 @@ export default function App() {
         position,
         total: quitWriteTotal.current,
       });
-      setActiveOwner({ type: 'write', id: windowId });
+      activateTarget({ type: 'write-window', id: windowId });
+      if (writeSavingIdsRef.current.has(windowId)) {
+        void saveWriteDocument(windowId).then((saved) => {
+          if (!saved) {
+            if (writeExitIntent.current) cancelWriteExitReview();
+            return;
+          }
+          if (!writeExitIntent.current) return;
+          const current = writeWindowsRef.current.find((item) => item.id === windowId);
+          if (!current || current.dirty) return;
+          continueQuitReviewRef.current();
+        });
+      }
       return;
     }
     if (intent?.type === 'eject') {
@@ -808,118 +1244,149 @@ export default function App() {
     } else {
       finalizeNormalQuit();
     }
-  }, [finalizeNormalQuit, performEjectSystemDisk]);
+  }, [
+    activateTarget,
+    cancelWriteExitReview,
+    finalizeNormalQuit,
+    performEjectSystemDisk,
+    saveWriteDocument,
+    setPendingWriteClose,
+  ]);
+
+  useLayoutEffect(() => {
+    continueQuitReviewRef.current = continueQuitReview;
+  }, [continueQuitReview]);
 
   const requestWriteClose = useCallback(
     (windowId: string): void => {
+      if (writeWindowAnimationsRef.current[windowId]?.phase === 'closing') return;
       const target = writeWindowsRef.current.find((item) => item.id === windowId);
       if (!target) return;
-      if (!target.dirty) {
+      const saving = writeSavingIdsRef.current.has(windowId);
+      if (!target.dirty && !saving) {
         removeWriteWindow(windowId);
         return;
       }
       setPendingWriteClose({ windowId, reason: 'close', position: 1, total: 1 });
-      setActiveOwner({ type: 'write', id: windowId });
+      activateTarget({ type: 'write-window', id: windowId });
+      if (saving) {
+        void saveWriteDocument(windowId).then((saved) => {
+          if (!saved) return;
+          const current = writeWindowsRef.current.find((item) => item.id === windowId);
+          if (!current || current.dirty) return;
+          setPendingWriteClose(null);
+          removeWriteWindow(windowId);
+        });
+      }
     },
-    [removeWriteWindow],
+    [activateTarget, removeWriteWindow, saveWriteDocument, setPendingWriteClose],
   );
 
   const saveWriteAs = useCallback(
-    async (
+    (
       windowId: string,
       parentId: string,
       name: string,
       after: 'none' | 'close' | 'quit' | 'eject',
-    ): Promise<void> => {
+    ): Promise<boolean> => {
+      const existingOperation = writeSaveAsOperations.current.get(windowId);
+      if (existingOperation) return existingOperation;
       const target = writeWindowsRef.current.find((item) => item.id === windowId);
-      if (!target || writeSaveInFlight.current) return;
-      writeSaveInFlight.current = true;
-      setWriteSaving(true);
-      try {
-        const result = await mutateWriteDocument({
-          type: 'create-document',
-          parentId,
-          name,
-          payload: target.draft,
-        });
-        if (
-          result.affectedIds.length !== 1 ||
-          result.skippedCount > 0 ||
-          result.truncatedCount > 0
-        ) {
-          throw new Error('The virtual disk could not store the complete document.');
-        }
-        const documentId = result.affectedIds[0];
-        const savedNode = result.state.nodes.find((node) => node.id === documentId);
-        if (!savedNode || savedNode.kind !== 'document' || !savedNode.payload) {
-          throw new Error('The new document was not returned by the virtual disk.');
-        }
-        let currentDraftSaved = false;
-        replaceWriteWindows((current) =>
-          current.map((item) => {
-            if (item.id !== windowId) return item;
-            const reconciliation = reconcileCommittedDocument(item.draft, savedNode.payload!);
-            currentDraftSaved = !reconciliation.dirty;
-            return {
-              ...item,
-              ...reconciliation,
-              documentId: savedNode.id,
-              title: savedNode.name,
-            };
-          }),
-        );
-        setWriteFileDialog(null);
-        if (after === 'close') {
-          if (currentDraftSaved) removeWriteWindow(windowId);
-          else setPendingWriteClose({ windowId, reason: 'close', position: 1, total: 1 });
-        } else if (after === 'quit' || after === 'eject') {
-          if (currentDraftSaved) {
-            continueQuitReview();
-          } else {
-            setPendingWriteClose({
-              windowId,
-              reason: after,
-              position: quitWriteTotal.current - quitWriteQueue.current.length,
-              total: quitWriteTotal.current,
-            });
-          }
-        }
-      } catch (error) {
-        console.error(error);
-        reportPersistenceError(`“${target.title}” could not be saved.`);
-      } finally {
-        writeSaveInFlight.current = false;
-        setWriteSaving(false);
+      if (
+        !target ||
+        writeSavingIdsRef.current.has(windowId) ||
+        writeWindowAnimationsRef.current[windowId]?.phase === 'closing'
+      ) {
+        return Promise.resolve(false);
       }
+      beginWriteSaving(windowId);
+      const operation = (async (): Promise<boolean> => {
+        try {
+          const snapshot = await capturePreparedWriteSnapshot(windowId, target.documentId);
+          const result = await mutateWriteDocument({
+            type: 'create-document',
+            parentId,
+            name,
+            payload: snapshot.value,
+          });
+          if (result.affectedIds.length !== 1) {
+            throw new Error('The virtual disk could not store the complete document.');
+          }
+          const documentId = result.affectedIds[0];
+          if (!documentId) {
+            throw new Error('The new document was not returned by the virtual disk.');
+          }
+          const committed = committedWriteDocumentFromResult(result, documentId, snapshot.value);
+          let currentDraftSaved = false;
+          replaceWriteWindows((current) =>
+            current.map((item) => {
+              if (item.id !== windowId) return item;
+              const rebound = applyWriteCommittedSnapshot(
+                {
+                  ...item,
+                  documentId: committed.documentId,
+                },
+                committed,
+              );
+              currentDraftSaved = !rebound.dirty;
+              return rebound;
+            }),
+          );
+          writeSaveQueues.current.delete(windowId);
+          writeSaveQueueFor(windowId, committed.documentId, snapshot.generation);
+          setWriteFileDialog(null);
+          if (after === 'close') {
+            if (currentDraftSaved) removeWriteWindow(windowId);
+            else setPendingWriteClose({ windowId, reason: 'close', position: 1, total: 1 });
+          } else if (after === 'quit' || after === 'eject') {
+            if (currentDraftSaved) {
+              continueQuitReview();
+            } else {
+              setPendingWriteClose({
+                windowId,
+                reason: after,
+                position: quitWriteTotal.current - quitWriteQueue.current.length,
+                total: quitWriteTotal.current,
+              });
+            }
+          }
+          return currentDraftSaved;
+        } catch (error) {
+          console.error(error);
+          reportPersistenceError(
+            error instanceof WriteLayoutConvergenceError
+              ? `“${target.title}” could not be saved because Write could not settle its page layout. Edit the document and try again.`
+              : `“${target.title}” could not be saved.`,
+          );
+          if (after === 'close') setWriteFileDialog(null);
+          else if (after === 'quit' || after === 'eject') cancelWriteExitReview();
+          return false;
+        } finally {
+          finishWriteSaving(windowId);
+        }
+      })();
+      writeSaveAsOperations.current.set(windowId, operation);
+      void operation.finally(() => {
+        if (writeSaveAsOperations.current.get(windowId) === operation) {
+          writeSaveAsOperations.current.delete(windowId);
+        }
+      });
+      return operation;
     },
     [
+      beginWriteSaving,
+      cancelWriteExitReview,
+      capturePreparedWriteSnapshot,
       continueQuitReview,
+      finishWriteSaving,
       mutateWriteDocument,
       removeWriteWindow,
       replaceWriteWindows,
       reportPersistenceError,
+      setPendingWriteClose,
+      writeSaveQueueFor,
     ],
   );
-
-  const cancelWriteExitReview = useCallback((): void => {
-    const normalQuit = writeExitIntent.current?.type === 'normal-quit';
-    writeExitIntent.current = null;
-    quitWriteQueue.current = [];
-    quitWriteTotal.current = 0;
-    setPendingWriteClose(null);
-    setWriteFileDialog(null);
-    if (!normalQuit) return;
-    const current = stateRef.current;
-    if (current) {
-      void persistState(current).catch((error: unknown) => {
-        console.error(error);
-        reportPersistenceError('The desktop could not be saved.');
-      });
-    }
-    void window.macintosh.cancelNormalQuit().catch((error: unknown) => {
-      console.error('Could not cancel normal Quit:', error);
-    });
-  }, [persistState, reportPersistenceError]);
 
   useEffect(() => {
     const removeListener = window.macintosh.onNormalQuitRequested(() => {
@@ -933,8 +1400,11 @@ export default function App() {
       setDialog(null);
       setWriteFileDialog(null);
       setPendingWriteClose(null);
+      cancelDirtyWriteCloseAnimations();
       writeExitIntent.current = { type: 'normal-quit' };
-      const dirtyIds = writeWindowsRef.current.filter((item) => item.dirty).map((item) => item.id);
+      const dirtyIds = writeWindowsRef.current
+        .filter((item) => item.dirty || writeSavingIdsRef.current.has(item.id))
+        .map((item) => item.id);
       quitWriteQueue.current = dirtyIds;
       quitWriteTotal.current = dirtyIds.length;
       if (dirtyIds.length > 0) continueQuitReview();
@@ -947,11 +1417,17 @@ export default function App() {
       removeListener();
       document.documentElement.classList.remove('is-normal-quit-pending');
     };
-  }, [cancelPointerInteractions, continueQuitReview, finalizeNormalQuit]);
+  }, [
+    cancelDirtyWriteCloseAnimations,
+    cancelPointerInteractions,
+    continueQuitReview,
+    finalizeNormalQuit,
+    setPendingWriteClose,
+  ]);
 
   const activateWindow = useCallback(
     (windowId: string): void => {
-      setActiveOwner({ type: 'finder', id: windowId });
+      activateTarget({ type: 'finder-window', id: windowId });
       updateState((current) => {
         const target = current.desktop.windows.find((item) => item.id === windowId);
         if (!target || current.desktop.windows.at(-1)?.id === windowId) return current;
@@ -964,7 +1440,7 @@ export default function App() {
         };
       });
     },
-    [updateState],
+    [activateTarget, updateState],
   );
 
   const openNode = useCallback(
@@ -973,15 +1449,15 @@ export default function App() {
       const node = current?.nodes.find((item) => item.id === nodeId);
       if (!current || !node || node.kind === 'desktop') return;
       if (node.kind === 'application' && node.applicationId === 'write') {
-        newWriteDocument();
+        newWriteDocument(source);
         return;
       }
       if (node.kind === 'document') {
-        openWriteDocument(node.id);
+        openWriteDocument(node.id, source);
         return;
       }
       const windowId = `window-${nodeId}`;
-      setActiveOwner({ type: 'finder', id: windowId });
+      activateTarget({ type: 'finder-window', id: windowId });
       const existing = current.desktop.windows.find((item) => item.id === windowId);
       const remaining = current.desktop.windows.filter((item) => item.id !== windowId);
       const cascade = remaining.length % 5;
@@ -1022,7 +1498,14 @@ export default function App() {
       setFinderSelection(new Set());
       setDesktopSelection(new Set());
     },
-    [newWriteDocument, openWriteDocument, replaceState, setDesktopSelection, setFinderSelection],
+    [
+      activateTarget,
+      newWriteDocument,
+      openWriteDocument,
+      replaceState,
+      setDesktopSelection,
+      setFinderSelection,
+    ],
   );
 
   const closeWindow = useCallback(
@@ -1058,11 +1541,33 @@ export default function App() {
       zoomRestore.current.delete(windowId);
       const nextFinderOwner =
         stateRef.current?.desktop.windows.filter((item) => item.id !== windowId).at(-1)?.id ?? null;
-      setActiveOwner((owner) =>
-        owner.type === 'finder' && owner.id === windowId
-          ? { type: 'finder', id: nextFinderOwner }
-          : owner,
+      const nextTarget: ActiveTarget = nextFinderOwner
+        ? { type: 'finder-window', id: nextFinderOwner }
+        : { type: 'desktop' };
+      const removedOwnedTarget =
+        activeTarget.type === 'finder-window' && activeTarget.id === windowId;
+      setActiveApplication((current) =>
+        current.type === 'finder' && current.windowId === windowId
+          ? { type: 'finder', windowId: nextFinderOwner }
+          : current,
       );
+      setActiveTarget((current) =>
+        current.type === 'finder-window' && current.id === windowId ? nextTarget : current,
+      );
+      setOrdinaryWindowOrder((current) => {
+        const withoutRemoved = current.filter(
+          (candidate) => candidate !== finderOrdinaryWindowId(windowId),
+        );
+        return removedOwnedTarget
+          ? raiseOrdinaryWindow(withoutRemoved, nextTarget)
+          : withoutRemoved;
+      });
+      if (
+        calculatorReturnTarget.current.type === 'finder-window' &&
+        calculatorReturnTarget.current.id === windowId
+      ) {
+        calculatorReturnTarget.current = nextTarget;
+      }
       updateState((current) => ({
         ...current,
         desktop: {
@@ -1071,7 +1576,7 @@ export default function App() {
         },
       }));
     },
-    [updateState],
+    [activeTarget, updateState],
   );
 
   const setWindowGeometry = useCallback(
@@ -1171,13 +1676,7 @@ export default function App() {
     (windowId: string, payload: DocumentPayload): void => {
       replaceWriteWindows((current) =>
         current.map((item) =>
-          item.id === windowId
-            ? {
-                ...item,
-                draft: payload,
-                dirty: !documentPayloadEqual(payload, item.saved),
-              }
-            : item,
+          item.id === windowId ? applyWriteDraftPayload(item, payload) : item,
         ),
       );
     },
@@ -1186,6 +1685,12 @@ export default function App() {
 
   const updateWriteContext = useCallback((windowId: string, context: WriteEditorContext): void => {
     setWriteContexts((current) => ({ ...current, [windowId]: context }));
+  }, []);
+
+  const updateWriteLayoutError = useCallback((windowId: string, message: string | null): void => {
+    setWriteLayoutErrors((current) =>
+      current[windowId] === message ? current : { ...current, [windowId]: message },
+    );
   }, []);
 
   const updateWritePagination = useCallback(
@@ -1203,10 +1708,13 @@ export default function App() {
 
   const executeWriteCommand = useCallback(
     (command: WriteEditorCommand): boolean => {
-      if (activeOwner.type !== 'write') return false;
-      return writeEditors.current.get(activeOwner.id)?.execute(command) ?? false;
+      if (activeApplication.type !== 'write') return false;
+      if (writeWindowAnimationsRef.current[activeApplication.windowId]?.phase === 'closing') {
+        return false;
+      }
+      return writeEditors.current.get(activeApplication.windowId)?.execute(command) ?? false;
     },
-    [activeOwner],
+    [activeApplication],
   );
 
   const setWriteZoom = useCallback(
@@ -1219,7 +1727,7 @@ export default function App() {
   );
 
   const selectDesktopIcon = (id: string, additive: boolean): void => {
-    setActiveOwner({ type: 'finder', id: null });
+    activateTarget({ type: 'desktop' });
     setFinderSelection(new Set());
     setDesktopSelection((current) => {
       if (!additive) return new Set([id]);
@@ -1231,10 +1739,10 @@ export default function App() {
   };
 
   const selectFinderItem = (id: string, additive: boolean): void => {
-    setActiveOwner({
-      type: 'finder',
-      id: stateRef.current?.desktop.windows.at(-1)?.id ?? null,
-    });
+    const finderWindowId = stateRef.current?.desktop.windows.at(-1)?.id;
+    activateTarget(
+      finderWindowId ? { type: 'finder-window', id: finderWindowId } : { type: 'desktop' },
+    );
     setDesktopSelection(new Set());
     setFinderSelection((current) => {
       if (!additive) return new Set([id]);
@@ -1616,7 +2124,9 @@ export default function App() {
     const current = stateRef.current ?? state;
     if (!current || ejecting || writeExitIntent.current) return;
     const diskOrigin = dragOrigins.current['system-disk'] ?? current.desktop.diskPosition;
-    const dirtyIds = writeWindowsRef.current.filter((item) => item.dirty).map((item) => item.id);
+    const dirtyIds = writeWindowsRef.current
+      .filter((item) => item.dirty || writeSavingIdsRef.current.has(item.id))
+      .map((item) => item.id);
     if (dirtyIds.length === 0) {
       void performEjectSystemDisk(diskOrigin);
       return;
@@ -1624,6 +2134,7 @@ export default function App() {
 
     restoreIcon('system-disk');
     setOpenMenu(null);
+    cancelDirtyWriteCloseAnimations();
     writeExitIntent.current = { type: 'eject', diskOrigin };
     quitWriteQueue.current = dirtyIds;
     quitWriteTotal.current = dirtyIds.length;
@@ -1852,46 +2363,59 @@ export default function App() {
     }
   }, [activeNode, desktopItems, setDesktopSelection, setFinderSelection, state]);
 
-  const openCalculator = useCallback((): void => {
+  const activateCalculator = useCallback((): void => {
+    if (activeTarget.type !== 'calculator') calculatorReturnTarget.current = activeTarget;
     setCalculatorOpen(true);
-    setActiveOwner((owner) => {
-      if (owner.type !== 'calculator') calculatorReturnOwner.current = owner;
-      return { type: 'calculator', id: 'calculator' };
-    });
-  }, []);
+    activateTarget({ type: 'calculator' });
+  }, [activateTarget, activeTarget]);
 
   const closeCalculator = useCallback((): void => {
     setCalculatorOpen(false);
-    const requested = calculatorReturnOwner.current;
+    if (activeTarget.type !== 'calculator') return;
+    const requested = calculatorReturnTarget.current;
     if (
-      requested.type === 'write' &&
+      requested.type === 'write-window' &&
       writeWindowsRef.current.some((window) => window.id === requested.id)
     ) {
-      setActiveOwner(requested);
+      activateTarget(requested);
       return;
     }
     if (
-      requested.type === 'finder' &&
-      (requested.id === null ||
-        stateRef.current?.desktop.windows.some((window) => window.id === requested.id))
+      requested.type === 'finder-window' &&
+      stateRef.current?.desktop.windows.some((window) => window.id === requested.id)
     ) {
-      setActiveOwner(requested);
+      activateTarget(requested);
+      return;
+    }
+    if (requested.type === 'desktop') {
+      activateTarget(requested);
       return;
     }
     const finderWindowId = stateRef.current?.desktop.windows.at(-1)?.id;
-    const writeWindow = writeWindowsRef.current.at(-1);
-    setActiveOwner(
-      finderWindowId
-        ? { type: 'finder', id: finderWindowId }
-        : writeWindow
-          ? { type: 'write', id: writeWindow.id }
-          : { type: 'finder', id: null },
+    const preferredWriteWindow =
+      activeApplication.type === 'write'
+        ? writeWindowsRef.current.find((window) => window.id === activeApplication.windowId)
+        : undefined;
+    const writeWindow = preferredWriteWindow ?? writeWindowsRef.current.at(-1);
+    activateTarget(
+      activeApplication.type === 'write' && writeWindow
+        ? { type: 'write-window', id: writeWindow.id }
+        : finderWindowId
+          ? { type: 'finder-window', id: finderWindowId }
+          : { type: 'desktop' },
     );
-  }, []);
+  }, [activateTarget, activeApplication, activeTarget]);
 
   const emptyTrashAndClearSelection = useCallback((): void => {
     const current = stateRef.current;
     if (!current) return;
+    const openDocumentIds = writeWindowsRef.current.flatMap((window) =>
+      window.documentId ? [window.documentId] : [],
+    );
+    if (hasOpenDocumentInTrash(current.nodes, openDocumentIds)) {
+      showTransferNotice('Trash contains an open Write document.', true);
+      return;
+    }
     setFinderSelection(new Set());
     void window.macintosh
       .mutateVfs({
@@ -1913,17 +2437,31 @@ export default function App() {
 
   const menus = useMemo<MenuDefinition[]>(() => {
     if (!state) return [];
-    if (activeOwner.type === 'write') {
-      const writeWindow = writeWindows.find((item) => item.id === activeOwner.id);
+    if (activeApplication.type === 'write') {
+      const writeWindow = writeWindows.find((item) => item.id === activeApplication.windowId);
       if (writeWindow) {
         const context = writeContexts[writeWindow.id] ?? defaultWriteContext();
+        const writeWindowClosing = writeWindowAnimations[writeWindow.id]?.phase === 'closing';
         const runClipboard = (action: 'copy' | 'cut' | 'paste'): void => {
-          void writeEditors.current
-            .get(writeWindow.id)
-            ?.clipboard(action)
+          if (writeWindowAnimationsRef.current[writeWindow.id]?.phase === 'closing') return;
+          const editor = writeEditors.current.get(writeWindow.id);
+          if (!editor) return;
+          const returnFocusToCalculator = activeTarget.type === 'calculator';
+          void editor
+            .clipboard(action)
             .catch((error: unknown) => {
               console.error(error);
               showTransferNotice('The Clipboard operation could not be completed.', true);
+            })
+            .finally(() => {
+              if (
+                returnFocusToCalculator &&
+                activeTargetRef.current.type === 'calculator' &&
+                keyboardOwnerRef.current === 'calculator' &&
+                !document.querySelector('[data-modal-layer], [role="menu"], .ejection-input-layer')
+              ) {
+                document.querySelector<HTMLElement>('[data-calculator-window="true"]')?.focus();
+              }
             });
         };
         const writeSystemMenu: MenuDefinition = {
@@ -1936,7 +2474,7 @@ export default function App() {
               action: () => setDialog({ type: 'about' }),
             },
             { id: 'system-separator-about', separator: true },
-            { id: 'calculator', label: 'Calculator', action: openCalculator },
+            { id: 'calculator', label: 'Calculator', action: activateCalculator },
           ],
         };
         return [
@@ -1945,24 +2483,31 @@ export default function App() {
             id: 'file',
             label: 'File',
             entries: [
-              { id: 'new-document', label: 'New', shortcut: 'n', action: newWriteDocument },
+              {
+                id: 'new-document',
+                label: 'New',
+                shortcut: commandShortcut('n'),
+                action: newWriteDocument,
+              },
               {
                 id: 'open-document',
                 label: 'Open…',
-                shortcut: 'o',
+                shortcut: commandShortcut('o'),
                 action: () => setWriteFileDialog({ type: 'open' }),
               },
               {
                 id: 'close-write-window',
                 label: 'Close',
-                shortcut: 'w',
+                shortcut: commandShortcut('w'),
+                disabled: writeWindowClosing,
                 action: () => requestWriteClose(writeWindow.id),
               },
               { id: 'write-file-separator', separator: true },
               {
                 id: 'save-document',
                 label: 'Save',
-                shortcut: 's',
+                shortcut: commandShortcut('s'),
+                disabled: writeWindowClosing,
                 action: () => {
                   if (writeWindow.documentId) void saveWriteDocument(writeWindow.id);
                   else
@@ -1976,6 +2521,8 @@ export default function App() {
               {
                 id: 'save-document-as',
                 label: 'Save As…',
+                shortcut: commandShortcut('s', { shift: true }),
+                disabled: writeWindowClosing || writeSavingIds.has(writeWindow.id),
                 action: () =>
                   setWriteFileDialog({
                     type: 'save-as',
@@ -1992,25 +2539,47 @@ export default function App() {
               {
                 id: 'undo',
                 label: 'Undo',
-                shortcut: 'z',
+                shortcut: commandShortcut('z'),
                 disabled: !context.canUndo,
                 action: () => executeWriteCommand({ type: 'undo' }),
               },
               {
                 id: 'redo',
                 label: 'Redo',
+                shortcut: commandShortcut('z', { shift: true }),
                 disabled: !context.canRedo,
                 action: () => executeWriteCommand({ type: 'redo' }),
               },
               { id: 'write-edit-separator', separator: true },
-              { id: 'cut', label: 'Cut', shortcut: 'x', action: () => runClipboard('cut') },
-              { id: 'copy', label: 'Copy', shortcut: 'c', action: () => runClipboard('copy') },
-              { id: 'paste', label: 'Paste', shortcut: 'v', action: () => runClipboard('paste') },
+              {
+                id: 'cut',
+                label: 'Cut',
+                shortcut: commandShortcut('x'),
+                action: () => runClipboard('cut'),
+              },
+              {
+                id: 'copy',
+                label: 'Copy',
+                shortcut: commandShortcut('c'),
+                action: () => runClipboard('copy'),
+              },
+              {
+                id: 'paste',
+                label: 'Paste',
+                shortcut: commandShortcut('v'),
+                action: () => runClipboard('paste'),
+              },
+              {
+                id: 'clear',
+                label: 'Clear',
+                disabled: !context.canClear,
+                action: () => executeWriteCommand({ type: 'clear' }),
+              },
               { id: 'write-edit-separator-2', separator: true },
               {
                 id: 'select-all',
                 label: 'Select All',
-                shortcut: 'a',
+                shortcut: commandShortcut('a'),
                 action: () => executeWriteCommand({ type: 'select-all' }),
               },
             ],
@@ -2020,9 +2589,16 @@ export default function App() {
             label: 'Format',
             entries: [
               {
+                id: 'plain-text',
+                label: 'Plain Text',
+                disabled: !context.canFormat,
+                action: () => executeWriteCommand({ type: 'plain-text' }),
+              },
+              { id: 'write-format-separator-plain', separator: true },
+              {
                 id: 'bold',
                 label: 'Bold',
-                shortcut: 'b',
+                shortcut: commandShortcut('b'),
                 checked: context.style.bold,
                 disabled: !context.canFormat,
                 action: () => executeWriteCommand({ type: 'mark', mark: 'bold' }),
@@ -2030,7 +2606,7 @@ export default function App() {
               {
                 id: 'italic',
                 label: 'Italic',
-                shortcut: 'i',
+                shortcut: commandShortcut('i'),
                 checked: context.style.italic,
                 disabled: !context.canFormat,
                 action: () => executeWriteCommand({ type: 'mark', mark: 'italic' }),
@@ -2038,7 +2614,7 @@ export default function App() {
               {
                 id: 'underline',
                 label: 'Underline',
-                shortcut: 'u',
+                shortcut: commandShortcut('u'),
                 checked: context.style.underline,
                 disabled: !context.canFormat,
                 action: () => executeWriteCommand({ type: 'mark', mark: 'underline' }),
@@ -2069,21 +2645,24 @@ export default function App() {
               {
                 id: 'increase-left-indent',
                 label: 'Increase Left Indent',
-                disabled: !context.canFormat,
+                disabled: !context.canFormat || context.style.leftIndent === null,
                 action: () =>
                   executeWriteCommand({
                     type: 'left-indent',
-                    value: context.style.leftIndent + 18,
+                    value: (context.style.leftIndent ?? 0) + 18,
                   }),
               },
               {
                 id: 'decrease-left-indent',
                 label: 'Decrease Left Indent',
-                disabled: !context.canFormat || context.style.leftIndent <= 0,
+                disabled:
+                  !context.canFormat ||
+                  context.style.leftIndent === null ||
+                  context.style.leftIndent <= 0,
                 action: () =>
                   executeWriteCommand({
                     type: 'left-indent',
-                    value: Math.max(0, context.style.leftIndent - 18),
+                    value: Math.max(0, (context.style.leftIndent ?? 0) - 18),
                   }),
               },
               { id: 'write-format-separator-3', separator: true },
@@ -2219,6 +2798,10 @@ export default function App() {
       }
     }
     const trashHasItems = state.nodes.some((node) => node.parentId === 'trash');
+    const trashContainsOpenDocument = hasOpenDocumentInTrash(
+      state.nodes,
+      writeWindows.flatMap((window) => (window.documentId ? [window.documentId] : [])),
+    );
     return [
       {
         id: 'system',
@@ -2233,7 +2816,7 @@ export default function App() {
           {
             id: 'calculator',
             label: 'Calculator',
-            action: openCalculator,
+            action: activateCalculator,
           },
           { id: 'system-separator-info', separator: true },
           {
@@ -2250,18 +2833,23 @@ export default function App() {
         id: 'file',
         label: 'File',
         entries: [
-          { id: 'new-folder', label: 'New Folder', shortcut: 'n', action: createFolder },
+          {
+            id: 'new-folder',
+            label: 'New Folder',
+            shortcut: commandShortcut('n'),
+            action: createFolder,
+          },
           {
             id: 'open',
             label: 'Open',
-            shortcut: 'o',
+            shortcut: commandShortcut('o'),
             disabled: !selectedNode,
             action: openSelected,
           },
           {
             id: 'close',
             label: 'Close Window',
-            shortcut: 'w',
+            shortcut: commandShortcut('w'),
             disabled: !activeWindow,
             action: () => activeWindow && closeWindow(activeWindow.id),
           },
@@ -2269,7 +2857,7 @@ export default function App() {
           {
             id: 'get-info',
             label: 'Get Info',
-            shortcut: 'i',
+            shortcut: commandShortcut('i'),
             disabled: !selectedNode,
             action: () => selectedNode && setDialog({ type: 'info', node: selectedNode }),
           },
@@ -2285,13 +2873,23 @@ export default function App() {
           {
             id: 'copy',
             label: 'Copy',
-            shortcut: 'c',
+            shortcut: commandShortcut('c'),
             disabled: copyableFinderSelectionIds.length === 0,
             action: () => copyFinderSelection(),
           },
-          { id: 'paste', label: 'Paste', shortcut: 'v', action: pasteFromClipboard },
+          {
+            id: 'paste',
+            label: 'Paste',
+            shortcut: commandShortcut('v'),
+            action: pasteFromClipboard,
+          },
           { id: 'edit-separator-2', separator: true },
-          { id: 'select-all', label: 'Select All', shortcut: 'a', action: selectAll },
+          {
+            id: 'select-all',
+            label: 'Select All',
+            shortcut: commandShortcut('a'),
+            action: selectAll,
+          },
           {
             id: 'clear-selection',
             label: 'Clear Selection',
@@ -2341,7 +2939,7 @@ export default function App() {
           {
             id: 'empty-trash',
             label: 'Empty Trash',
-            disabled: !trashHasItems,
+            disabled: !trashHasItems || trashContainsOpenDocument,
             action: emptyTrashAndClearSelection,
           },
           {
@@ -2369,7 +2967,9 @@ export default function App() {
       },
     ];
   }, [
-    activeOwner,
+    activateCalculator,
+    activeApplication,
+    activeTarget.type,
     activeWindow,
     closeWindow,
     copyFinderSelection,
@@ -2378,7 +2978,6 @@ export default function App() {
     emptyTrashAndClearSelection,
     executeWriteCommand,
     newWriteDocument,
-    openCalculator,
     openSelected,
     pasteFromClipboard,
     requestWriteClose,
@@ -2389,6 +2988,8 @@ export default function App() {
     setFinderSelection,
     state,
     writeContexts,
+    writeSavingIds,
+    writeWindowAnimations,
     writeWindows,
     setWriteZoom,
     showTransferNotice,
@@ -2425,6 +3026,10 @@ export default function App() {
     writeFileDialog?.type === 'save-as'
       ? writeWindows.find((item) => item.id === writeFileDialog.windowId)
       : undefined;
+  const ordinaryStackIndex = (windowId: OrdinaryWindowId): number => {
+    const index = renderedOrdinaryWindowOrder.indexOf(windowId);
+    return index >= 0 ? index : renderedOrdinaryWindowOrder.length;
+  };
 
   return (
     <main
@@ -2451,11 +3056,12 @@ export default function App() {
       <DesktopSurface
         interactionCancelToken={interactionCancelToken}
         onBackgroundClick={() => {
-          setActiveOwner({ type: 'finder', id: null });
+          activateTarget({ type: 'desktop' });
           setDesktopSelection(new Set());
           setFinderSelection(new Set());
         }}
         onMarquee={(ids) => {
+          activateTarget({ type: 'desktop' });
           setDesktopSelection(new Set(ids));
           setFinderSelection(new Set());
         }}
@@ -2463,7 +3069,7 @@ export default function App() {
         onInteractionChange={setPointerInteractionActive}
         vfsCount={state.nodes.length}
       >
-        {state.desktop.windows.map((windowState, index) => {
+        {state.desktop.windows.map((windowState) => {
           const animation = windowAnimations[windowState.id];
           const node = state.nodes.find((item) => item.id === windowState.nodeId);
           if (!animation || !node || node.kind === 'desktop') return null;
@@ -2471,20 +3077,20 @@ export default function App() {
             <FinderWindowAnimationShadow
               animation={animation}
               key={`${windowState.id}-animation-shadow`}
-              stackIndex={index}
+              stackIndex={ordinaryStackIndex(finderOrdinaryWindowId(windowState.id))}
               windowState={windowState}
             />
           );
         })}
-        {state.desktop.windows.map((windowState, index) => {
+        {state.desktop.windows.map((windowState) => {
           const node = state.nodes.find((item) => item.id === windowState.nodeId);
           if (!node || node.kind === 'desktop') return null;
           const items = listChildren(state.nodes, node.id, state.desktop.viewMode);
           return (
             <FinderWindow
               active={
-                activeOwner.type === 'finder' &&
-                activeOwner.id === windowState.id &&
+                activeTarget.type === 'finder-window' &&
+                activeTarget.id === windowState.id &&
                 activeWindowId === windowState.id
               }
               animation={windowAnimations[windowState.id]}
@@ -2505,39 +3111,60 @@ export default function App() {
               onInteractionChange={setPointerInteractionActive}
               onZoom={zoomWindow}
               selectedIds={finderSelection}
-              stackIndex={index}
+              stackIndex={ordinaryStackIndex(finderOrdinaryWindowId(windowState.id))}
               viewMode={state.desktop.viewMode}
               windowState={windowState}
             />
           );
         })}
-        {writeWindows.map((windowState, index) => (
+        {writeWindows.map((windowState) => {
+          const animation = writeWindowAnimations[windowState.id];
+          return animation ? (
+            <WriteWindowAnimationShadow
+              animation={animation}
+              key={`${windowState.id}-animation-shadow`}
+              stackIndex={ordinaryStackIndex(writeOrdinaryWindowId(windowState.id))}
+              windowState={windowState}
+            />
+          ) : null;
+        })}
+        {writeWindows.map((windowState) => (
           <WriteWindow
-            active={activeOwner.type === 'write' && activeOwner.id === windowState.id}
+            active={activeTarget.type === 'write-window' && activeTarget.id === windowState.id}
+            animation={writeWindowAnimations[windowState.id]}
             context={writeContexts[windowState.id] ?? defaultWriteContext()}
+            editorEnabled={
+              activeTarget.type === 'write-window' &&
+              activeTarget.id === windowState.id &&
+              writeWindowAnimations[windowState.id]?.phase !== 'closing'
+            }
             interactionCancelToken={interactionCancelToken}
             key={windowState.id}
+            layoutError={writeLayoutErrors[windowState.id] ?? null}
             onActivate={activateWriteWindow}
+            onAnimationComplete={finishWriteWindowAnimation}
             onClose={requestWriteClose}
             onDraftChange={updateWriteDraft}
             onEditorContext={updateWriteContext}
             onEditorRegistration={registerWriteEditor}
             onGeometry={setWriteWindowGeometry}
             onInteractionChange={setPointerInteractionActive}
+            onLayoutError={updateWriteLayoutError}
             onPaginationChange={updateWritePagination}
             onZoom={zoomWriteWindow}
-            stackIndex={index}
+            stackIndex={ordinaryStackIndex(writeOrdinaryWindowId(windowState.id))}
             windowState={windowState}
           />
         ))}
         {calculatorOpen ? (
           <CalculatorWindow
-            active={activeOwner.type === 'calculator'}
+            active={activeTarget.type === 'calculator'}
             interactionCancelToken={interactionCancelToken}
             keyboardEnabled={keyboardOwner === 'calculator'}
-            onActivate={() => setActiveOwner({ type: 'calculator', id: 'calculator' })}
+            onActivate={activateCalculator}
             onClose={closeCalculator}
             onInteractionChange={setPointerInteractionActive}
+            stackIndex={ordinaryStackIndex('calculator')}
           />
         ) : null}
         {desktopItems.map((item) => (
@@ -2649,7 +3276,7 @@ export default function App() {
             onSave={(parentId, name) =>
               void saveWriteAs(saveAsWindow.id, parentId, name, writeFileDialog.after)
             }
-            saving={writeSaving}
+            saving={writeSavingIds.has(saveAsWindow.id)}
           />
         )}
         {!persistenceError && pendingWriteClose && pendingWriteWindow && (
@@ -2668,31 +3295,41 @@ export default function App() {
             }}
             onDiscard={() => {
               setPendingWriteClose(null);
-              if (pendingWriteClose.reason === 'close') removeWriteWindow(pendingWriteWindow.id);
-              else continueQuitReview();
+              if (pendingWriteClose.reason === 'close') {
+                removeWriteWindow(pendingWriteWindow.id, true);
+              } else continueQuitReview();
             }}
             onInteractionChange={setPointerInteractionActive}
             onSave={() => {
+              const windowId = pendingWriteWindow.id;
+              const reason = pendingWriteClose.reason;
               if (!pendingWriteWindow.documentId) {
                 setPendingWriteClose(null);
                 setWriteFileDialog({
                   type: 'save-as',
-                  windowId: pendingWriteWindow.id,
-                  after: pendingWriteClose.reason,
+                  windowId,
+                  after: reason,
                 });
                 return;
               }
-              void saveWriteDocument(pendingWriteWindow.id).then((saved) => {
-                if (!saved) return;
+              void saveWriteDocument(windowId).then((saved) => {
+                if (!saved) {
+                  if (reason === 'close') setPendingWriteClose(null);
+                  else cancelWriteExitReview();
+                  return;
+                }
+                const current = writeWindowsRef.current.find((item) => item.id === windowId);
+                if (!current || current.dirty) return;
+                if (reason !== 'close' && !writeExitIntent.current) return;
                 setPendingWriteClose(null);
-                if (pendingWriteClose.reason === 'close') {
-                  removeWriteWindow(pendingWriteWindow.id);
+                if (reason === 'close') {
+                  removeWriteWindow(windowId);
                 } else {
                   continueQuitReview();
                 }
               });
             }}
-            saving={writeSaving}
+            saving={writeSavingIds.has(pendingWriteWindow.id)}
             title={pendingWriteWindow.title}
           />
         )}

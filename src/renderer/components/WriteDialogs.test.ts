@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { createDefaultState, type VfsNode } from '../../shared/state';
 import {
   isWriteDialogNodeInsideTrash,
+  isWriteDialogWritableContainer,
+  writeDialogAlternateRoot,
   writeDialogDefaultFolderId,
   writeDialogEnclosingFolder,
   writeDialogVisibleChildren,
@@ -58,11 +60,54 @@ describe('Write virtual-file dialog navigation', () => {
     expect(isWriteDialogNodeInsideTrash(state.nodes, documents)).toBe(true);
     expect(isWriteDialogNodeInsideTrash(state.nodes, nestedFolder)).toBe(true);
     expect(isWriteDialogNodeInsideTrash(state.nodes, nestedDocument)).toBe(true);
+    expect(isWriteDialogWritableContainer(state.nodes, documents)).toBe(false);
+    expect(isWriteDialogWritableContainer(state.nodes, nestedFolder)).toBe(false);
     expect(writeDialogEnclosingFolder(state.nodes, 'documents')).toBeUndefined();
     expect(writeDialogEnclosingFolder(state.nodes, nestedFolder.id)).toBeUndefined();
     expect(writeDialogVisibleChildren(state.nodes, 'trash', 'open')).toEqual([]);
     expect(writeDialogVisibleChildren(state.nodes, 'documents', 'save-as')).toEqual([]);
     expect(writeDialogVisibleChildren(state.nodes, nestedFolder.id, 'open')).toEqual([]);
+  });
+
+  it('makes Desktop contents reachable while keeping Save As limited to containers', () => {
+    const state = createDefaultState();
+    const desktopFolder = folder('desktop-folder', 'desktop', 'Desktop Folder');
+    const desktopDocument: VfsNode = {
+      id: 'desktop-document',
+      parentId: 'desktop',
+      name: 'Desktop Document',
+      kind: 'document',
+      payload: { format: 'plain-text', text: 'visible' },
+      createdAt: timestamp,
+      modifiedAt: timestamp,
+    };
+    state.nodes.push(desktopFolder, desktopDocument);
+
+    expect(writeDialogAlternateRoot(state.nodes, 'documents')?.id).toBe('desktop');
+    expect(writeDialogVisibleChildren(state.nodes, 'desktop', 'open')).toEqual([
+      desktopFolder,
+      desktopDocument,
+    ]);
+    expect(writeDialogVisibleChildren(state.nodes, 'desktop', 'save-as')).toEqual([desktopFolder]);
+    expect(
+      isWriteDialogWritableContainer(
+        state.nodes,
+        state.nodes.find((node) => node.id === 'desktop'),
+      ),
+    ).toBe(true);
+    expect(isWriteDialogWritableContainer(state.nodes, desktopDocument)).toBe(false);
+  });
+
+  it('enters and leaves Desktop from the roots without losing normal folder navigation', () => {
+    const state = createDefaultState();
+    const desktopFolder = folder('desktop-folder', 'desktop', 'Desktop Folder');
+    state.nodes.push(desktopFolder);
+
+    expect(writeDialogEnclosingFolder(state.nodes, 'documents')?.id).toBe('system-disk');
+    expect(writeDialogAlternateRoot(state.nodes, 'system-disk')?.id).toBe('desktop');
+    expect(writeDialogEnclosingFolder(state.nodes, desktopFolder.id)?.id).toBe('desktop');
+    expect(writeDialogAlternateRoot(state.nodes, desktopFolder.id)?.id).toBe('system-disk');
+    expect(writeDialogAlternateRoot(state.nodes, 'desktop')?.id).toBe('system-disk');
   });
 
   it('shows folders in both modes and documents only when opening', () => {

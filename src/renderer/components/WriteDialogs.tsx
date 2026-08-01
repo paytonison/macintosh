@@ -85,19 +85,42 @@ export const isWriteDialogNodeInsideTrash = (nodes: readonly VfsNode[], node: Vf
   return false;
 };
 
+export const isWriteDialogWritableContainer = (
+  nodes: readonly VfsNode[],
+  node: VfsNode | undefined,
+): node is VfsNode =>
+  Boolean(
+    node &&
+    (node.kind === 'desktop' || node.kind === 'disk' || node.kind === 'folder') &&
+    !isWriteDialogNodeInsideTrash(nodes, node),
+  );
+
 export const writeDialogDefaultFolderId = (nodes: readonly VfsNode[]): string => {
   const documentsFolder = nodes.find((node) => node.id === 'documents');
-  return documentsFolder?.kind === 'folder' && !isWriteDialogNodeInsideTrash(nodes, documentsFolder)
-    ? documentsFolder.id
-    : 'system-disk';
+  if (
+    documentsFolder?.kind === 'folder' &&
+    isWriteDialogWritableContainer(nodes, documentsFolder)
+  ) {
+    return documentsFolder.id;
+  }
+  const systemDisk = nodes.find((node) => node.id === 'system-disk');
+  if (systemDisk?.kind === 'disk' && isWriteDialogWritableContainer(nodes, systemDisk)) {
+    return systemDisk.id;
+  }
+  const desktop = nodes.find((node) => node.id === 'desktop');
+  return desktop?.kind === 'desktop' && isWriteDialogWritableContainer(nodes, desktop)
+    ? desktop.id
+    : '';
 };
 
 export const writeDialogVisibleChildren = (
   nodes: readonly VfsNode[],
   folderId: string,
   mode: VirtualFileDialogMode,
-): VfsNode[] =>
-  nodes
+): VfsNode[] => {
+  const currentFolder = nodes.find((node) => node.id === folderId);
+  if (!isWriteDialogWritableContainer(nodes, currentFolder)) return [];
+  return nodes
     .filter(
       (node) =>
         node.parentId === folderId &&
@@ -108,6 +131,7 @@ export const writeDialogVisibleChildren = (
       if (left.kind !== right.kind) return left.kind === 'folder' ? -1 : 1;
       return left.name.localeCompare(right.name);
     });
+};
 
 export const writeDialogEnclosingFolder = (
   nodes: readonly VfsNode[],
@@ -117,9 +141,28 @@ export const writeDialogEnclosingFolder = (
   const parent = currentFolder?.parentId
     ? nodes.find((node) => node.id === currentFolder.parentId)
     : undefined;
-  return parent && parent.id !== 'trash' && !isWriteDialogNodeInsideTrash(nodes, parent)
-    ? parent
-    : undefined;
+  return isWriteDialogWritableContainer(nodes, parent) ? parent : undefined;
+};
+
+const writeDialogRootId = (nodes: readonly VfsNode[], folderId: string): string | undefined => {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const seen = new Set<string>();
+  let current = byId.get(folderId);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (!current.parentId) return current.id;
+    current = byId.get(current.parentId);
+  }
+  return undefined;
+};
+
+export const writeDialogAlternateRoot = (
+  nodes: readonly VfsNode[],
+  folderId: string,
+): VfsNode | undefined => {
+  const targetId = writeDialogRootId(nodes, folderId) === 'desktop' ? 'system-disk' : 'desktop';
+  const target = nodes.find((node) => node.id === targetId);
+  return isWriteDialogWritableContainer(nodes, target) ? target : undefined;
 };
 
 export function VirtualFileDialog({
@@ -144,7 +187,8 @@ export function VirtualFileDialog({
   );
   const selected = nodes.find((node) => node.id === selectedId);
   const parent = writeDialogEnclosingFolder(nodes, folderId);
-  const canGoUp = Boolean(parent);
+  const alternateRoot = writeDialogAlternateRoot(nodes, folderId);
+  const canSaveHere = isWriteDialogWritableContainer(nodes, currentFolder);
 
   const openSelected = (): void => {
     if (!selected) return;
@@ -168,7 +212,7 @@ export function VirtualFileDialog({
         <div className="write-file-location">
           <button
             aria-label="Open enclosing folder"
-            disabled={!canGoUp || saving}
+            disabled={!parent || saving}
             onClick={() => {
               if (!parent) return;
               setFolderId(parent.id);
@@ -220,7 +264,9 @@ export function VirtualFileDialog({
               maxLength={96}
               onChange={(event) => setName(event.currentTarget.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && name.trim() && !saving) onSave(folderId, name);
+                if (event.key === 'Enter' && name.trim() && !saving && canSaveHere) {
+                  onSave(folderId, name);
+                }
               }}
               value={name}
             />
@@ -228,6 +274,17 @@ export function VirtualFileDialog({
         ) : null}
       </div>
       <div className="dialog-actions">
+        <button
+          disabled={!alternateRoot || saving}
+          onClick={() => {
+            if (!alternateRoot) return;
+            setFolderId(alternateRoot.id);
+            setSelectedId(null);
+          }}
+          type="button"
+        >
+          {alternateRoot?.name ?? 'Desktop'}
+        </button>
         <button disabled={saving} onClick={onCancel} type="button">
           Cancel
         </button>
@@ -243,7 +300,7 @@ export function VirtualFileDialog({
         ) : (
           <button
             className="classic-default-button"
-            disabled={!name.trim() || saving}
+            disabled={!name.trim() || saving || !canSaveHere}
             onClick={() => onSave(folderId, name)}
             type="button"
           >

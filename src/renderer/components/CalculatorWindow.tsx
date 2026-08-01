@@ -26,6 +26,7 @@ interface CalculatorWindowProps {
   active: boolean;
   interactionCancelToken: number;
   keyboardEnabled: boolean;
+  stackIndex: number;
   onActivate: () => void;
   onClose: () => void;
   onInteractionChange: (active: boolean) => void;
@@ -82,10 +83,35 @@ const inputForKeyboardKey = (key: string): CalculatorInput | null => {
   return null;
 };
 
+export type CalculatorKeyboardAction =
+  | { type: 'allow' }
+  | { type: 'block' }
+  | { type: 'close' }
+  | { type: 'input'; input: CalculatorInput };
+
+interface CalculatorKeyboardEvent {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}
+
+export const resolveCalculatorKeyboardAction = (
+  event: CalculatorKeyboardEvent,
+): CalculatorKeyboardAction => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return { type: 'allow' };
+  if (event.key === 'Escape') return { type: 'close' };
+  const input = inputForKeyboardKey(event.key);
+  if (input) return { type: 'input', input };
+  return Array.from(event.key).length === 1 ? { type: 'block' } : { type: 'allow' };
+};
+
 export function CalculatorWindow({
   active,
   interactionCancelToken,
   keyboardEnabled,
+  stackIndex,
   onActivate,
   onClose,
   onInteractionChange,
@@ -111,20 +137,20 @@ export function CalculatorWindow({
     if (!keyboardEnabled) return;
     windowElement.current?.focus();
     const keyDown = (event: KeyboardEvent): void => {
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
+      const action = resolveCalculatorKeyboardAction(event);
+      if (action.type === 'allow') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (action.type === 'close') {
         onClose();
         return;
       }
-      const input = inputForKeyboardKey(event.key);
-      if (!input) return;
-      event.preventDefault();
+      if (action.type === 'block') return;
       playMenuTick();
-      pressKey(input);
+      pressKey(action.input);
     };
-    window.addEventListener('keydown', keyDown);
-    return () => window.removeEventListener('keydown', keyDown);
+    window.addEventListener('keydown', keyDown, { capture: true });
+    return () => window.removeEventListener('keydown', keyDown, { capture: true });
   }, [keyboardEnabled, onClose]);
 
   useEffect(
@@ -221,7 +247,7 @@ export function CalculatorWindow({
         windowElement.current?.focus();
       }}
       ref={windowElement}
-      style={{ left: position.x, top: position.y }}
+      style={{ left: position.x, top: position.y, zIndex: 300 + stackIndex }}
       tabIndex={-1}
     >
       {previewPosition ? (

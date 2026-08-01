@@ -47,20 +47,28 @@ virtual document directly from the desktop or Finder.
 - Multiple document windows, with one live window per saved document and any number of untitled
   drafts.
 - US Letter pages with one-inch margins, automatic forward and backward page flow, a current-page
-  status line, and semantic manual page breaks.
-- Serif, sans-serif, and monospaced families at 9, 10, 12, 14, 18, and 24 points.
+  status line, semantic manual page breaks, and bounded layout convergence before saving.
+- Helvetica by default, with serif and monospaced alternatives plus 9, 10, 12, 14, 18, and 24 point
+  character formatting that can be applied to part of a paragraph.
 - Bold, italic, and underline; left, center, and right alignment; single, 1.5, and double line
   spacing; and left, first-line, and right indents.
-- A working ruler with draggable indents, default half-inch tabs, and removable custom tab stops.
-- Undo, Redo, Cut, Copy, Paste, Select All, and the corresponding supported Command-key shortcuts.
+- A working ruler with draggable indents, default half-inch tabs, and custom tab stops that can be
+  added, moved, or removed with cancellable pointer sessions.
+- Undo, Redo, Cut, Copy, Paste, Clear, Plain Text, Select All, and exact supported Command-key
+  shortcuts, including Shift-Command-S for Save As and Shift-Command-Z for Redo.
 - 50%, 75%, and 100% page zoom without changing document semantics.
-- Virtual-disk Open, Save, and Save As dialogs. Untitled documents begin in Documents, name
-  collisions create a distinct copy, and Trash is never offered as a save destination.
+- Virtual-disk Open, Save, and Save As dialogs. Untitled documents begin in Documents; the dialogs
+  can reach Desktop, System Disk, and ordinary folders; name collisions create a distinct copy; and
+  Trash is never offered as a destination.
 - Exact plain-text preservation until a rich-only operation promotes the document to the bounded
-  `write-v1` format. Rich files store paragraphs, supported formatting, tabs, and manual page breaks;
-  they do not store HTML, arbitrary CSS, DOM state, or measured page coordinates.
-- Explicit saving with no autosave. Closing a dirty document offers Save, Don’t Save, and Cancel;
-  failed saves keep the window and draft recoverable.
+  `write-v1` format. Rich files store paragraph layout, inline family, size, bold, italic, and
+  underline marks, tabs, and manual page breaks; they do not store HTML, arbitrary CSS, DOM state,
+  or measured page coordinates. Earlier beta paragraph-level family and size values sanitize into
+  equivalent inline marks.
+- Explicit per-window saving with no autosave. Save waits for the latest stable page layout, and an
+  edit made during an older in-flight save remains dirty for the next save. Closing a dirty document
+  offers Save, Don’t Save, and Cancel; failed saves cancel the close or Quit attempt and keep the
+  window and draft recoverable.
 - Dirty-document review during both ordinary Quit and System Disk ejection. Cancel aborts the entire
   exit, and a failed final save keeps the program open.
 
@@ -101,11 +109,12 @@ milestones in [ROADMAP.md](ROADMAP.md).
   document.
 - Drag selected files and folders onto folders, open Finder windows, the desktop, System Disk, or
   Trash. A bare drop within the same icon view changes only the saved icon layout.
-- Drag window title bars to move windows, use the lower-right grow box to resize them, and use the
-  zoom box or title-bar double-click to toggle Finder zoom.
+- Drag Finder or Write title bars to move them with an outline preview, use the lower-right grow box
+  to resize them, and use the zoom box or title-bar double-click to toggle window zoom.
 - Use the System, File, Edit, View, and Special menus for Finder commands. An active Write window
   replaces them with System, File, Edit, Format, Font, Size, and View.
-- Open Calculator from the System menu. Escape closes it.
+- Open Calculator from the System menu. It receives ordinary keyboard input while preserving the
+  current Finder or Write menus; Escape closes it.
 - Quit with Command-Q, the native macOS application menu, or the authored System Disk-to-Trash
   gesture. Every normal path observes the same dirty-document and final-save rules.
 

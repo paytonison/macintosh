@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { createDefaultState } from '../../shared/state';
 import {
+  commandShortcut,
   deriveFinderCommandContext,
   finderCommandDestinationId,
   findMenuShortcutEntry,
+  hasOpenDocumentInTrash,
   menuShortcutLabel,
 } from './command-context';
 
@@ -29,20 +31,25 @@ describe('menu shortcut matching', () => {
   const menus = [
     {
       entries: [
-        { id: 'new-folder', shortcut: 'n' as const },
-        { id: 'open', shortcut: 'o' as const, disabled: true },
+        { id: 'new-folder', shortcut: commandShortcut('n') },
+        { id: 'save-as', shortcut: commandShortcut('s', { shift: true }) },
+        { id: 'open', shortcut: commandShortcut('o'), disabled: true },
       ],
     },
-    { entries: [{ id: 'copy', shortcut: 'c' as const }] },
+    { entries: [{ id: 'copy', shortcut: commandShortcut('c') }] },
   ];
 
   it('formats and finds enabled Command shortcuts across menus', () => {
-    expect(menuShortcutLabel('n')).toBe('⌘N');
+    expect(menuShortcutLabel(commandShortcut('n'))).toBe('⌘N');
+    expect(menuShortcutLabel(commandShortcut('s', { shift: true }))).toBe('⇧⌘S');
     expect(findMenuShortcutEntry(menus, shortcutEvent('N'))?.id).toBe('new-folder');
     expect(findMenuShortcutEntry(menus, shortcutEvent('c'))?.id).toBe('copy');
+    expect(findMenuShortcutEntry(menus, shortcutEvent('s', { shiftKey: true }))?.id).toBe(
+      'save-as',
+    );
   });
 
-  it('requires Command and ignores unavailable or additionally modified shortcuts', () => {
+  it('matches every modifier exactly and ignores unavailable shortcuts', () => {
     expect(
       findMenuShortcutEntry(menus, shortcutEvent('c', { metaKey: false, ctrlKey: true })),
     ).toBeNull();
@@ -51,6 +58,32 @@ describe('menu shortcut matching', () => {
     expect(findMenuShortcutEntry(menus, shortcutEvent('n', { ctrlKey: true }))).toBeNull();
     expect(findMenuShortcutEntry(menus, shortcutEvent('n', { altKey: true }))).toBeNull();
     expect(findMenuShortcutEntry(menus, shortcutEvent('n', { shiftKey: true }))).toBeNull();
+    expect(findMenuShortcutEntry(menus, shortcutEvent('s'))).toBeNull();
+    expect(
+      findMenuShortcutEntry(menus, shortcutEvent('s', { shiftKey: true, altKey: true })),
+    ).toBeNull();
+  });
+});
+
+describe('open Write documents in Trash', () => {
+  it('recognizes direct and nested Trash descendants but not unrelated or untitled documents', () => {
+    const state = createDefaultState();
+    const readMe = state.nodes.find((node) => node.id === 'read-me')!;
+    const nestedFolder = {
+      ...state.nodes.find((node) => node.id === 'documents')!,
+      id: 'trashed-folder',
+      name: 'Trashed Folder',
+      parentId: 'trash',
+    };
+    const nestedDocument = { ...readMe, id: 'nested-open', parentId: nestedFolder.id };
+    const directDocument = { ...readMe, id: 'direct-open', parentId: 'trash' };
+    const nodes = [...state.nodes, nestedFolder, nestedDocument, directDocument];
+
+    expect(hasOpenDocumentInTrash(nodes, [])).toBe(false);
+    expect(hasOpenDocumentInTrash(nodes, ['read-me'])).toBe(false);
+    expect(hasOpenDocumentInTrash(nodes, ['direct-open'])).toBe(true);
+    expect(hasOpenDocumentInTrash(nodes, ['nested-open'])).toBe(true);
+    expect(hasOpenDocumentInTrash(nodes, ['missing'])).toBe(false);
   });
 });
 

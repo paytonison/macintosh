@@ -219,9 +219,9 @@ try {
     );
   }
   const savedWindow = state.desktop.windows.find((item) => item.id === 'window-applications');
-  if (!savedWindow || savedWindow.x !== 405 || savedWindow.y !== 105) {
+  if (!savedWindow || savedWindow.x !== 198 || savedWindow.y !== 94) {
     throw new Error(
-      `The Finder window release position was not persisted: ${JSON.stringify(savedWindow)}`,
+      `The Finder window lost-capture cancellation was not persisted: ${JSON.stringify(savedWindow)}`,
     );
   }
 
@@ -291,7 +291,16 @@ try {
     proof.writeFormat !== 'write-v1' ||
     !proof.writeText?.includes('Write smoke document') ||
     !proof.writeText?.includes('Page two') ||
-    proof.writeText?.includes('unsaved')
+    proof.writeText?.includes('unsaved') ||
+    !proof.writeClean ||
+    !proof.writeZoom75 ||
+    proof.writePageCount !== 2 ||
+    proof.writeLayoutState !== 'stable' ||
+    !Number.isFinite(proof.writeLayoutGeneration) ||
+    proof.writeLayoutGeneration <= 0 ||
+    proof.writeExpandedSelection ||
+    !proof.writeUndoDisabled ||
+    !proof.writeRedoDisabled
   ) {
     throw new Error(
       `The saved Write document did not reopen on relaunch: ${JSON.stringify(proof)}.`,

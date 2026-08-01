@@ -622,62 +622,64 @@ export const duplicateNodes = (
   const affectedIds: string[] = [];
   let remainingContent = Math.max(0, MAX_VFS_CONTENT - contentSize(state.nodes));
   let skippedCount = 0;
-  let truncatedCount = 0;
 
-  const clone = (
-    source: VfsNode,
-    destinationId: string,
-    name: string,
-    retainIconPosition: boolean,
-    ancestry: ReadonlySet<string> = new Set(),
-  ): VfsNode | null => {
-    if (ancestry.has(source.id)) {
-      skippedCount += 1;
-      return null;
+  const collectTree = (
+    root: VfsNode,
+  ): { nodes: VfsNode[]; complete: boolean; contentLength: number } => {
+    const nodes: VfsNode[] = [];
+    const visited = new Set<string>();
+    const pending = [root];
+    let contentLength = 0;
+
+    while (pending.length > 0) {
+      const source = pending.pop();
+      if (!source) continue;
+      if (visited.has(source.id)) return { nodes, complete: false, contentLength };
+      visited.add(source.id);
+      nodes.push(source);
+      if (source.payload) contentLength += documentPayloadText(source.payload).length;
+
+      const children = byParent.get(source.id) ?? [];
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        pending.push(children[index]!);
+      }
     }
-    if (state.nodes.length + additions.length >= MAX_VFS_NODES) {
-      skippedCount += 1 + descendantsOf(state.nodes, source.id).size;
-      return null;
-    }
-    const id = uniqueId(source.kind, ids);
-    let payload = source.payload;
-    const payloadTextLength = payload ? documentPayloadText(payload).length : 0;
-    if (payload && payloadTextLength > remainingContent) {
-      payload = {
-        format: 'plain-text',
-        text: documentPayloadText(payload).slice(0, remainingContent),
-      };
-      remainingContent = 0;
-      truncatedCount += 1;
-    } else {
-      remainingContent -= payloadTextLength;
-    }
-    const copy: VfsNode = {
-      ...source,
-      id,
-      parentId: destinationId,
-      name,
-      iconPosition: retainIconPosition ? source.iconPosition : undefined,
-      ...(payload === undefined ? {} : { payload }),
-      createdAt: timestamp,
-      modifiedAt: timestamp,
-    };
-    additions.push(copy);
-    const childAncestry = new Set(ancestry);
-    childAncestry.add(source.id);
-    for (const child of byParent.get(source.id) ?? []) {
-      clone(child, id, child.name, true, childAncestry);
-    }
-    return copy;
+
+    return { nodes, complete: true, contentLength };
   };
 
   for (const root of roots) {
-    const name = uniqueName(root.name, root.kind, names);
-    const copy = clone(root, parentId, name, false);
-    if (copy) {
-      names.add(name);
-      affectedIds.push(copy.id);
+    const tree = collectTree(root);
+    const availableNodes = MAX_VFS_NODES - state.nodes.length - additions.length;
+    if (
+      !tree.complete ||
+      tree.nodes.length > availableNodes ||
+      tree.contentLength > remainingContent
+    ) {
+      skippedCount += tree.nodes.length;
+      continue;
     }
+
+    const name = uniqueName(root.name, root.kind, names);
+    const copiedIds = new Map<string, string>();
+    for (const source of tree.nodes) {
+      copiedIds.set(source.id, uniqueId(source.kind, ids));
+    }
+    const rootCopyId = copiedIds.get(root.id)!;
+    for (const source of tree.nodes) {
+      additions.push({
+        ...source,
+        id: copiedIds.get(source.id)!,
+        parentId: source.id === root.id ? parentId : copiedIds.get(source.parentId ?? '')!,
+        name: source.id === root.id ? name : source.name,
+        iconPosition: source.id === root.id ? undefined : source.iconPosition,
+        createdAt: timestamp,
+        modifiedAt: timestamp,
+      });
+    }
+    remainingContent -= tree.contentLength;
+    names.add(name);
+    affectedIds.push(rootCopyId);
   }
 
   return {
@@ -685,7 +687,7 @@ export const duplicateNodes = (
     affectedIds,
     addedCount: additions.length,
     skippedCount,
-    truncatedCount,
+    truncatedCount: 0,
   };
 };
 

@@ -9,13 +9,69 @@ export const WRITE_FONT_FAMILIES = ['serif', 'sans', 'mono'] as const;
 export const WRITE_FONT_SIZES = [9, 10, 12, 14, 18, 24] as const;
 export const WRITE_ALIGNMENTS = ['left', 'center', 'right'] as const;
 export const WRITE_LINE_SPACINGS = [1, 1.5, 2] as const;
-export const WRITE_MARK_TYPES = ['bold', 'italic', 'underline'] as const;
+export const WRITE_TEXT_MARK_TYPES = ['bold', 'italic', 'underline'] as const;
+export const WRITE_FONT_FAMILY_MARK_TYPES = [
+  'font-family-serif',
+  'font-family-sans',
+  'font-family-mono',
+] as const;
+export const WRITE_FONT_SIZE_MARK_TYPES = [
+  'font-size-9',
+  'font-size-10',
+  'font-size-12',
+  'font-size-14',
+  'font-size-18',
+  'font-size-24',
+] as const;
+export const WRITE_MARK_TYPES = [
+  ...WRITE_TEXT_MARK_TYPES,
+  ...WRITE_FONT_FAMILY_MARK_TYPES,
+  ...WRITE_FONT_SIZE_MARK_TYPES,
+] as const;
 
 export type WriteFontFamily = (typeof WRITE_FONT_FAMILIES)[number];
 export type WriteFontSize = (typeof WRITE_FONT_SIZES)[number];
 export type WriteAlignment = (typeof WRITE_ALIGNMENTS)[number];
 export type WriteLineSpacing = (typeof WRITE_LINE_SPACINGS)[number];
+export type WriteTextMarkType = (typeof WRITE_TEXT_MARK_TYPES)[number];
+export type WriteFontFamilyMarkType = (typeof WRITE_FONT_FAMILY_MARK_TYPES)[number];
+export type WriteFontSizeMarkType = (typeof WRITE_FONT_SIZE_MARK_TYPES)[number];
 export type WriteMarkType = (typeof WRITE_MARK_TYPES)[number];
+
+const WRITE_FONT_FAMILY_MARK_BY_VALUE: Record<WriteFontFamily, WriteFontFamilyMarkType> = {
+  serif: 'font-family-serif',
+  sans: 'font-family-sans',
+  mono: 'font-family-mono',
+};
+
+const WRITE_FONT_SIZE_MARK_BY_VALUE: Record<WriteFontSize, WriteFontSizeMarkType> = {
+  9: 'font-size-9',
+  10: 'font-size-10',
+  12: 'font-size-12',
+  14: 'font-size-14',
+  18: 'font-size-18',
+  24: 'font-size-24',
+};
+
+export const writeFontFamilyMarkType = (family: WriteFontFamily): WriteFontFamilyMarkType =>
+  WRITE_FONT_FAMILY_MARK_BY_VALUE[family];
+
+export const writeFontSizeMarkType = (size: WriteFontSize): WriteFontSizeMarkType =>
+  WRITE_FONT_SIZE_MARK_BY_VALUE[size];
+
+export const writeMarkFontFamily = (type: WriteMarkType): WriteFontFamily | null => {
+  const entry = Object.entries(WRITE_FONT_FAMILY_MARK_BY_VALUE).find(
+    ([, markType]) => markType === type,
+  );
+  return (entry?.[0] as WriteFontFamily | undefined) ?? null;
+};
+
+export const writeMarkFontSize = (type: WriteMarkType): WriteFontSize | null => {
+  const entry = Object.entries(WRITE_FONT_SIZE_MARK_BY_VALUE).find(
+    ([, markType]) => markType === type,
+  );
+  return entry ? (Number(entry[0]) as WriteFontSize) : null;
+};
 
 export interface PlainTextDocumentPayload {
   format: 'plain-text';
@@ -86,7 +142,7 @@ export const defaultWriteTabStops = (): number[] => {
 };
 
 export const createDefaultWriteParagraphStyle = (): WriteParagraphStyle => ({
-  fontFamily: 'serif',
+  fontFamily: 'sans',
   fontSize: 12,
   alignment: 'left',
   leftIndent: 0,
@@ -121,11 +177,16 @@ const finitePoint = (value: unknown, fallback: number, minimum: number, maximum:
     ? Math.round(Math.min(maximum, Math.max(minimum, value)))
     : fallback;
 
-const sanitizeMarks = (value: unknown): WriteMark[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
+const sanitizeMarks = (
+  value: unknown,
+  fallbackFamily: WriteFontFamily,
+  fallbackSize: WriteFontSize,
+): WriteMark[] | undefined => {
   const seen = new Set<WriteMarkType>();
   const marks: WriteMark[] = [];
-  for (const candidate of value) {
+  let hasFamily = false;
+  let hasSize = false;
+  for (const candidate of Array.isArray(value) ? value : []) {
     if (
       !isRecord(candidate) ||
       !isOneOf(candidate.type, WRITE_MARK_TYPES) ||
@@ -133,9 +194,18 @@ const sanitizeMarks = (value: unknown): WriteMark[] | undefined => {
     ) {
       continue;
     }
+    const family = writeMarkFontFamily(candidate.type);
+    const size = writeMarkFontSize(candidate.type);
+    if ((family !== null && hasFamily) || (size !== null && hasSize)) continue;
     seen.add(candidate.type);
     marks.push({ type: candidate.type });
+    if (family !== null) hasFamily = true;
+    if (size !== null) hasSize = true;
   }
+  if (!hasFamily && fallbackFamily !== 'sans') {
+    marks.push({ type: writeFontFamilyMarkType(fallbackFamily) });
+  }
+  if (!hasSize && fallbackSize !== 12) marks.push({ type: writeFontSizeMarkType(fallbackSize) });
   return marks.length > 0 ? marks : undefined;
 };
 
@@ -197,6 +267,7 @@ export const sanitizeDocumentPayload = (value: unknown): DocumentPayload => {
       continue;
     }
     if (source.type !== 'paragraph' || remainingInlines <= 0) continue;
+    const style = sanitizeWriteParagraphStyle(source.style);
     const content: WriteInline[] = [];
     const sourceContent = Array.isArray(source.content) ? source.content : [];
     for (const inline of sourceContent) {
@@ -211,7 +282,7 @@ export const sanitizeDocumentPayload = (value: unknown): DocumentPayload => {
       }
       const text = inline.text.slice(0, remainingText);
       if (!text) break;
-      const marks = sanitizeMarks(inline.marks);
+      const marks = sanitizeMarks(inline.marks, style.fontFamily, style.fontSize);
       content.push({ type: 'text', text, ...(marks ? { marks } : {}) });
       remainingText -= text.length;
       remainingInlines -= 1;
@@ -219,7 +290,11 @@ export const sanitizeDocumentPayload = (value: unknown): DocumentPayload => {
     }
     blocks.push({
       type: 'paragraph',
-      style: sanitizeWriteParagraphStyle(source.style),
+      style:
+        content.some((inline) => inline.type === 'text') &&
+        (style.fontFamily !== 'sans' || style.fontSize !== 12)
+          ? { ...style, fontFamily: 'sans', fontSize: 12 }
+          : style,
       content,
     });
     if (remainingText <= 0) break;

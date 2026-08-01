@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createDefaultState, MAX_VFS_NODES } from '../../shared/state';
-import { createDefaultWriteParagraphStyle } from '../../shared/write';
+import { createDefaultWriteParagraphStyle, type DocumentPayload } from '../../shared/write';
 import {
   addFolder,
   duplicateNodes,
@@ -15,6 +15,46 @@ import {
   rectanglesOverlap,
   MAX_VFS_CONTENT,
 } from '../../shared/vfs';
+
+const richPayload = (): DocumentPayload => ({
+  format: 'write-v1',
+  pagePreset: 'us-letter-1in',
+  blocks: [
+    {
+      type: 'paragraph',
+      style: {
+        ...createDefaultWriteParagraphStyle(),
+        alignment: 'center',
+        lineSpacing: 1.5,
+        tabStops: [36, 108, 216],
+      },
+      content: [
+        {
+          type: 'text',
+          text: 'Exact',
+          marks: [
+            { type: 'bold' },
+            { type: 'underline' },
+            { type: 'font-family-serif' },
+            { type: 'font-size-14' },
+          ],
+        },
+        { type: 'tab' },
+        {
+          type: 'text',
+          text: 'copy',
+          marks: [{ type: 'italic' }, { type: 'font-family-serif' }, { type: 'font-size-14' }],
+        },
+      ],
+    },
+    { type: 'page-break' },
+    {
+      type: 'paragraph',
+      style: createDefaultWriteParagraphStyle(),
+      content: [{ type: 'text', text: 'Second page' }],
+    },
+  ],
+});
 
 describe('virtual Finder helpers', () => {
   it('sorts list view without disturbing icon insertion order', () => {
@@ -325,6 +365,99 @@ describe('virtual Finder helpers', () => {
     });
   });
 
+  it('duplicates rich documents without demoting or rewriting their payload', () => {
+    const state = createDefaultState();
+    const source = state.nodes.find((node) => node.id === 'read-me');
+    if (!source) throw new Error('Missing rich duplicate fixture.');
+    source.payload = richPayload();
+
+    const duplicated = duplicateNodes(state, [source.id], 'documents', '2026-07-22T12:00:00.000Z');
+    const copy = duplicated.state.nodes.find(
+      (node) => node.parentId === 'documents' && node.name === 'Read Me copy',
+    );
+
+    expect(duplicated).toMatchObject({
+      affectedIds: [copy?.id],
+      addedCount: 1,
+      skippedCount: 0,
+      truncatedCount: 0,
+    });
+    expect(copy?.payload).toEqual(source.payload);
+    expect(copy?.payload?.format).toBe('write-v1');
+    expect(source.payload).toEqual(richPayload());
+  });
+
+  it('moves a rich document into and out of Trash without changing its payload', () => {
+    const state = createDefaultState();
+    const source = state.nodes.find((node) => node.id === 'read-me');
+    if (!source) throw new Error('Missing rich Trash fixture.');
+    source.payload = richPayload();
+
+    const trashed = moveNodes(state, [source.id], 'trash', '2026-07-22T12:00:00.000Z');
+    const trashedNode = trashed.state.nodes.find((node) => node.id === source.id);
+    expect(trashedNode).toEqual({
+      ...source,
+      parentId: 'trash',
+      iconPosition: undefined,
+      modifiedAt: '2026-07-22T12:00:00.000Z',
+    });
+    expect(trashedNode?.payload).toEqual(richPayload());
+
+    const restored = moveNodes(trashed.state, [source.id], 'documents', '2026-07-22T12:01:00.000Z');
+    expect(restored.state.nodes.find((node) => node.id === source.id)).toEqual({
+      ...source,
+      parentId: 'documents',
+      iconPosition: undefined,
+      modifiedAt: '2026-07-22T12:01:00.000Z',
+    });
+  });
+
+  it('skips a whole duplicate when exact content or the full node tree cannot fit', () => {
+    const contentLimited = createDefaultState();
+    const source = contentLimited.nodes.find((node) => node.id === 'read-me');
+    if (!source) throw new Error('Missing content-cap fixture.');
+    source.payload = {
+      format: 'write-v1',
+      pagePreset: 'us-letter-1in',
+      blocks: [
+        {
+          type: 'paragraph',
+          style: createDefaultWriteParagraphStyle(),
+          content: [{ type: 'text', text: 'x'.repeat(Math.floor(MAX_VFS_CONTENT / 2) + 1) }],
+        },
+      ],
+    };
+
+    expect(duplicateNodes(contentLimited, [source.id], 'documents')).toEqual({
+      state: contentLimited,
+      affectedIds: [],
+      addedCount: 0,
+      skippedCount: 1,
+      truncatedCount: 0,
+    });
+
+    const nodeLimited = createDefaultState();
+    while (nodeLimited.nodes.length < MAX_VFS_NODES - 1) {
+      const index = nodeLimited.nodes.length;
+      nodeLimited.nodes.push({
+        id: `copy-cap-filler-${index}`,
+        parentId: 'system-disk',
+        name: `Copy cap filler ${index}`,
+        kind: 'document',
+        createdAt: '2026-07-22T12:00:00.000Z',
+        modifiedAt: '2026-07-22T12:00:00.000Z',
+      });
+    }
+
+    expect(duplicateNodes(nodeLimited, ['documents'], 'system-disk')).toEqual({
+      state: nodeLimited,
+      affectedIds: [],
+      addedCount: 0,
+      skippedCount: 2,
+      truncatedCount: 0,
+    });
+  });
+
   it('auto-places copied roots while retaining layout inside copied folders', () => {
     const state = createDefaultState();
     const documents = state.nodes.find((node) => node.id === 'documents');
@@ -407,7 +540,7 @@ describe('virtual Finder helpers', () => {
             {
               type: 'paragraph',
               style: {
-                fontFamily: 'serif',
+                fontFamily: 'sans',
                 fontSize: 12,
                 alignment: 'left',
                 leftIndent: 0,
@@ -416,7 +549,13 @@ describe('virtual Finder helpers', () => {
                 tabStops: [36],
                 lineSpacing: 1,
               },
-              content: [{ type: 'text', text: 'saved', marks: [{ type: 'bold' }] }],
+              content: [
+                {
+                  type: 'text',
+                  text: 'saved',
+                  marks: [{ type: 'bold' }, { type: 'font-family-serif' }],
+                },
+              ],
             },
           ],
         },
@@ -428,7 +567,13 @@ describe('virtual Finder helpers', () => {
         format: 'write-v1',
         blocks: [
           {
-            content: [{ type: 'text', text: 'saved', marks: [{ type: 'bold' }] }],
+            content: [
+              {
+                type: 'text',
+                text: 'saved',
+                marks: [{ type: 'bold' }, { type: 'font-family-serif' }],
+              },
+            ],
           },
         ],
       },
@@ -560,8 +705,8 @@ describe('virtual Finder helpers', () => {
             {
               type: 'paragraph',
               style: {
-                fontFamily: 'mono',
-                fontSize: 10,
+                fontFamily: 'sans',
+                fontSize: 12,
                 alignment: 'right',
                 leftIndent: 12,
                 firstLineIndent: 6,
@@ -569,7 +714,17 @@ describe('virtual Finder helpers', () => {
                 tabStops: [36, 72],
                 lineSpacing: 1.5,
               },
-              content: [{ type: 'text', text: 'valid', marks: [{ type: 'underline' }] }],
+              content: [
+                {
+                  type: 'text',
+                  text: 'valid',
+                  marks: [
+                    { type: 'underline' },
+                    { type: 'font-family-mono' },
+                    { type: 'font-size-10' },
+                  ],
+                },
+              ],
             },
             { type: 'page-break' },
           ],

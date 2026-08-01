@@ -28,7 +28,7 @@ The current implementation is the baseline. A rule in this document may also ide
 
 **Application window** is a transient window owned by an application. Write is the first full application and may own several document windows at once.
 
-**Desk accessory** is a small utility opened from the System menu. Calculator is the first desk accessory. A desk accessory may become the frontmost interaction target without replacing Finder as the menu owner.
+**Desk accessory** is a small utility opened from the System menu. Calculator is the first desk accessory. A desk accessory may become the frontmost interaction target without replacing the active Finder or Write application as the menu owner.
 
 **Dialog** is a modal question, notice, or information surface. Dialogs are not ordinary application windows.
 
@@ -101,7 +101,7 @@ An inactive Finder window remains visible but uses inactive title-bar treatment.
 
 Calculator is a single-instance desk accessory opened from the System menu.
 
-Opening Calculator makes it the frontmost interaction target. Finder remains the menu owner, other windows use inactive treatment, and Calculator receives its supported unmodified keyboard input. Clicking a Finder or Write window explicitly transfers activation and keyboard ownership; clicking Calculator transfers it back.
+Opening Calculator makes it the frontmost interaction target. The Finder or Write application that opened it remains the menu owner, other windows use inactive treatment, and Calculator receives its supported unmodified keyboard input. Clicking a Finder or Write window explicitly transfers application activation and keyboard ownership; clicking Calculator transfers keyboard ownership back to the desk accessory without changing the active application.
 
 Opening Calculator while it is already open must not create a second Calculator.
 
@@ -115,11 +115,11 @@ Calculator state is session-local:
 
 Calculator movement uses an outline preview. Its actual frame remains fixed during the drag and moves only when the pointer is released successfully. Cancellation restores the original position.
 
-Finder, Write, and Calculator share an explicit active-owner model. The model determines visual activation, frontmost layer, keyboard routing, and menu ownership while their application-specific state remains local.
+Finder, Write, and Calculator share an explicit active-application and active-target model. The active application owns the menu set, the active target owns ordinary keyboard input, and one transient ordinary-window order determines visual stacking while application-specific state remains local.
 
 ## Menus and commands
 
-The menu bar is a single global surface. Finder owns System, File, Edit, View, and Special when Finder or Calculator is active. An active Write window replaces those definitions with Write's System, File, Edit, Format, Font, Size, and View menus. Activating another window changes the menu owner immediately.
+The menu bar is a single global surface. Finder owns System, File, Edit, View, and Special while Finder is the active application. Write owns System, File, Edit, Format, Font, Size, and View while Write is the active application. Calculator may become the active keyboard target without changing that menu owner. Activating a Finder or Write window changes the active application and menu set immediately.
 
 Menu behavior follows these rules:
 
@@ -145,7 +145,9 @@ Current Finder command context is:
 - **Select All** selects all children of the active non-document Finder window; otherwise it selects the desktop icons.
 - **Clear Selection** clears both selection domains.
 - **View by Icon** and **View by Name** change the persisted Finder view mode.
-- **Empty Trash** is enabled only when Trash contains nodes.
+- **Empty Trash** is enabled only when Trash contains nodes and no open saved Write document is
+  directly or indirectly inside Trash. The action repeats that check against current state before
+  mutating the VFS.
 - **Clean Up Desktop** restores the default System Disk and Trash positions; ordinary Desktop item positions remain free-form.
 - **Eject System Disk…** explains the drag-to-Trash shutdown gesture; it does not eject by itself.
 
@@ -158,44 +160,52 @@ Write is the built-in page-oriented WYSIWYG word processor. Its original code-dr
 - Opening Write creates a transient, untitled plain-text document. It does not allocate a VFS node until Save or Save As succeeds.
 - Opening any VFS document opens it in Write, including imported and legacy plain-text documents.
 - One saved document has at most one open Write window. Reopening it activates and raises that window instead of creating a duplicate.
-- Several different saved documents and untitled documents may be open at once. Write window order is transient and back-to-front; the active Write window owns menus and editor keyboard input.
+- Several different saved documents and untitled documents may be open at once. Finder, Write, and
+  Calculator share one transient back-to-front ordinary-window order. The active Write application
+  owns Write menus, while its active document editor owns Write keyboard input unless Calculator is
+  the active target.
 - Write window geometry, zoom, selection, undo history, page projection, and open-window state are session-local. They are not restored after relaunch.
+- Write uses the same stationary-outline move session, bounded local resize preview, zoom-box and
+  title-bar-double-click action, inactive-control activation rule, and stepped opening or closing
+  frame treatment as Finder. Reopening a saved document during its closing animation cancels the
+  close and raises the existing window. With no visible source icon, an animation originates from
+  the final frame center.
 
 ### Page model
 
 Write displays US Letter pages at 612 by 792 logical points with 72-point margins, a 468-point text width, and 648-point usable page height. The initial view is 75%; View provides 50%, 75%, and 100% without changing document semantics.
 
-Automatic overflow and backflow are editor projection. Manual page breaks are explicit semantic blocks, but automatic page boundaries, page count, caret page, page gaps, and measured layout never enter persistent state. Editing before an automatic boundary may move later text between pages. The status line reports the caret page, total pages, and current zoom.
+Automatic overflow and backflow are editor projection. Manual page breaks are explicit semantic blocks, but automatic page boundaries, page count, caret page, page gaps, and measured layout never enter persistent state. Editing before an automatic boundary may move later text between pages. Each semantic editor generation removes prior projection paint, measures on a later animation frame, and requires two consecutive matching layout signatures within four passes. A superseded generation cannot publish stale pagination. Failure remains visible and recoverable, and Save refuses to mutate the VFS until the newest generation has a stable projection. The status line reports the caret page, total pages, current zoom, or the current layout failure.
 
 ### Editing and formatting
 
-Write uses a custom ProseMirror schema and authored controls rather than a packaged editor UI. The default paragraph is 12-point serif, left aligned, single spaced, with no indents and default tabs every 36 points.
+Write uses a custom ProseMirror schema and authored controls rather than a packaged editor UI. The implicit character default is 12-point Helvetica through the logical sans family. The default paragraph is left aligned, single spaced, with no indents and default tabs every 36 points.
 
 The supported rich surface is deliberately finite:
 
-- serif, sans, and monospaced font families;
-- 9, 10, 12, 14, 18, and 24 point sizes;
+- serif, sans, and monospaced font-family marks on text selections;
+- 9, 10, 12, 14, 18, and 24 point size marks on text selections;
 - bold, italic, and underline marks;
 - left, center, and right paragraph alignment;
 - left, first-line, and right indents;
 - single, 1.5, and double line spacing;
 - inline tabs, draggable or removable custom tab stops, and new ruler stops;
 - manual page breaks;
-- Undo, Redo, Cut, Copy, Paste, and Select All.
+- Undo, Redo, Cut, Copy, Paste, Clear, Plain Text, and Select All.
 
-Menu items, keyboard shortcuts, and ruler controls dispatch the same editor commands and read availability or checked state from the same active editor context. Clipboard commands cross only a narrow semantic main-process capability; the renderer receives no general Electron or host-filesystem access.
+Menu items, keyboard shortcuts, and ruler controls dispatch the same editor commands and read availability or checked state from the same active editor context. Mixed selections expose no invented paragraph value; character marks and ruler state use an explicit indeterminate presentation. Plain Text removes bold, italic, and underline only; it retains font family, font size, and paragraph formatting. Clear deletes only the current non-empty selection. Clipboard commands cross only a narrow semantic main-process capability; the renderer receives no general Electron or host-filesystem access. Supported rich clipboard structure is retained, including partial-selection family and size marks. Unsupported families, sizes, HTML capabilities, and arbitrary CSS are discarded by the finite schema, and a file paste owned by Write never becomes a Finder import.
 
-An existing plain document remains `{format: plain-text, text}` through ordinary text editing, line breaks, and plain tabs. The first rich-only action promotes it in place to `write-v1` without changing its text or whitespace. A rich document persists a linear list of paragraph and page-break blocks. Paragraphs contain an allowlisted style and text or tab inlines with allowlisted marks. It does not persist HTML, DOM state, measured coordinates, cached pages, or arbitrary CSS.
+An existing plain document remains `{format: plain-text, text}` through ordinary text editing, line breaks, and plain tabs. The first rich-only action promotes it in place to `write-v1` without changing its text or whitespace. A rich document persists a linear list of paragraph and page-break blocks. Paragraphs contain allowlisted alignment, indent, tab-stop, and line-spacing state; text inlines carry allowlisted family, size, bold, italic, and underline marks. Sans at 12 points remains implicit until a different value is explicitly applied. Sanitization upgrades the earlier beta representation that stored family and size on a paragraph into equivalent inline marks, preserving explicit serif or other supported legacy formatting. Write does not persist HTML, DOM state, measured coordinates, cached pages, or arbitrary CSS.
 
 ### Open, save, close, and quit
 
-Write does not autosave and has no crash recovery or session restoration. Save explicitly replaces the canonical payload of an existing VFS document through the typed main-process mutation. Save As creates a new VFS document, resolves name collisions without overwriting, and then binds the current window to the committed node. A payload that cannot be stored completely is rejected atomically: Write never accepts a truncated save, and the draft remains dirty and recoverable.
+Write does not autosave and has no crash recovery or session restoration. Save first waits for the live editor's newest stable layout and then explicitly replaces the canonical payload of an existing VFS document through the typed main-process mutation. Each window has an independent coalescing save queue. A completed older snapshot advances only the saved baseline; it never overwrites a newer live draft, which remains dirty until saved. Save As creates a new VFS document, resolves name collisions without overwriting, and then binds the current window to the committed node. A payload that cannot be stored completely is rejected atomically: Write never accepts a truncated save, and the draft remains dirty and recoverable.
 
-Open and Save As browse the virtual disk only, begin in Documents, and exclude Trash and every descendant of Trash. They do not expose host paths. Host documents enter the VFS only through the existing explicit drop or paste import path.
+Open and Save As browse the virtual disk only, begin in Documents, and provide routes to Desktop, System Disk, and nested ordinary folders. Open lists documents and folders; Save As lists destination folders only. Both exclude Trash and every descendant of Trash. They do not expose host paths. Host documents enter the VFS only through the existing explicit drop or paste import path.
 
-Closing a clean Write window is immediate. Closing a dirty window asks Save, Don’t Save, or Cancel. Saving an untitled window enters Save As; a failed save keeps the window and draft recoverable behind a visible persistence error.
+Closing a clean Write window needs no prompt and removes it after the closing animation. Closing a dirty window asks Save, Don’t Save, or Cancel. Saving an untitled window enters Save As; a failed save cancels that close attempt and keeps the window and draft recoverable behind a visible persistence error. A close or Quit request made during an in-flight save joins that window's queue and cannot advance until the latest requested generation is clean.
 
-Normal Quit and System Disk ejection review every dirty Write window before final shutdown. Each document receives its own Save, Don’t Save, or Cancel decision. Cancel aborts the whole exit and preserves every open draft, including a draft previously reviewed with Don’t Save during that canceled attempt. Electron may proceed only after required document mutations and the final presentation save succeed.
+Normal Quit and System Disk ejection review every dirty Write window before final shutdown. Each document receives its own Save, Don’t Save, or Cancel decision. Cancel or a failed document save aborts the whole exit and preserves every open draft, including a draft previously reviewed with Don’t Save during that canceled attempt. A dirty discard-close animation already in progress yields to a newer Quit or ejection review instead of deleting its document underneath that review. Electron may proceed only after required document mutations and the final presentation save succeed.
 
 Printing, PDF or HTML export, images, tables, lists, spellcheck, collaboration, arbitrary font loading, and host Save dialogs are outside this version.
 

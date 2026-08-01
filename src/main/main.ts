@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   ipcMain,
   Menu,
   nativeImage,
@@ -35,7 +36,8 @@ const persistenceProbeMode = process.argv.includes('--persistence-probe');
 const normalQuitProbeMode = process.argv.includes('--normal-quit-probe');
 const captureAboutMode = process.argv.includes('--capture-about');
 const captureCalculatorMode = process.argv.includes('--capture-calculator');
-const captureWriteMode = process.argv.includes('--capture-write');
+const captureWriteMixedMode = process.argv.includes('--capture-write-mixed');
+const captureWriteMode = process.argv.includes('--capture-write') || captureWriteMixedMode;
 const captureStartupArgument = process.argv.find((value) => value.startsWith('--capture-startup='));
 const captureSizeArgument = process.argv.find((value) => value.startsWith('--capture-size='));
 const captureSize = (() => {
@@ -430,6 +432,328 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     )) as boolean;
     if (!invoked) throw new Error(`Smoke test could not invoke ${actionId}.`);
     await pause(40);
+  };
+  const readRendererMenuState = async (
+    menuId: string,
+    actionIds: readonly string[],
+  ): Promise<Record<string, { checked: string | null; disabled: boolean }>> => {
+    const found = (await window.webContents.executeJavaScript(
+      `(() => {
+        const menu = document.querySelector(${JSON.stringify(`[data-menu="${menuId}"]`)});
+        if (!(menu instanceof HTMLElement)) return false;
+        menu.click();
+        return true;
+      })()`,
+      true,
+    )) as boolean;
+    if (!found) throw new Error(`Smoke test could not open the ${menuId} menu.`);
+    await pause(20);
+    const result = (await window.webContents.executeJavaScript(
+      `(() => {
+        const result = {};
+        for (const actionId of ${JSON.stringify(actionIds)}) {
+          const action = document.querySelector('[data-menu-action="' + actionId + '"]');
+          if (!(action instanceof HTMLButtonElement)) return null;
+          result[actionId] = {
+            checked: action.getAttribute('aria-checked'),
+            disabled: action.disabled
+          };
+        }
+        document.querySelector(${JSON.stringify(`[data-menu="${menuId}"]`)})?.click();
+        return result;
+      })()`,
+      true,
+    )) as Record<string, { checked: string | null; disabled: boolean }> | null;
+    await pause(20);
+    if (!result) throw new Error(`Smoke test could not read the ${menuId} menu state.`);
+    return result;
+  };
+  const copyActiveWriteSelection = async (expected: string, label: string): Promise<string> => {
+    clipboard.clear();
+    await invokeRendererMenuAction('edit', 'copy');
+    let copied = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      copied = clipboard.readText();
+      if (copied === expected) return copied;
+      await pause(20);
+    }
+    throw new Error(`${label} copied the wrong retained selection: ${JSON.stringify(copied)}.`);
+  };
+  const activateWriteTextSelection = async (
+    writeSelector: string,
+    from: number,
+    to: number,
+    label: string,
+  ): Promise<string> => {
+    const selectedText = (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector(${JSON.stringify(writeSelector)});
+        const viewport = write?.querySelector('.write-document-viewport');
+        const editor = write?.querySelector('[data-write-editor="true"]');
+        if (!(write instanceof HTMLElement) || !(viewport instanceof HTMLElement) || !(editor instanceof HTMLElement)) return null;
+        viewport.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          button: 0,
+          pointerId: 901
+        }));
+        editor.focus();
+        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+        const textNodes = [];
+        let total = 0;
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          textNodes.push({ node, start: total, end: total + (node.textContent?.length ?? 0) });
+          total += node.textContent?.length ?? 0;
+        }
+        const pointAt = (offset) => {
+          const clamped = Math.max(0, Math.min(total, offset));
+          const entry = textNodes.find((candidate) => clamped <= candidate.end) ?? textNodes.at(-1);
+          return entry ? { node: entry.node, offset: Math.max(0, clamped - entry.start) } : null;
+        };
+        const start = pointAt(${String(from)});
+        const end = pointAt(${String(to)});
+        if (!start || !end) return null;
+        const range = document.createRange();
+        range.setStart(start.node, start.offset);
+        range.setEnd(end.node, end.offset);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        document.dispatchEvent(new Event('selectionchange'));
+        return selection?.toString() ?? '';
+      })()`,
+      true,
+    )) as string | null;
+    await pause(50);
+    if (selectedText === null || selectedText.length !== to - from) {
+      throw new Error(`${label} could not establish its retained selection.`);
+    }
+    return selectedText;
+  };
+  const activateWriteMatchingTextSelection = async (
+    writeSelector: string,
+    text: string,
+    label: string,
+  ): Promise<string> => {
+    const selectedText = (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector(${JSON.stringify(writeSelector)});
+        const viewport = write?.querySelector('.write-document-viewport');
+        const editor = write?.querySelector('[data-write-editor="true"]');
+        if (!(write instanceof HTMLElement) || !(viewport instanceof HTMLElement) || !(editor instanceof HTMLElement)) return null;
+        viewport.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          button: 0,
+          pointerId: 903
+        }));
+        editor.focus();
+        const targetText = ${JSON.stringify(text)};
+        const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+        let target = null;
+        let offset = -1;
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const nextOffset = (node.textContent ?? '').indexOf(targetText);
+          if (nextOffset < 0) continue;
+          target = node;
+          offset = nextOffset;
+          break;
+        }
+        if (!target || offset < 0) return null;
+        const range = document.createRange();
+        range.setStart(target, offset);
+        range.setEnd(target, offset + targetText.length);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        document.dispatchEvent(new Event('selectionchange'));
+        return selection?.toString() ?? '';
+      })()`,
+      true,
+    )) as string | null;
+    await pause(50);
+    if (selectedText !== text) {
+      throw new Error(
+        `${label} could not establish its retained selection: ${JSON.stringify(selectedText)}.`,
+      );
+    }
+    return selectedText;
+  };
+  const reactivateWriteEditor = async (writeSelector: string, label: string): Promise<string> => {
+    const activated = (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector(${JSON.stringify(writeSelector)});
+        const viewport = write?.querySelector('.write-document-viewport');
+        if (!(write instanceof HTMLElement) || !(viewport instanceof HTMLElement)) return false;
+        viewport.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          button: 0,
+          pointerId: 902
+        }));
+        viewport.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: true,
+          button: 0,
+          pointerId: 902
+        }));
+        return true;
+      })()`,
+      true,
+    )) as boolean;
+    await pause(50);
+    if (!activated) throw new Error(`${label} could not reactivate its window.`);
+    const selectedText = (await window.webContents.executeJavaScript(
+      `(() => {
+        const editor = document.querySelector(
+          ${JSON.stringify(`${writeSelector} [data-write-editor="true"]`)}
+        );
+        if (!(editor instanceof HTMLElement)) return null;
+        editor.focus();
+        return window.getSelection()?.toString() ?? '';
+      })()`,
+      true,
+    )) as string | null;
+    await pause(30);
+    if (selectedText === null) throw new Error(`${label} could not reactivate its editor.`);
+    return selectedText;
+  };
+  const readWriteRulerState = async (
+    writeSelector: string,
+  ): Promise<{
+    leftIndent: string | null;
+    firstLineIndent: string | null;
+    rightIndent: string | null;
+    tabs: string[];
+    mixed: string | null;
+  }> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector(${JSON.stringify(writeSelector)});
+        const markerLeft = (label) => {
+          const marker = write?.querySelector('[aria-label="' + label + '"]');
+          return marker instanceof HTMLElement ? marker.style.left : null;
+        };
+        const mixed = write?.querySelector('.write-ruler-mixed-indicator');
+        return {
+          leftIndent: markerLeft('Left indent'),
+          firstLineIndent: markerLeft('First-line indent'),
+          rightIndent: markerLeft('Right indent'),
+          tabs: [...(write?.querySelectorAll('.write-ruler-marker.is-tab') ?? [])]
+            .map((tab) => tab.getAttribute('aria-label') ?? ''),
+          mixed: mixed?.getAttribute('aria-label') ?? null
+        };
+      })()`,
+      true,
+    )) as {
+      leftIndent: string | null;
+      firstLineIndent: string | null;
+      rightIndent: string | null;
+      tabs: string[];
+      mixed: string | null;
+    };
+  type WriteLayoutSnapshot = {
+    state: string | null;
+    generation: string | null;
+    pass: string | null;
+    pageCount: string | null;
+    status: string;
+  };
+  const waitForWriteLayout = async (
+    writeSelector: string,
+    label: string,
+  ): Promise<WriteLayoutSnapshot> => {
+    const deadline = Date.now() + 3_000;
+    let previous: WriteLayoutSnapshot | null = null;
+    let last: WriteLayoutSnapshot | null = null;
+    while (Date.now() < deadline) {
+      last = (await window.webContents.executeJavaScript(
+        `(() => {
+          const write = document.querySelector(${JSON.stringify(writeSelector)});
+          const pages = write?.querySelector('.write-page-stack');
+          if (!(write instanceof HTMLElement) || !(pages instanceof HTMLElement)) return null;
+          return {
+            state: pages.getAttribute('data-write-layout-state'),
+            generation: pages.getAttribute('data-write-layout-generation'),
+            pass: pages.getAttribute('data-write-layout-pass'),
+            pageCount: write.querySelector('[data-page-count]')?.getAttribute('data-page-count') ?? null,
+            status: write.querySelector('.write-status-bar')?.textContent?.trim() ?? ''
+          };
+        })()`,
+        true,
+      )) as WriteLayoutSnapshot | null;
+      if (last?.state === 'error') {
+        throw new Error(`${label} entered a failed Write layout state: ${JSON.stringify(last)}.`);
+      }
+      if (
+        last?.state === 'stable' &&
+        previous?.state === 'stable' &&
+        last.generation === previous.generation &&
+        last.pass === previous.pass &&
+        last.pageCount === previous.pageCount
+      ) {
+        return last;
+      }
+      previous = last;
+      await pause(20);
+    }
+    throw new Error(`${label} did not reach a stable Write layout: ${JSON.stringify(last)}.`);
+  };
+  const readStableWritePaginationFingerprint = async (
+    writeSelector: string,
+    label: string,
+  ): Promise<string> => {
+    await waitForWriteLayout(writeSelector, label);
+    const fingerprint = (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector(${JSON.stringify(writeSelector)});
+        const pages = write?.querySelector('.write-page-stack');
+        const editor = write?.querySelector('[data-write-editor="true"]');
+        if (!(write instanceof HTMLElement) || !(pages instanceof HTMLElement) || !(editor instanceof HTMLElement)) return null;
+        const editorBounds = editor.getBoundingClientRect();
+        const round = (value) => Math.round(value * 100) / 100;
+        const geometry = (element) => {
+          const bounds = element.getBoundingClientRect();
+          return {
+            top: round(bounds.top - editorBounds.top),
+            left: round(bounds.left - editorBounds.left),
+            width: round(bounds.width),
+            height: round(bounds.height)
+          };
+        };
+        return JSON.stringify({
+          pageCount: Number(write.querySelector('[data-page-count]')?.getAttribute('data-page-count')),
+          pages: {
+            width: round(pages.getBoundingClientRect().width),
+            height: round(pages.getBoundingClientRect().height)
+          },
+          editor: {
+            html: editor.innerHTML,
+            clientHeight: editor.clientHeight,
+            scrollHeight: editor.scrollHeight
+          },
+          blocks: [...editor.querySelectorAll('[data-write-paragraph], [data-write-page-break]')]
+            .map((block) => ({
+              type: block.hasAttribute('data-write-page-break') ? 'page-break' : 'paragraph',
+              text: block.textContent ?? '',
+              inlineStyles: [...block.querySelectorAll(
+                '[data-write-font-family], [data-write-font-size]'
+              )].map((run) => ({
+                text: run.textContent ?? '',
+                fontFamily: run.getAttribute('data-write-font-family'),
+                fontSize: run.getAttribute('data-write-font-size')
+              })),
+              alignment: block.getAttribute('data-alignment'),
+              lineSpacing: block.getAttribute('data-line-spacing'),
+              tabStops: block.getAttribute('data-tab-stops'),
+              geometry: geometry(block)
+            })),
+          automaticGaps: [...editor.querySelectorAll('.write-automatic-page-gap')]
+            .map((gap) => geometry(gap)),
+          tabs: [...editor.querySelectorAll('[data-write-tab]')]
+            .map((tab) => geometry(tab))
+        });
+      })()`,
+      true,
+    )) as string | null;
+    if (!fingerprint) throw new Error(`${label} could not capture its Write layout fingerprint.`);
+    return fingerprint;
   };
   const observeWindowAnimation = async (
     windowLabel: string,
@@ -1394,31 +1718,42 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     });
     await pause(28);
   }
-  await pause(60);
-  const calculatorDragPreview = (await window.webContents.executeJavaScript(
-    `(() => {
-      const calculator = document.querySelector('[data-calculator-window="true"]');
-      const outline = calculator?.querySelector('.calculator-drag-outline');
-      const handle = calculator?.querySelector('[data-calculator-drag-handle="true"]');
-      if (!(calculator instanceof HTMLElement) || !(outline instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
-      const windowRect = calculator.getBoundingClientRect();
-      const outlineRect = outline.getBoundingClientRect();
-      return {
-        windowLeft: windowRect.left,
-        windowTop: windowRect.top,
-        outlineLeft: outlineRect.left,
-        outlineTop: outlineRect.top,
-        cursor: getComputedStyle(handle).cursor
-      };
-    })()`,
-    true,
-  )) as {
+  type CalculatorDragPreview = {
     windowLeft: number;
     windowTop: number;
     outlineLeft: number;
     outlineTop: number;
     cursor: string;
-  } | null;
+  };
+  let calculatorDragPreview: CalculatorDragPreview | null = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    calculatorDragPreview = (await window.webContents.executeJavaScript(
+      `(() => {
+        const calculator = document.querySelector('[data-calculator-window="true"]');
+        const outline = calculator?.querySelector('.calculator-drag-outline');
+        const handle = calculator?.querySelector('[data-calculator-drag-handle="true"]');
+        if (!(calculator instanceof HTMLElement) || !(outline instanceof HTMLElement) || !(handle instanceof HTMLElement)) return null;
+        const windowRect = calculator.getBoundingClientRect();
+        const outlineRect = outline.getBoundingClientRect();
+        return {
+          windowLeft: windowRect.left,
+          windowTop: windowRect.top,
+          outlineLeft: outlineRect.left,
+          outlineTop: outlineRect.top,
+          cursor: getComputedStyle(handle).cursor
+        };
+      })()`,
+      true,
+    )) as CalculatorDragPreview | null;
+    if (calculatorDragPreview) break;
+    window.webContents.sendInputEvent({
+      type: 'mouseMove',
+      button: 'left',
+      modifiers: ['leftbuttondown'],
+      ...calculatorDragEnd,
+    });
+    await pause(20);
+  }
   if (calculatorDragPreview) {
     assertPixelCursor('Calculator drag', calculatorDragPreview.cursor, 16, 16, { x: 7, y: 7 });
   }
@@ -2227,7 +2562,8 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     button: 'left',
     ...freeIconCoordinates.source,
   });
-  for (const offset of [2, 4]) {
+  await pause(30);
+  for (const offset of [2, 5, 8]) {
     window.webContents.sendInputEvent({
       type: 'mouseMove',
       button: 'left',
@@ -2720,7 +3056,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   window.webContents.insertText('Automatic pagination '.repeat(900));
-  await pause(180);
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write automatic pagination');
   const automaticPagination = (await window.webContents.executeJavaScript(
     `(() => {
       const write = document.querySelector('[data-write-title="Untitled"]');
@@ -2738,7 +3074,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }
   await invokeRendererMenuAction('edit', 'select-all');
   window.webContents.insertText('Write smoke document');
-  await pause(180);
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write automatic backflow');
   const automaticBackflow = (await window.webContents.executeJavaScript(
     `(() => {
       const write = document.querySelector('[data-write-title="Untitled"]');
@@ -2761,6 +3097,174 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   if (!ordinaryEditingStayedPlain) {
     throw new Error('Ordinary Write typing promoted the document before a rich action.');
+  }
+  const plainClipboardBaseline = 'Write smoke document';
+  // Keep each Clipboard mutation in its own ProseMirror history group.
+  await pause(600);
+  clipboard.writeText(' plain Clipboard text');
+  await invokeRendererMenuAction('edit', 'paste');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write plain Clipboard paste');
+  const plainClipboardPaste = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      return {
+        format: write?.getAttribute('data-document-format'),
+        text: write?.querySelector('[data-write-editor="true"]')?.textContent ?? ''
+      };
+    })()`,
+    true,
+  )) as { format: string | null; text: string };
+  if (
+    plainClipboardPaste.format !== 'plain-text' ||
+    plainClipboardPaste.text !== `${plainClipboardBaseline} plain Clipboard text`
+  ) {
+    throw new Error(
+      `Plain-to-plain Write paste unexpectedly promoted or changed content: ${JSON.stringify(plainClipboardPaste)}.`,
+    );
+  }
+  await invokeRendererMenuAction('edit', 'undo');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write plain Clipboard Undo');
+  const plainClipboardUndoText = (await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-write-title="Untitled"] [data-write-editor="true"]'
+    )?.textContent ?? ''`,
+    true,
+  )) as string;
+  if (plainClipboardUndoText !== plainClipboardBaseline) {
+    throw new Error('Undo did not exactly restore the plain document after Clipboard paste.');
+  }
+
+  const filePasteOwnership = (await window.webContents.executeJavaScript(
+    `(() => {
+      const root = document.querySelector('[data-vfs-count]');
+      const editor = document.querySelector(
+        '[data-write-title="Untitled"] [data-write-editor="true"]'
+      );
+      if (!(root instanceof HTMLElement) || !(editor instanceof HTMLElement)) return null;
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['not imported'], 'write-paste.txt', { type: 'text/plain' }));
+      const event = new ClipboardEvent('paste', {
+        clipboardData: transfer,
+        bubbles: true,
+        cancelable: true
+      });
+      const beforeText = editor.textContent ?? '';
+      const beforeCount = Number(root.dataset.vfsCount ?? '0');
+      editor.dispatchEvent(event);
+      return {
+        prevented: event.defaultPrevented,
+        beforeText,
+        afterText: editor.textContent ?? '',
+        beforeCount
+      };
+    })()`,
+    true,
+  )) as {
+    prevented: boolean;
+    beforeText: string;
+    afterText: string;
+    beforeCount: number;
+  } | null;
+  await pause(80);
+  const filePasteVfsCount = (await window.webContents.executeJavaScript(
+    `Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') ?? '0')`,
+    true,
+  )) as number;
+  if (
+    !filePasteOwnership?.prevented ||
+    filePasteOwnership.beforeText !== plainClipboardBaseline ||
+    filePasteOwnership.afterText !== plainClipboardBaseline ||
+    filePasteVfsCount !== filePasteOwnership.beforeCount
+  ) {
+    throw new Error(
+      `A file paste owned by Write fell through or changed the editor: ${JSON.stringify({ filePasteOwnership, filePasteVfsCount })}.`,
+    );
+  }
+
+  await pause(600);
+  clipboard.write({
+    text: 'Allowed bold linked italic underlined styled supported font unsupported font',
+    html: '<p style="color:red;background:blue;font-family:Comic Sans MS"><strong>Allowed bold</strong> <a href="https://example.com"><em>linked italic</em></a> <u>underlined</u> <span style="color:green">styled</span> <span style="font-family:Helvetica;font-size:14px">supported font</span> <span style="font-family:Papyrus;font-size:13px">unsupported font</span><img src="https://example.com/pixel.png"><script>evil script</script></p>',
+  });
+  await invokeRendererMenuAction('edit', 'paste');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write hostile rich Clipboard paste');
+  const sanitizedRichPaste = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      const editor = write?.querySelector('[data-write-editor="true"]');
+      return {
+        format: write?.getAttribute('data-document-format'),
+        text: editor?.textContent ?? '',
+        bold: [...(editor?.querySelectorAll('strong') ?? [])]
+          .some((node) => node.textContent === 'Allowed bold'),
+        italic: [...(editor?.querySelectorAll('em') ?? [])]
+          .some((node) => node.textContent === 'linked italic'),
+        underline: [...(editor?.querySelectorAll('.write-underline') ?? [])]
+          .some((node) => node.textContent === 'underlined'),
+        supportedFamily: [...(editor?.querySelectorAll('[data-write-font-family="sans"]') ?? [])]
+          .some((node) => node.textContent === 'supported font'),
+        supportedSize: [...(editor?.querySelectorAll('[data-write-font-size="14"]') ?? [])]
+          .some((node) => node.textContent === 'supported font'),
+        unsupportedFont: (() => {
+          if (!(editor instanceof HTMLElement)) return { family: '', size: '' };
+          const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (!node.textContent?.includes('unsupported font') || !(node.parentElement instanceof HTMLElement)) continue;
+            const style = getComputedStyle(node.parentElement);
+            return { family: style.fontFamily, size: style.fontSize };
+          }
+          return { family: '', size: '' };
+        })(),
+        unsupportedElement: editor?.querySelector('a, img, script, [href]') !== null,
+        unsupportedStyle:
+          editor?.querySelector(
+            '[style*="color"], [style*="background"], [style*="Comic"], [style*="Papyrus"], [style*="13px"]'
+          ) !== null
+      };
+    })()`,
+    true,
+  )) as {
+    format: string | null;
+    text: string;
+    bold: boolean;
+    italic: boolean;
+    underline: boolean;
+    supportedFamily: boolean;
+    supportedSize: boolean;
+    unsupportedFont: { family: string; size: string };
+    unsupportedElement: boolean;
+    unsupportedStyle: boolean;
+  };
+  if (
+    sanitizedRichPaste.format !== 'write-v1' ||
+    !sanitizedRichPaste.text.includes(
+      'Allowed bold linked italic underlined styled supported font unsupported font',
+    ) ||
+    sanitizedRichPaste.text.includes('evil script') ||
+    !sanitizedRichPaste.bold ||
+    !sanitizedRichPaste.italic ||
+    !sanitizedRichPaste.underline ||
+    !sanitizedRichPaste.supportedFamily ||
+    !sanitizedRichPaste.supportedSize ||
+    !sanitizedRichPaste.unsupportedFont.family.toLowerCase().includes('helvetica') ||
+    sanitizedRichPaste.unsupportedFont.size !== '12px' ||
+    sanitizedRichPaste.unsupportedElement ||
+    sanitizedRichPaste.unsupportedStyle
+  ) {
+    throw new Error(
+      `Write did not preserve the supported rich fragment while stripping hostile HTML: ${JSON.stringify(sanitizedRichPaste)}.`,
+    );
+  }
+  await invokeRendererMenuAction('edit', 'undo');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write hostile Clipboard Undo');
+  const hostilePasteUndoText = (await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-write-title="Untitled"] [data-write-editor="true"]'
+    )?.textContent ?? ''`,
+    true,
+  )) as string;
+  if (hostilePasteUndoText !== plainClipboardBaseline) {
+    throw new Error('Undo did not exactly restore the document after sanitized rich paste.');
   }
   await pause(600);
   await ensureNativeInputFocus('Write shortcut editing');
@@ -2908,7 +3412,35 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   await pause(50);
 
   await invokeRendererMenuAction('edit', 'select-all');
-  await invokeRendererMenuAction('font', 'font-sans');
+  for (const fontSize of [9, 10, 12, 14, 18, 24] as const) {
+    await invokeRendererMenuAction('size', `size-${fontSize}`);
+    await waitForWriteLayout(
+      '[data-write-title="Untitled"]',
+      `Write ${String(fontSize)}-point layout`,
+    );
+    const appliedFontSize = await window.webContents.executeJavaScript(
+      `document.querySelector(
+        '[data-write-title="Untitled"] [data-write-paragraph]'
+      )?.querySelector('[data-write-font-size="${String(fontSize)}"]')
+        ?.getAttribute('data-write-font-size')`,
+      true,
+    );
+    if (appliedFontSize !== String(fontSize)) {
+      throw new Error(`Write did not apply the supported ${String(fontSize)}-point size.`);
+    }
+  }
+  for (const fontFamily of ['serif', 'mono', 'sans'] as const) {
+    await invokeRendererMenuAction('font', `font-${fontFamily}`);
+    const appliedFontFamily = await window.webContents.executeJavaScript(
+      `document.querySelector(
+        '[data-write-title="Untitled"] [data-write-font-family="${fontFamily}"]'
+      )?.getAttribute('data-write-font-family')`,
+      true,
+    );
+    if (appliedFontFamily !== fontFamily) {
+      throw new Error(`Write did not apply the supported ${fontFamily} font family.`);
+    }
+  }
   await invokeRendererMenuAction('size', 'size-14');
   await invokeRendererMenuAction('format', 'italic');
   await invokeRendererMenuAction('format', 'align-center');
@@ -2940,27 +3472,78 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   window.webContents.insertText('Tabbed text');
   await invokeRendererMenuAction('format', 'insert-page-break');
   window.webContents.insertText('Page two');
-  await pause(80);
-  const customTabAdded = await window.webContents.executeJavaScript(
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write formatted page projection');
+  await invokeRendererMenuAction('view', 'zoom-100');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write ruler setup at 100%');
+  const customTabPoint = (await window.webContents.executeJavaScript(
     `(() => {
       const ruler = document.querySelector(
         '[data-write-title="Untitled"] [aria-label="Paragraph ruler"]'
       );
-      if (!(ruler instanceof HTMLElement)) return false;
+      if (!(ruler instanceof HTMLElement)) return null;
       const bounds = ruler.getBoundingClientRect();
-      ruler.dispatchEvent(new PointerEvent('pointerdown', {
-        bubbles: true,
-        button: 0,
-        clientX: bounds.left + bounds.width * (54 / 468),
-        clientY: bounds.top + bounds.height / 2,
-        pointerId: 81
-      }));
-      return true;
+      return {
+        x: Math.round(bounds.left + bounds.width * (54 / 468)),
+        y: Math.round(bounds.top + bounds.height / 2)
+      };
     })()`,
     true,
-  );
-  if (!customTabAdded) throw new Error('The Write ruler could not add a custom tab stop.');
-  await pause(80);
+  )) as SmokePoint | null;
+  if (!customTabPoint) throw new Error('The Write ruler could not locate a custom tab point.');
+  await ensureNativeInputFocus('Write ruler press and release');
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...customTabPoint });
+  window.webContents.sendInputEvent({
+    type: 'mouseDown',
+    button: 'left',
+    clickCount: 1,
+    ...customTabPoint,
+  });
+  await pause(40);
+  const customTabPreview = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      return {
+        committed: write?.querySelector('[aria-label="Tab stop at 54 points"]') !== null,
+        preview: write?.querySelector('.write-ruler-marker-preview') !== null
+      };
+    })()`,
+    true,
+  )) as { committed: boolean; preview: boolean };
+  if (customTabPreview.committed || !customTabPreview.preview) {
+    window.webContents.sendInputEvent({
+      type: 'mouseUp',
+      button: 'left',
+      clickCount: 1,
+      ...customTabPoint,
+    });
+    throw new Error(
+      `The Write ruler committed before native release: ${JSON.stringify(customTabPreview)}.`,
+    );
+  }
+  window.webContents.sendInputEvent({
+    type: 'mouseUp',
+    button: 'left',
+    clickCount: 1,
+    ...customTabPoint,
+  });
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write ruler release commit');
+  const customTabAdded = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      return {
+        committed: write?.querySelector('[aria-label="Tab stop at 54 points"]') !== null,
+        preview: write?.querySelector('.write-ruler-marker-preview') !== null
+      };
+    })()`,
+    true,
+  )) as { committed: boolean; preview: boolean };
+  if (!customTabAdded.committed || customTabAdded.preview) {
+    throw new Error(
+      `The Write ruler did not commit exactly on native release: ${JSON.stringify(customTabAdded)}.`,
+    );
+  }
+  await invokeRendererMenuAction('view', 'zoom-75');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write ruler zoom restoration');
   const formattedWrite = (await window.webContents.executeJavaScript(
     `(() => {
       const write = document.querySelector('[data-write-title="Untitled"]');
@@ -2969,8 +3552,8 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         format: write?.getAttribute('data-document-format'),
         dirty: write?.querySelector('h2')?.textContent?.includes('•') === true,
         italic: write?.querySelector('em') !== null,
-        sans: write?.querySelector('[data-font-family="sans"]') !== null,
-        size14: write?.querySelector('[data-font-size="14"]') !== null,
+        sans: write?.querySelector('[data-write-font-family="sans"]') !== null,
+        size14: write?.querySelector('[data-write-font-size="14"]') !== null,
         centered: write?.querySelector('[data-alignment="center"]') !== null,
         pageCount: write?.querySelector('[data-page-count]')?.getAttribute('data-page-count'),
         customTab: write?.querySelector('[aria-label="Tab stop at 54 points"]') !== null,
@@ -3005,7 +3588,64 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
+  const inlineClipboardSelection = await activateWriteTextSelection(
+    '[data-write-title="Untitled"]',
+    0,
+    5,
+    'Write mixed inline Clipboard fragment',
+  );
+  await invokeRendererMenuAction('font', 'font-serif');
+  await invokeRendererMenuAction('size', 'size-18');
+  await waitForWriteLayout(
+    '[data-write-title="Untitled"]',
+    'Write mixed inline Clipboard formatting',
+  );
+  const inlineClipboardFormatting = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      return {
+        selectedText: window.getSelection()?.toString() ?? '',
+        serifRuns: [...(write?.querySelectorAll('[data-write-font-family="serif"]') ?? [])]
+          .map((run) => run.textContent ?? ''),
+        size18Runs: [...(write?.querySelectorAll('[data-write-font-size="18"]') ?? [])]
+          .map((run) => run.textContent ?? ''),
+        sansRuns: write?.querySelectorAll('[data-write-font-family="sans"]').length ?? 0,
+        size14Runs: write?.querySelectorAll('[data-write-font-size="14"]').length ?? 0
+      };
+    })()`,
+    true,
+  )) as {
+    selectedText: string;
+    serifRuns: string[];
+    size18Runs: string[];
+    sansRuns: number;
+    size14Runs: number;
+  };
+  if (
+    inlineClipboardFormatting.selectedText !== inlineClipboardSelection ||
+    inlineClipboardFormatting.serifRuns.length !== 1 ||
+    inlineClipboardFormatting.serifRuns[0] !== inlineClipboardSelection ||
+    inlineClipboardFormatting.size18Runs.length !== 1 ||
+    inlineClipboardFormatting.size18Runs[0] !== inlineClipboardSelection ||
+    inlineClipboardFormatting.sansRuns < 1 ||
+    inlineClipboardFormatting.size14Runs < 1
+  ) {
+    throw new Error(
+      `Write could not create a mixed inline font/size Clipboard fragment: ${JSON.stringify(inlineClipboardFormatting)}.`,
+    );
+  }
+
   await ensureNativeInputFocus('Write rich clipboard');
+  const richPaginationBaseline = await readStableWritePaginationFingerprint(
+    '[data-write-title="Untitled"]',
+    'Write rich Clipboard baseline',
+  );
+  if ((JSON.parse(richPaginationBaseline) as { pageCount?: number }).pageCount !== 2) {
+    throw new Error(
+      `Write rich Clipboard baseline was not exactly two pages: ${richPaginationBaseline}.`,
+    );
+  }
+  // Keep the paste in its own ProseMirror history group so one Undo has an exact boundary.
   await pause(600);
   const richClipboardBaseline = (await window.webContents.executeJavaScript(
     `(() => {
@@ -3014,14 +3654,26 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         pageBreaks: write?.querySelectorAll('[data-write-page-break]').length ?? 0,
         tabs: write?.querySelectorAll('[data-write-tab]').length ?? 0,
         italicRuns: write?.querySelectorAll('em').length ?? 0,
-        styledParagraphs:
-          write?.querySelectorAll(
-            '[data-write-paragraph][data-font-family="sans"][data-font-size="14"][data-alignment="center"]'
-          ).length ?? 0
+        serifRuns: write?.querySelectorAll('[data-write-font-family="serif"]').length ?? 0,
+        size18Runs: write?.querySelectorAll('[data-write-font-size="18"]').length ?? 0,
+        styledParagraphs: [...(write?.querySelectorAll(
+          '[data-write-paragraph][data-alignment="center"]'
+        ) ?? [])].filter(
+          (paragraph) =>
+            paragraph.querySelector('[data-write-font-family="sans"]') !== null &&
+            paragraph.querySelector('[data-write-font-size="14"]') !== null
+        ).length
       };
     })()`,
     true,
-  )) as { pageBreaks: number; tabs: number; italicRuns: number; styledParagraphs: number };
+  )) as {
+    pageBreaks: number;
+    tabs: number;
+    italicRuns: number;
+    serifRuns: number;
+    size18Runs: number;
+    styledParagraphs: number;
+  };
   await invokeRendererMenuAction('edit', 'select-all');
   await invokeRendererMenuAction('edit', 'copy');
   await pause(80);
@@ -3045,7 +3697,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   await pause(30);
   await invokeRendererMenuAction('edit', 'paste');
-  await pause(140);
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write rich Clipboard paste');
   const richClipboard = (await window.webContents.executeJavaScript(
     `(() => {
       const write = document.querySelector('[data-write-title="Untitled"]');
@@ -3053,18 +3705,32 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         pageBreaks: write?.querySelectorAll('[data-write-page-break]').length ?? 0,
         tabs: write?.querySelectorAll('[data-write-tab]').length ?? 0,
         italicRuns: write?.querySelectorAll('em').length ?? 0,
-        styledParagraphs:
-          write?.querySelectorAll(
-            '[data-write-paragraph][data-font-family="sans"][data-font-size="14"][data-alignment="center"]'
-          ).length ?? 0
+        serifRuns: write?.querySelectorAll('[data-write-font-family="serif"]').length ?? 0,
+        size18Runs: write?.querySelectorAll('[data-write-font-size="18"]').length ?? 0,
+        styledParagraphs: [...(write?.querySelectorAll(
+          '[data-write-paragraph][data-alignment="center"]'
+        ) ?? [])].filter(
+          (paragraph) =>
+            paragraph.querySelector('[data-write-font-family="sans"]') !== null &&
+            paragraph.querySelector('[data-write-font-size="14"]') !== null
+        ).length
       };
     })()`,
     true,
-  )) as { pageBreaks: number; tabs: number; italicRuns: number; styledParagraphs: number };
+  )) as {
+    pageBreaks: number;
+    tabs: number;
+    italicRuns: number;
+    serifRuns: number;
+    size18Runs: number;
+    styledParagraphs: number;
+  };
   if (
     richClipboard.pageBreaks !== richClipboardBaseline.pageBreaks * 2 ||
     richClipboard.tabs !== richClipboardBaseline.tabs * 2 ||
     richClipboard.italicRuns !== richClipboardBaseline.italicRuns * 2 ||
+    richClipboard.serifRuns !== richClipboardBaseline.serifRuns * 2 ||
+    richClipboard.size18Runs !== richClipboardBaseline.size18Runs * 2 ||
     richClipboard.styledParagraphs !== richClipboardBaseline.styledParagraphs * 2
   ) {
     throw new Error(
@@ -3072,7 +3738,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
   await invokeRendererMenuAction('edit', 'undo');
-  await pause(120);
+  const richPaginationAfterUndo = await readStableWritePaginationFingerprint(
+    '[data-write-title="Untitled"]',
+    'Write rich Clipboard Undo',
+  );
   const clipboardUndoRestored = (await window.webContents.executeJavaScript(
     `(() => {
       const write = document.querySelector('[data-write-title="Untitled"]');
@@ -3081,10 +3750,15 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         pageBreaks: write?.querySelectorAll('[data-write-page-break]').length ?? 0,
         tabs: write?.querySelectorAll('[data-write-tab]').length ?? 0,
         italicRuns: write?.querySelectorAll('em').length ?? 0,
-        styledParagraphs:
-          write?.querySelectorAll(
-            '[data-write-paragraph][data-font-family="sans"][data-font-size="14"][data-alignment="center"]'
-          ).length ?? 0
+        serifRuns: write?.querySelectorAll('[data-write-font-family="serif"]').length ?? 0,
+        size18Runs: write?.querySelectorAll('[data-write-font-size="18"]').length ?? 0,
+        styledParagraphs: [...(write?.querySelectorAll(
+          '[data-write-paragraph][data-alignment="center"]'
+        ) ?? [])].filter(
+          (paragraph) =>
+            paragraph.querySelector('[data-write-font-family="sans"]') !== null &&
+            paragraph.querySelector('[data-write-font-size="14"]') !== null
+        ).length
       };
     })()`,
     true,
@@ -3093,17 +3767,27 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     pageBreaks: number;
     tabs: number;
     italicRuns: number;
+    serifRuns: number;
+    size18Runs: number;
     styledParagraphs: number;
   };
   if (
+    richPaginationAfterUndo !== richPaginationBaseline ||
     clipboardUndoRestored.pageCount !== '2' ||
     clipboardUndoRestored.pageBreaks !== richClipboardBaseline.pageBreaks ||
     clipboardUndoRestored.tabs !== richClipboardBaseline.tabs ||
     clipboardUndoRestored.italicRuns !== richClipboardBaseline.italicRuns ||
+    clipboardUndoRestored.serifRuns !== richClipboardBaseline.serifRuns ||
+    clipboardUndoRestored.size18Runs !== richClipboardBaseline.size18Runs ||
     clipboardUndoRestored.styledParagraphs !== richClipboardBaseline.styledParagraphs
   ) {
     throw new Error(
-      `Undo did not restore the pre-paste Write document: ${JSON.stringify(clipboardUndoRestored)}.`,
+      `Undo did not restore the exact pre-paste Write layout: ${JSON.stringify({
+        semantic: clipboardUndoRestored,
+        fingerprintMatched: richPaginationAfterUndo === richPaginationBaseline,
+        before: richPaginationBaseline,
+        after: richPaginationAfterUndo,
+      })}.`,
     );
   }
 
@@ -3173,6 +3857,503 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     savedWrite.saveDialogOpen
   ) {
     throw new Error(`Write Save As did not commit the document: ${JSON.stringify(savedWrite)}.`);
+  }
+
+  const immediateSavePrepared = await window.webContents.executeJavaScript(
+    `(() => {
+      const editor = document.querySelector(
+        '[data-write-title="Smoke Write"] [data-write-editor="true"]'
+      );
+      if (!(editor instanceof HTMLElement)) return false;
+      editor.focus();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+      return true;
+    })()`,
+    true,
+  );
+  if (!immediateSavePrepared) throw new Error('Write could not prepare the immediate-save edit.');
+  await ensureNativeInputFocus('Write immediate stable save');
+  window.webContents.insertText(' Immediate stable save.');
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'S', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'S', modifiers: ['meta'] });
+  await waitForWriteLayout('[data-write-title="Smoke Write"]', 'Write immediate save');
+  let immediateSavedWrite: { dirty: boolean; text: string; pageCount: string | null } | null = null;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    immediateSavedWrite = (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector('[data-write-title="Smoke Write"]');
+        if (!(write instanceof HTMLElement)) return null;
+        return {
+          dirty: write.querySelector('h2')?.textContent?.includes('•') === true,
+          text: write.querySelector('[data-write-editor="true"]')?.textContent ?? '',
+          pageCount: write.querySelector('[data-page-count]')?.getAttribute('data-page-count') ?? null
+        };
+      })()`,
+      true,
+    )) as { dirty: boolean; text: string; pageCount: string | null } | null;
+    if (immediateSavedWrite && !immediateSavedWrite.dirty) break;
+    await pause(25);
+  }
+  if (
+    !immediateSavedWrite ||
+    immediateSavedWrite.dirty ||
+    !immediateSavedWrite.text.endsWith('Immediate stable save.') ||
+    immediateSavedWrite.pageCount !== '2'
+  ) {
+    throw new Error(
+      `Write did not save the stable post-edit snapshot: ${JSON.stringify(immediateSavedWrite)}.`,
+    );
+  }
+
+  await invokeRendererMenuAction('file', 'close-write-window');
+  let immediateSavedWriteClosed = false;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    immediateSavedWriteClosed = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Smoke Write"]') === null`,
+      true,
+    )) as boolean;
+    if (immediateSavedWriteClosed) break;
+    await pause(20);
+  }
+  if (!immediateSavedWriteClosed) {
+    throw new Error('The immediately saved Write window did not close cleanly.');
+  }
+  const immediateSavedWriteReopened = await window.webContents.executeJavaScript(
+    `(() => {
+      const item = [...document.querySelectorAll(
+        '[data-finder-window="window-system-disk"] [data-vfs-item]'
+      )].find((candidate) => candidate.textContent?.trim() === 'Smoke Write');
+      if (!(item instanceof HTMLElement)) return false;
+      item.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!immediateSavedWriteReopened) {
+    throw new Error('The immediately saved Write document was not visible on System Disk.');
+  }
+  await waitForWriteLayout('[data-write-title="Smoke Write"]', 'Reopened immediate Write save');
+  const immediateReopenedWrite = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Smoke Write"]');
+      return {
+        dirty: write?.querySelector('h2')?.textContent?.includes('•') === true,
+        text: write?.querySelector('[data-write-editor="true"]')?.textContent ?? ''
+      };
+    })()`,
+    true,
+  )) as { dirty: boolean; text: string };
+  if (immediateReopenedWrite.dirty || immediateReopenedWrite.text !== immediateSavedWrite.text) {
+    throw new Error(
+      `Reopening Write did not restore the exact immediate-save snapshot: ${JSON.stringify({
+        saved: immediateSavedWrite,
+        reopened: immediateReopenedWrite,
+      })}.`,
+    );
+  }
+
+  await invokeRendererMenuAction('file', 'new-document');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Second independent Write window');
+  const secondWriteFocused = await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      const editor = write?.querySelector('[data-write-editor="true"]');
+      if (!(write instanceof HTMLElement) || !(editor instanceof HTMLElement)) return false;
+      editor.focus();
+      return write.classList.contains('is-active');
+    })()`,
+    true,
+  );
+  if (!secondWriteFocused) throw new Error('The second Write window did not become active.');
+  window.webContents.insertText('Independent second window');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Second Write edit');
+  await invokeRendererMenuAction('edit', 'undo');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Second Write Undo');
+  const independentUndo = (await window.webContents.executeJavaScript(
+    `(() => ({
+      activeTitle: document.querySelector('.write-window.is-active')?.getAttribute('data-write-title'),
+      firstText: document.querySelector('[data-write-title="Smoke Write"] [data-write-editor="true"]')?.textContent ?? '',
+      secondText: document.querySelector('[data-write-title="Untitled"] [data-write-editor="true"]')?.textContent ?? ''
+    }))()`,
+    true,
+  )) as { activeTitle: string | null; firstText: string; secondText: string };
+  if (
+    independentUndo.activeTitle !== 'Untitled' ||
+    independentUndo.firstText !== immediateReopenedWrite.text ||
+    independentUndo.secondText !== ''
+  ) {
+    throw new Error(
+      `Write Undo crossed window history boundaries: ${JSON.stringify(independentUndo)}.`,
+    );
+  }
+  await invokeRendererMenuAction('edit', 'redo');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Second Write Redo');
+  const independentRedo = (await window.webContents.executeJavaScript(
+    `(() => ({
+      firstText: document.querySelector('[data-write-title="Smoke Write"] [data-write-editor="true"]')?.textContent ?? '',
+      secondText: document.querySelector('[data-write-title="Untitled"] [data-write-editor="true"]')?.textContent ?? ''
+    }))()`,
+    true,
+  )) as { firstText: string; secondText: string };
+  if (
+    independentRedo.firstText !== immediateReopenedWrite.text ||
+    independentRedo.secondText !== 'Independent second window'
+  ) {
+    throw new Error(
+      `Write Redo did not remain scoped to the active window: ${JSON.stringify(independentRedo)}.`,
+    );
+  }
+
+  const firstWindowSelection = await activateWriteMatchingTextSelection(
+    '[data-write-title="Smoke Write"]',
+    'Page two',
+    'First Write window',
+  );
+  if (firstWindowSelection !== 'Page two') {
+    throw new Error(`The first Write selection was not distinct: ${firstWindowSelection}.`);
+  }
+  const writeFontActions = ['font-serif', 'font-sans', 'font-mono'] as const;
+  const writeSizeActions = [
+    'size-9',
+    'size-10',
+    'size-12',
+    'size-14',
+    'size-18',
+    'size-24',
+  ] as const;
+  const writeFormatActions = [
+    'bold',
+    'italic',
+    'underline',
+    'align-left',
+    'align-center',
+    'align-right',
+  ] as const;
+  const firstFontMenuBefore = await readRendererMenuState('font', writeFontActions);
+  const firstSizeMenuBefore = await readRendererMenuState('size', writeSizeActions);
+  const firstFormatMenuBefore = await readRendererMenuState('format', writeFormatActions);
+  const firstRulerBefore = await readWriteRulerState('[data-write-title="Smoke Write"]');
+  const firstEditorBeforeSecondFormatting = (await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-write-title="Smoke Write"] [data-write-editor="true"]'
+    )?.innerHTML ?? ''`,
+    true,
+  )) as string;
+  const secondWindowSelection = await activateWriteTextSelection(
+    '[data-write-title="Untitled"]',
+    0,
+    11,
+    'Second Write window',
+  );
+  if (secondWindowSelection !== 'Independent') {
+    throw new Error(`The second Write selection was not distinct: ${secondWindowSelection}.`);
+  }
+  await invokeRendererMenuAction('font', 'font-mono');
+  await invokeRendererMenuAction('size', 'size-10');
+  await invokeRendererMenuAction('format', 'underline');
+  await invokeRendererMenuAction('format', 'increase-left-indent');
+  await invokeRendererMenuAction('format', 'bold');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Second Write selection formatting');
+  const secondWindowFormatting = (await window.webContents.executeJavaScript(
+    `(() => {
+      const editor = document.querySelector(
+        '[data-write-title="Untitled"] [data-write-editor="true"]'
+      );
+      const strongRuns = [...(editor?.querySelectorAll('strong') ?? [])]
+        .map((run) => run.textContent ?? '');
+      return {
+        selectedText: window.getSelection()?.toString() ?? '',
+        strongRuns,
+        mono: editor?.querySelector('[data-write-font-family="mono"]') !== null,
+        size10: editor?.querySelector('[data-write-font-size="10"]') !== null,
+        underline: editor?.querySelector('.write-underline') !== null
+      };
+    })()`,
+    true,
+  )) as {
+    selectedText: string;
+    strongRuns: string[];
+    mono: boolean;
+    size10: boolean;
+    underline: boolean;
+  };
+  if (
+    secondWindowFormatting.selectedText !== secondWindowSelection ||
+    secondWindowFormatting.strongRuns.length !== 1 ||
+    secondWindowFormatting.strongRuns[0] !== secondWindowSelection ||
+    !secondWindowFormatting.mono ||
+    !secondWindowFormatting.size10 ||
+    !secondWindowFormatting.underline
+  ) {
+    throw new Error(
+      `Formatting did not remain scoped to the second Write selection: ${JSON.stringify(secondWindowFormatting)}.`,
+    );
+  }
+
+  await reactivateWriteEditor('[data-write-title="Smoke Write"]', 'First Write window');
+  const restoredFirstSelection = await copyActiveWriteSelection(
+    firstWindowSelection,
+    'First Write window',
+  );
+  const firstFontMenu = await readRendererMenuState('font', writeFontActions);
+  const firstSizeMenu = await readRendererMenuState('size', writeSizeActions);
+  const firstFormatMenu = await readRendererMenuState('format', writeFormatActions);
+  const firstRulerAfter = await readWriteRulerState('[data-write-title="Smoke Write"]');
+  const firstWindowContext = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Smoke Write"]');
+      const editor = write?.querySelector('[data-write-editor="true"]');
+      return {
+        active: write?.classList.contains('is-active') === true,
+        editorHtml: editor?.innerHTML ?? ''
+      };
+    })()`,
+    true,
+  )) as {
+    active: boolean;
+    editorHtml: string;
+  };
+  if (
+    restoredFirstSelection !== firstWindowSelection ||
+    !firstWindowContext.active ||
+    firstWindowContext.editorHtml !== firstEditorBeforeSecondFormatting ||
+    JSON.stringify(firstFontMenu) !== JSON.stringify(firstFontMenuBefore) ||
+    JSON.stringify(firstSizeMenu) !== JSON.stringify(firstSizeMenuBefore) ||
+    JSON.stringify(firstFormatMenu) !== JSON.stringify(firstFormatMenuBefore) ||
+    JSON.stringify(firstRulerAfter) !== JSON.stringify(firstRulerBefore)
+  ) {
+    throw new Error(
+      `The first Write window did not restore its own selection, menu context, and ruler: ${JSON.stringify(
+        {
+          restoredFirstSelection,
+          firstWindowSelection,
+          firstWindowContext,
+          firstFontMenu,
+          firstSizeMenu,
+          firstFormatMenu,
+          firstRulerBefore,
+          firstRulerAfter,
+        },
+      )}.`,
+    );
+  }
+
+  await reactivateWriteEditor('[data-write-title="Untitled"]', 'Second Write window');
+  const restoredSecondSelection = await copyActiveWriteSelection(
+    secondWindowSelection,
+    'Second Write window',
+  );
+  const secondFontMenu = await readRendererMenuState('font', writeFontActions);
+  const secondSizeMenu = await readRendererMenuState('size', writeSizeActions);
+  const secondFormatMenu = await readRendererMenuState('format', writeFormatActions);
+  const secondRuler = await readWriteRulerState('[data-write-title="Untitled"]');
+  const secondWindowContext = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      return {
+        active: write?.classList.contains('is-active') === true
+      };
+    })()`,
+    true,
+  )) as { active: boolean };
+  if (
+    restoredSecondSelection !== secondWindowSelection ||
+    !secondWindowContext.active ||
+    secondRuler.leftIndent !== '18px' ||
+    secondRuler.mixed !== null ||
+    JSON.stringify(secondRuler) === JSON.stringify(firstRulerBefore) ||
+    secondFontMenu['font-sans']?.checked !== 'false' ||
+    secondFontMenu['font-mono']?.checked !== 'true' ||
+    secondSizeMenu['size-14']?.checked !== 'false' ||
+    secondSizeMenu['size-10']?.checked !== 'true' ||
+    secondFormatMenu.underline?.checked !== 'true' ||
+    secondFormatMenu.bold?.checked !== 'true' ||
+    secondFormatMenu['align-left']?.checked !== 'true' ||
+    secondFormatMenu['align-center']?.checked !== 'false'
+  ) {
+    throw new Error(
+      `The second Write window did not restore its own selection, menu context, and ruler: ${JSON.stringify(
+        {
+          restoredSecondSelection,
+          secondWindowSelection,
+          secondWindowContext,
+          secondFontMenu,
+          secondSizeMenu,
+          secondFormatMenu,
+          secondRuler,
+        },
+      )}.`,
+    );
+  }
+  await invokeRendererMenuAction('file', 'close-write-window');
+  await pause(40);
+  const secondWritePrompt = await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Save Changes"]')?.textContent?.includes('Untitled') === true`,
+    true,
+  );
+  if (!secondWritePrompt) throw new Error('The second dirty Write window did not request review.');
+  const secondWriteDiscarded = await window.webContents.executeJavaScript(
+    `(() => {
+      const dialog = document.querySelector('[aria-label="Save Changes"]');
+      const discard = [...(dialog?.querySelectorAll('button') ?? [])]
+        .find((button) => button.textContent?.trim() === 'Don’t Save');
+      if (!(discard instanceof HTMLButtonElement)) return false;
+      discard.click();
+      return true;
+    })()`,
+    true,
+  );
+  if (!secondWriteDiscarded) {
+    throw new Error('The second Write review did not expose Don’t Save.');
+  }
+  const closingWriteShortcuts: {
+    keyCode: string;
+    modifiers: ('meta' | 'shift')[];
+  }[] = [
+    { keyCode: 'W', modifiers: ['meta'] },
+    { keyCode: 'S', modifiers: ['meta'] },
+    { keyCode: 'S', modifiers: ['meta', 'shift'] },
+  ];
+  for (const input of closingWriteShortcuts) {
+    window.webContents.sendInputEvent({ type: 'keyDown', ...input });
+    window.webContents.sendInputEvent({ type: 'keyUp', ...input });
+  }
+  let secondWriteCloseState: {
+    closing: string | null;
+    dialogOpen: boolean;
+    shadowPresent: boolean;
+  } | null = null;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    secondWriteCloseState = (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector('[data-write-title="Untitled"]');
+        if (!(write instanceof HTMLElement)) return null;
+        const windowId = write.getAttribute('data-write-window');
+        return {
+          closing: write.getAttribute('data-closing'),
+          dialogOpen: document.querySelector('[aria-label="Save Changes"]') !== null,
+          shadowPresent:
+            windowId !== null &&
+            document.querySelector('[data-window-animation-shadow="' + windowId + '"]') !== null
+        };
+      })()`,
+      true,
+    )) as typeof secondWriteCloseState;
+    if (!secondWriteCloseState) break;
+    if (attempt === 59) {
+      throw new Error(
+        `The discarded second Write window remained open: ${JSON.stringify(secondWriteCloseState)}.`,
+      );
+    }
+    await pause(20);
+  }
+  const closingWriteLeftTransientDialog = await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-file-dialog], [aria-label="Save Changes"]') !== null`,
+    true,
+  );
+  if (closingWriteLeftTransientDialog) {
+    throw new Error('Write File shortcuts remained live during a discard-close animation.');
+  }
+
+  await invokeRendererMenuAction('system', 'calculator');
+  const calculatorWriteOwnership = (await window.webContents.executeJavaScript(
+    `(() => ({
+      activeCalculator: document.querySelector('[data-calculator-window="true"].is-active') !== null,
+      activeWrite: document.querySelector('.write-window.is-active') !== null,
+      menus: [...document.querySelectorAll('[data-menu]')]
+        .map((menu) => menu.getAttribute('data-menu'))
+    }))()`,
+    true,
+  )) as { activeCalculator: boolean; activeWrite: boolean; menus: (string | null)[] };
+  if (
+    !calculatorWriteOwnership.activeCalculator ||
+    calculatorWriteOwnership.activeWrite ||
+    calculatorWriteOwnership.menus.join(',') !== 'system,file,edit,format,font,size,view'
+  ) {
+    throw new Error(
+      `Calculator did not preserve Write menu ownership: ${JSON.stringify(calculatorWriteOwnership)}.`,
+    );
+  }
+  const calculatorClipboardMarker = ' Calculator-owned paste';
+  clipboard.writeText(calculatorClipboardMarker);
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['meta'] });
+  for (const keyCode of ['TAB', 'ENTER', 'BACKSPACE']) {
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+  }
+  await waitForWriteLayout('[data-write-title="Smoke Write"]', 'Calculator Write paste');
+  const calculatorWritePaste = (await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-write-title="Smoke Write"] [data-write-editor="true"]'
+    )?.textContent ?? ''`,
+    true,
+  )) as string;
+  if (!calculatorWritePaste.includes(calculatorClipboardMarker)) {
+    throw new Error('Write Paste did not work while Calculator retained keyboard ownership.');
+  }
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Z', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Z', modifiers: ['meta'] });
+  await waitForWriteLayout('[data-write-title="Smoke Write"]', 'Calculator Write Undo');
+  const calculatorWriteUndo = (await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-write-title="Smoke Write"] [data-write-editor="true"]'
+    )?.textContent ?? ''`,
+    true,
+  )) as string;
+  if (calculatorWriteUndo !== immediateReopenedWrite.text) {
+    throw new Error(
+      'Write Undo did not restore the document while Calculator owned ordinary keys.',
+    );
+  }
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Q' });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Q' });
+  await pause(40);
+  const calculatorUnsupportedKeyText = (await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-write-title="Smoke Write"] [data-write-editor="true"]'
+    )?.textContent ?? ''`,
+    true,
+  )) as string;
+  if (calculatorUnsupportedKeyText !== immediateReopenedWrite.text) {
+    throw new Error('An unsupported Calculator key leaked into the inactive Write editor.');
+  }
+  for (const keyCode of ['C', '4', '2']) {
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+  }
+  await pause(60);
+  const calculatorWriteInput = (await window.webContents.executeJavaScript(
+    `(() => ({
+      display: document.querySelector('[data-calculator-display]')?.textContent?.trim() ?? '',
+      writeText: document.querySelector('[data-write-title="Smoke Write"] [data-write-editor="true"]')?.textContent ?? ''
+    }))()`,
+    true,
+  )) as { display: string; writeText: string };
+  if (
+    calculatorWriteInput.display !== '42' ||
+    calculatorWriteInput.writeText !== immediateReopenedWrite.text
+  ) {
+    throw new Error(
+      `Calculator ordinary-key ownership leaked into Write: ${JSON.stringify(calculatorWriteInput)}.`,
+    );
+  }
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+  await pause(60);
+  const calculatorReturnedToWrite = await window.webContents.executeJavaScript(
+    `document.querySelector('[data-calculator-window="true"]') === null &&
+      document.querySelector('[data-write-title="Smoke Write"].is-active') !== null`,
+    true,
+  );
+  if (!calculatorReturnedToWrite) {
+    throw new Error('Closing Calculator did not restore the active Write window.');
   }
 
   await invokeRendererMenuAction('file', 'open-document');
@@ -3315,6 +4496,71 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `Closing a dirty Write document did not ask to save: ${JSON.stringify(dirtyClosePrompt)}.`,
     );
   }
+  smokeSaveFailureTarget = 'vfs';
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const dialog = document.querySelector('[aria-label="Save Changes"]');
+      const save = [...(dialog?.querySelectorAll('button') ?? [])]
+        .find((button) => button.textContent?.trim() === 'Save');
+      save?.click();
+    })()`,
+    true,
+  );
+  let closeSaveFailure: {
+    message: string;
+    dirty: boolean;
+    reviewOpen: boolean;
+    normalQuitPending: boolean;
+  } | null = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    closeSaveFailure = (await window.webContents.executeJavaScript(
+      `(() => {
+        const alert = document.querySelector('[aria-label="Persistence error"]');
+        const write = document.querySelector('[data-write-title="Smoke Write"]');
+        if (!(alert instanceof HTMLElement) || !(write instanceof HTMLElement)) return null;
+        return {
+          message: alert.textContent?.trim() ?? '',
+          dirty: write.querySelector('h2')?.textContent?.includes('•') === true,
+          reviewOpen: document.querySelector('[aria-label="Save Changes"]') !== null,
+          normalQuitPending:
+            document.querySelector('.macintosh')?.getAttribute('data-normal-quit-pending') === 'true'
+        };
+      })()`,
+      true,
+    )) as {
+      message: string;
+      dirty: boolean;
+      reviewOpen: boolean;
+      normalQuitPending: boolean;
+    } | null;
+    if (closeSaveFailure) break;
+    await pause(25);
+  }
+  if (
+    !closeSaveFailure ||
+    !closeSaveFailure.message.includes('could not be saved') ||
+    !closeSaveFailure.dirty ||
+    closeSaveFailure.reviewOpen ||
+    closeSaveFailure.normalQuitPending
+  ) {
+    throw new Error(
+      `A close-review save failure did not cancel close recoverably: ${JSON.stringify(closeSaveFailure)}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Persistence error"] button')?.click()`,
+    true,
+  );
+  await pause(40);
+
+  await ensureNativeInputFocus('Write repeated dirty-close shortcut');
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Smoke Write"] [data-write-editor="true"]')?.focus()`,
+    true,
+  );
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'W', modifiers: ['meta'] });
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'W', modifiers: ['meta'] });
+  await pause(50);
   await window.webContents.executeJavaScript(
     `(() => {
       const dialog = document.querySelector('[aria-label="Save Changes"]');
@@ -3330,7 +4576,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!dirtyCloseCancelled) throw new Error('Cancel did not preserve the dirty Write document.');
-  await ensureNativeInputFocus('Write repeated dirty-close shortcut');
+  await ensureNativeInputFocus('Write final dirty-close shortcut');
   await window.webContents.executeJavaScript(
     `document.querySelector('[data-write-title="Smoke Write"] [data-write-editor="true"]')?.focus()`,
     true,
@@ -3678,7 +4924,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   });
   await pause(80);
 
-  const windowDragCommitted = (await window.webContents.executeJavaScript(
+  const windowDragCanceled = (await window.webContents.executeJavaScript(
     `(() => {
       const finder = document.querySelector('[data-finder-window="window-applications"]');
       const shadow = finder?.querySelector('.window-drag-shadow');
@@ -3698,17 +4944,15 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     shadowHidden: boolean;
     draggingCleared: boolean;
   } | null;
-  if (!windowDragCommitted) throw new Error('Committed Finder geometry could not be inspected.');
+  if (!windowDragCanceled) throw new Error('Canceled Finder geometry could not be inspected.');
   if (
-    Math.abs(windowDragCommitted.left - (windowDragStart.window.left + windowDragDelta.x)) > 1 ||
-    Math.abs(windowDragCommitted.top - (windowDragStart.window.top + windowDragDelta.y)) > 1
+    Math.abs(windowDragCanceled.left - windowDragStart.window.left) > 1 ||
+    Math.abs(windowDragCanceled.top - windowDragStart.window.top) > 1
   ) {
-    throw new Error(
-      'The full Finder window did not redraw after capture was lost over another window.',
-    );
+    throw new Error('The Finder window committed a drag after pointer capture was lost.');
   }
-  if (!windowDragCommitted.shadowHidden || !windowDragCommitted.draggingCleared) {
-    throw new Error('The Finder drag shadow did not clear after release.');
+  if (!windowDragCanceled.shadowHidden || !windowDragCanceled.draggingCleared) {
+    throw new Error('The Finder drag shadow did not clear when pointer capture was lost.');
   }
 
   const dragAfterCaptureDestination = process.env.MACINTOSH_SMOKE_DRAG_AFTER_CAPTURE_PATH;
@@ -4518,8 +5762,138 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `Opening Trash crossed interaction behaviors: ${JSON.stringify(trashWindowState)}.`,
     );
   }
+  const directTrashDocumentOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector(
+        '[data-finder-window="window-trash"] [data-vfs-item="welcome"]'
+      );
+      if (!(item instanceof HTMLElement)) return false;
+      item.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!directTrashDocumentOpened) throw new Error('A direct Trash document could not be opened.');
+  await waitForWriteLayout('[data-write-title="Welcome"]', 'Direct Trash Write document');
+  const directTrashCanonicalParent = (await loadState()).nodes.find(
+    (node) => node.id === 'welcome',
+  )?.parentId;
+  if (directTrashCanonicalParent !== 'trash') {
+    throw new Error(
+      `The direct Trash guard did not have a canonical Trash document: ${String(directTrashCanonicalParent)}.`,
+    );
+  }
+  const directTrashFinderActivated = await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-trash"]');
+      if (!(finder instanceof HTMLElement)) return false;
+      finder.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        button: 0,
+        buttons: 1,
+        pointerId: 9101,
+        pointerType: 'mouse'
+      }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!directTrashFinderActivated) throw new Error('Trash could not regain menu ownership.');
+  await pause(40);
+  const directTrashEmptyGuard = (await window.webContents.executeJavaScript(
+    `(async () => {
+      const menu = document.querySelector('[data-menu="special"]');
+      if (!(menu instanceof HTMLButtonElement)) return null;
+      if (menu.getAttribute('aria-expanded') !== 'true') {
+        menu.click();
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      const action = document.querySelector('[data-menu-action="empty-trash"]');
+      const write = document.querySelector('[data-write-title="Welcome"]');
+      return {
+        actionPresent: action instanceof HTMLButtonElement,
+        disabled: action instanceof HTMLButtonElement && action.disabled,
+        documentId: write?.getAttribute('data-document-id') ?? null,
+        menus: [...document.querySelectorAll('[data-menu]')]
+          .map((candidate) => candidate.getAttribute('data-menu')),
+        trashContainsWelcome:
+          document.querySelector(
+            '[data-finder-window="window-trash"] [data-vfs-item="welcome"]'
+          ) !== null,
+        writeOpen: write !== null
+      };
+    })()`,
+    true,
+  )) as {
+    actionPresent: boolean;
+    disabled: boolean;
+    documentId: string | null;
+    menus: (string | null)[];
+    trashContainsWelcome: boolean;
+    writeOpen: boolean;
+  } | null;
+  if (
+    !directTrashEmptyGuard?.actionPresent ||
+    !directTrashEmptyGuard.disabled ||
+    directTrashEmptyGuard.documentId !== 'welcome' ||
+    directTrashEmptyGuard.menus.join(',') !== 'system,file,edit,view,special' ||
+    !directTrashEmptyGuard.trashContainsWelcome ||
+    !directTrashEmptyGuard.writeOpen
+  ) {
+    throw new Error(
+      `An open direct Trash document did not block Empty Trash: ${JSON.stringify(directTrashEmptyGuard)}.`,
+    );
+  }
   await window.webContents.executeJavaScript(
-    'document.querySelector(\'[aria-label="Close Trash"]\')?.click()',
+    `(() => {
+      document.querySelector('[data-menu="special"]')?.click();
+      document.querySelector('[aria-label="Close Welcome"]')?.click();
+    })()`,
+    true,
+  );
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const directWriteClosed = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Welcome"]') === null`,
+      true,
+    )) as boolean;
+    if (directWriteClosed) break;
+    if (attempt === 59) throw new Error('The direct Trash Write document did not close.');
+    await pause(20);
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-finder-window="window-trash"]')?.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        button: 0,
+        buttons: 1,
+        pointerId: 9103,
+        pointerType: 'mouse'
+      })
+    )`,
+    true,
+  );
+  await pause(40);
+  const directTrashGuardRestored = await window.webContents.executeJavaScript(
+    `(async () => {
+      const menu = document.querySelector('[data-menu="special"]');
+      if (!(menu instanceof HTMLButtonElement)) return false;
+      if (menu.getAttribute('aria-expanded') !== 'true') {
+        menu.click();
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      const action = document.querySelector('[data-menu-action="empty-trash"]');
+      return action instanceof HTMLButtonElement && !action.disabled;
+    })()`,
+    true,
+  );
+  if (!directTrashGuardRestored) {
+    throw new Error('Closing the direct Trash document did not restore Empty Trash.');
+  }
+  await window.webContents.executeJavaScript(
+    `(() => {
+      document.querySelector('[data-menu="special"]')?.click();
+      document.querySelector('[aria-label="Close Trash"]')?.click();
+    })()`,
     true,
   );
   await pause(50);
@@ -4773,6 +6147,107 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
+  const nestedTrashDocumentOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return false;
+      trash.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!nestedTrashDocumentOpened) throw new Error('Trash could not open for its nested guard.');
+  await pause(100);
+  for (const step of [
+    { windowId: 'window-trash', itemId: 'documents', label: 'Documents' },
+    { windowId: 'window-documents', itemId: 'system-folder', label: 'System Folder' },
+    { windowId: 'window-system-folder', itemId: 'finder-notes', label: 'Finder Notes' },
+  ]) {
+    const opened = await window.webContents.executeJavaScript(
+      `(() => {
+        const item = document.querySelector(${JSON.stringify(
+          `[data-finder-window="${step.windowId}"] [data-vfs-item="${step.itemId}"]`,
+        )});
+        if (!(item instanceof HTMLElement)) return false;
+        item.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+        return true;
+      })()`,
+      true,
+    );
+    if (!opened) {
+      throw new Error(`The nested Trash guard could not open ${step.label}.`);
+    }
+    await pause(80);
+  }
+  await waitForWriteLayout('[data-write-title="Finder Notes"]', 'Nested Trash Write document');
+  const nestedTrashFinderActivated = await window.webContents.executeJavaScript(
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-system-folder"]');
+      if (!(finder instanceof HTMLElement)) return false;
+      finder.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        button: 0,
+        buttons: 1,
+        pointerId: 9102,
+        pointerType: 'mouse'
+      }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!nestedTrashFinderActivated) {
+    throw new Error('The nested Trash folder could not regain menu ownership.');
+  }
+  await pause(40);
+  const nestedTrashEmptyGuard = (await window.webContents.executeJavaScript(
+    `(async () => {
+      const menu = document.querySelector('[data-menu="special"]');
+      if (!(menu instanceof HTMLButtonElement)) return null;
+      if (menu.getAttribute('aria-expanded') !== 'true') {
+        menu.click();
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      const action = document.querySelector('[data-menu-action="empty-trash"]');
+      return {
+        actionPresent: action instanceof HTMLButtonElement,
+        disabled: action instanceof HTMLButtonElement && action.disabled,
+        writeOpen: document.querySelector('[data-write-title="Finder Notes"]') !== null
+      };
+    })()`,
+    true,
+  )) as { actionPresent: boolean; disabled: boolean; writeOpen: boolean } | null;
+  if (
+    !nestedTrashEmptyGuard?.actionPresent ||
+    !nestedTrashEmptyGuard.disabled ||
+    !nestedTrashEmptyGuard.writeOpen
+  ) {
+    throw new Error(
+      `An open nested Trash document did not block Empty Trash: ${JSON.stringify(nestedTrashEmptyGuard)}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `(() => {
+      document.querySelector('[data-menu="special"]')?.click();
+      document.querySelector('[aria-label="Close Finder Notes"]')?.click();
+      for (const label of ['System Folder', 'Documents', 'Trash']) {
+        document.querySelector('[aria-label="Close ' + label + '"]')?.click();
+      }
+    })()`,
+    true,
+  );
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const nestedWindowsClosed = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Finder Notes"]') === null &&
+        document.querySelector('[data-finder-window="window-system-folder"]') === null &&
+        document.querySelector('[data-finder-window="window-documents"]') === null &&
+        document.querySelector('[data-finder-window="window-trash"]') === null`,
+      true,
+    )) as boolean;
+    if (nestedWindowsClosed) break;
+    if (attempt === 59) throw new Error('Nested Trash guard windows did not close.');
+    await pause(20);
+  }
+
   window.webContents.setZoomFactor(1);
   window.setContentSize(1152, 768);
   await pause(140);
@@ -4985,6 +6460,23 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
 const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
   await waitForRenderer(window);
+  const transientWriteState = (await window.webContents.executeJavaScript(
+    `(() => ({
+      windows: document.querySelectorAll('[data-write-window]').length,
+      fileDialogs: document.querySelectorAll('[data-write-file-dialog]').length,
+      saveReviews: document.querySelectorAll('[aria-label="Save Changes"]').length
+    }))()`,
+    true,
+  )) as { windows: number; fileDialogs: number; saveReviews: number };
+  if (
+    transientWriteState.windows !== 0 ||
+    transientWriteState.fileDialogs !== 0 ||
+    transientWriteState.saveReviews !== 0
+  ) {
+    throw new Error(
+      `Relaunch restored transient Write session state: ${JSON.stringify(transientWriteState)}.`,
+    );
+  }
   const writeItemOpened = await window.webContents.executeJavaScript(
     `(() => {
       const item = [...document.querySelectorAll(
@@ -4997,7 +6489,92 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!writeItemOpened) throw new Error('Persistence probe could not locate Smoke Write.');
-  await pause(100);
+  let reopenedWriteSession: {
+    clean: boolean;
+    zoom75: boolean;
+    pageCount: number;
+    layoutState: string | null;
+    layoutGeneration: number;
+    expandedSelection: boolean;
+  } | null = null;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    reopenedWriteSession = (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector('[data-write-title="Smoke Write"]');
+        const editor = write?.querySelector('[data-write-editor="true"]');
+        const pages = write?.querySelector('.write-page-stack');
+        if (
+          !(write instanceof HTMLElement) ||
+          !(editor instanceof HTMLElement) ||
+          !(pages instanceof HTMLElement)
+        ) return null;
+        const selection = window.getSelection();
+        return {
+          clean: write.querySelector('h2')?.textContent?.includes('•') !== true,
+          zoom75: write.querySelector('.write-status-bar')?.textContent?.includes('75%') === true,
+          pageCount: Number(pages.getAttribute('data-page-count') ?? '0'),
+          layoutState: pages.getAttribute('data-write-layout-state'),
+          layoutGeneration: Number(pages.getAttribute('data-write-layout-generation') ?? '0'),
+          expandedSelection:
+            Boolean(selection && !selection.isCollapsed && editor.contains(selection.anchorNode))
+        };
+      })()`,
+      true,
+    )) as {
+      clean: boolean;
+      zoom75: boolean;
+      pageCount: number;
+      layoutState: string | null;
+      layoutGeneration: number;
+      expandedSelection: boolean;
+    } | null;
+    if (
+      reopenedWriteSession?.layoutState === 'stable' &&
+      reopenedWriteSession.layoutGeneration > 0
+    ) {
+      break;
+    }
+    await pause(25);
+  }
+  const historyMenuOpened = (await window.webContents.executeJavaScript(
+    `(() => {
+      const menu = document.querySelector('[data-menu="edit"]');
+      if (!(menu instanceof HTMLElement)) return false;
+      menu.click();
+      return true;
+    })()`,
+    true,
+  )) as boolean;
+  if (!historyMenuOpened) throw new Error('Persistence probe could not open the Edit menu.');
+  await pause(20);
+  const historyReset = (await window.webContents.executeJavaScript(
+    `(() => {
+      const undo = document.querySelector('[data-menu-action="undo"]');
+      const redo = document.querySelector('[data-menu-action="redo"]');
+      const result = {
+        undoDisabled: undo instanceof HTMLButtonElement && undo.disabled,
+        redoDisabled: redo instanceof HTMLButtonElement && redo.disabled
+      };
+      document.querySelector('[data-menu="edit"]')?.click();
+      return result;
+    })()`,
+    true,
+  )) as { undoDisabled: boolean; redoDisabled: boolean } | null;
+  if (
+    !reopenedWriteSession ||
+    !reopenedWriteSession.clean ||
+    !reopenedWriteSession.zoom75 ||
+    reopenedWriteSession.pageCount !== 2 ||
+    reopenedWriteSession.layoutState !== 'stable' ||
+    reopenedWriteSession.layoutGeneration <= 0 ||
+    reopenedWriteSession.expandedSelection ||
+    !historyReset?.undoDisabled ||
+    !historyReset.redoDisabled
+  ) {
+    throw new Error(
+      `Reopened Write restored transient session state: ${JSON.stringify({ reopenedWriteSession, historyReset })}.`,
+    );
+  }
   const proof = await window.webContents.executeJavaScript(
     `(() => {
     const disk = document.querySelector('[data-desktop-icon="system-disk"]');
@@ -5036,9 +6613,18 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
       desktopFolderY: Number(desktopFolder.dataset.iconY),
       desktopUtilitiesX: Number(desktopUtilities.dataset.iconX),
       desktopUtilitiesY: Number(desktopUtilities.dataset.iconY),
+      startedWithoutWriteWindows: ${transientWriteState.windows === 0},
       writeReopened: write instanceof HTMLElement,
       writeFormat: write?.getAttribute('data-document-format') ?? '',
       writeText: write?.querySelector('[data-write-editor="true"]')?.textContent ?? '',
+      writeClean: ${reopenedWriteSession.clean},
+      writeZoom75: ${reopenedWriteSession.zoom75},
+      writePageCount: ${reopenedWriteSession.pageCount},
+      writeLayoutState: ${JSON.stringify(reopenedWriteSession.layoutState)},
+      writeLayoutGeneration: ${reopenedWriteSession.layoutGeneration},
+      writeExpandedSelection: ${reopenedWriteSession.expandedSelection},
+      writeUndoDisabled: ${historyReset.undoDisabled},
+      writeRedoDisabled: ${historyReset.redoDisabled},
       vfsCount: Number(root.dataset.vfsCount || 0),
       windowLeft: Number.parseFloat(finder.style.left),
       windowTop: Number.parseFloat(finder.style.top),
@@ -5059,14 +6645,16 @@ const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
 
   const writeOpened = await window.webContents.executeJavaScript(
     `(() => {
-      const write = document.querySelector('[data-vfs-item="write"]');
-      if (!(write instanceof HTMLElement)) return false;
-      write.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      const documentItem = [...document.querySelectorAll(
+        '[data-finder-window="window-system-disk"] [data-vfs-item]'
+      )].find((candidate) => candidate.textContent?.trim() === 'Smoke Write');
+      if (!(documentItem instanceof HTMLElement)) return false;
+      documentItem.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
       return true;
     })()`,
     true,
   );
-  if (!writeOpened) throw new Error('Normal-quit probe could not open Write.');
+  if (!writeOpened) throw new Error('Normal-quit probe could not open the saved Write document.');
   await pause(80);
   await window.webContents.executeJavaScript(
     `document.querySelector('.write-window.is-active [data-write-editor="true"]')?.focus()`,
@@ -5091,6 +6679,41 @@ const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
   window.webContents.insertText('Second dirty document');
   await pause(50);
 
+  const discardCloseStarted = await window.webContents.executeJavaScript(
+    `(() => {
+      const close = document.querySelector('.write-window.is-active .window-close');
+      if (!(close instanceof HTMLButtonElement)) return false;
+      close.click();
+      return true;
+    })()`,
+    true,
+  );
+  if (!discardCloseStarted) {
+    throw new Error('Normal-quit probe could not start the dirty discard-close race.');
+  }
+  await pause(25);
+  const discardConfirmed = await window.webContents.executeJavaScript(
+    `(() => {
+      const dialog = document.querySelector('[aria-label="Save Changes"]');
+      const discard = [...(dialog?.querySelectorAll('button') ?? [])]
+        .find((button) => button.textContent?.trim() === 'Don’t Save');
+      if (!(discard instanceof HTMLButtonElement)) return false;
+      discard.click();
+      return true;
+    })()`,
+    true,
+  );
+  if (!discardConfirmed) {
+    throw new Error('Normal-quit probe could not authorize the dirty discard close.');
+  }
+  await pause(20);
+  const discardAnimationActive = await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Untitled"]')?.getAttribute('data-closing') === 'true'`,
+    true,
+  );
+  if (!discardAnimationActive) {
+    throw new Error('The dirty Write discard-close animation did not begin before native Quit.');
+  }
   window.close();
   await pause(80);
   const firstReview = (await window.webContents.executeJavaScript(
@@ -5107,11 +6730,81 @@ const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
   if (
     !firstReview.open ||
     firstReview.writeCount !== 2 ||
-    !firstReview.text.includes('Document 1 of 2')
+    !firstReview.text.includes('Document 1 of 2') ||
+    !firstReview.text.includes('Smoke Write')
   ) {
     throw new Error(
       `Normal Quit did not begin a two-document review: ${JSON.stringify(firstReview)}.`,
     );
+  }
+  smokeSaveFailureTarget = 'vfs';
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const dialog = document.querySelector('[aria-label="Save Changes"]');
+      [...(dialog?.querySelectorAll('button') ?? [])]
+        .find((button) => button.textContent?.trim() === 'Save')
+        ?.click();
+    })()`,
+    true,
+  );
+  let quitDocumentSaveFailure: {
+    message: string;
+    dialogOpen: boolean;
+    dirty: boolean;
+    activeTitle: string | null;
+    normalQuitPending: boolean;
+  } | null = null;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    quitDocumentSaveFailure = (await window.webContents.executeJavaScript(
+      `(() => {
+        const alert = document.querySelector('[aria-label="Persistence error"]');
+        const activeWrite = document.querySelector('.write-window.is-active');
+        if (!(alert instanceof HTMLElement) || !(activeWrite instanceof HTMLElement)) return null;
+        return {
+          message: alert.textContent?.trim() ?? '',
+          dialogOpen: document.querySelector('[aria-label="Save Changes"]') !== null,
+          dirty: activeWrite.querySelector('h2')?.textContent?.includes('•') === true,
+          activeTitle: activeWrite.getAttribute('data-write-title'),
+          normalQuitPending:
+            document.querySelector('.macintosh')?.getAttribute('data-normal-quit-pending') === 'true'
+        };
+      })()`,
+      true,
+    )) as {
+      message: string;
+      dialogOpen: boolean;
+      dirty: boolean;
+      activeTitle: string | null;
+      normalQuitPending: boolean;
+    } | null;
+    if (quitDocumentSaveFailure) break;
+    await pause(25);
+  }
+  if (
+    !quitDocumentSaveFailure ||
+    !quitDocumentSaveFailure.message.includes('could not be saved') ||
+    quitDocumentSaveFailure.dialogOpen ||
+    !quitDocumentSaveFailure.dirty ||
+    quitDocumentSaveFailure.activeTitle !== 'Smoke Write' ||
+    quitDocumentSaveFailure.normalQuitPending
+  ) {
+    throw new Error(
+      `A document-save failure did not abort normal Quit recoverably: ${JSON.stringify(quitDocumentSaveFailure)}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Persistence error"] button')?.click()`,
+    true,
+  );
+  await pause(80);
+  window.close();
+  await pause(80);
+  const retriedFirstReview = await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Save Changes"]')?.textContent?.includes('Document 1 of 2') === true`,
+    true,
+  );
+  if (!retriedFirstReview) {
+    throw new Error('Normal Quit did not restart cleanly after a document-save failure.');
   }
   await window.webContents.executeJavaScript(
     `(() => {
@@ -5793,6 +7486,9 @@ const captureScreen = async (window: BrowserWindow, destination: string): Promis
     await invokeWriteMenu('size', 'size-12');
     await invokeWriteMenu('format', 'bold');
     await invokeWriteMenu('format', 'align-left');
+    if (captureWriteMixedMode) {
+      await invokeWriteMenu('format', 'increase-left-indent');
+    }
     window.webContents.insertText('A page-oriented word processor for The Macintosh.');
     window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'ENTER' });
     window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'ENTER' });
@@ -5811,18 +7507,48 @@ const captureScreen = async (window: BrowserWindow, destination: string): Promis
     await invokeWriteMenu('format', 'insert-page-break');
     window.webContents.insertText('This is the second page.');
     await pause(120);
+    const captureFontFamilies = (await window.webContents.executeJavaScript(
+      `(() => {
+        const sans = document.querySelector(
+          '[data-write-title="Untitled"] [data-write-paragraph]'
+        );
+        const serif = document.querySelector(
+          '[data-write-title="Untitled"] [data-write-font-family="serif"]'
+        );
+        return {
+          sans: sans instanceof Element ? getComputedStyle(sans).fontFamily : '',
+          serif: serif instanceof Element ? getComputedStyle(serif).fontFamily : ''
+        };
+      })()`,
+      true,
+    )) as { sans: string; serif: string };
+    if (
+      !captureFontFamilies.sans.toLowerCase().includes('helvetica') ||
+      !captureFontFamilies.serif.toLowerCase().includes('times')
+    ) {
+      throw new Error(
+        `Write capture did not retain Helvetica-first sans and explicit serif families: ${JSON.stringify(captureFontFamilies)}.`,
+      );
+    }
     await window.webContents.executeJavaScript(
       `(() => {
         const write = document.querySelector('[data-write-title="Untitled"]');
         const editor = write?.querySelector('[data-write-editor="true"]');
-        const firstParagraph = editor?.querySelector('[data-write-paragraph]');
+        const paragraphs = editor?.querySelectorAll('[data-write-paragraph]');
+        const firstParagraph = paragraphs?.[0];
+        const secondParagraph = paragraphs?.[1];
         const scroll = write?.querySelector('.write-document-viewport');
         if (!(editor instanceof HTMLElement) || !(firstParagraph instanceof HTMLElement)) return false;
         editor.focus();
         const selection = window.getSelection();
         const range = document.createRange();
-        range.selectNodeContents(firstParagraph);
-        range.collapse(true);
+        if (${captureWriteMixedMode ? 'true' : 'false'} && secondParagraph instanceof HTMLElement) {
+          range.setStart(firstParagraph, 0);
+          range.setEnd(secondParagraph, secondParagraph.childNodes.length);
+        } else {
+          range.selectNodeContents(firstParagraph);
+          range.collapse(true);
+        }
         selection?.removeAllRanges();
         selection?.addRange(range);
         document.dispatchEvent(new Event('selectionchange'));
@@ -5831,6 +7557,16 @@ const captureScreen = async (window: BrowserWindow, destination: string): Promis
       })()`,
       true,
     );
+    if (captureWriteMixedMode) {
+      await pause(60);
+      const mixedRulerVisible = await window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label^="Mixed ruler settings:"]') !== null`,
+        true,
+      );
+      if (!mixedRulerVisible) {
+        throw new Error('Capture could not present Write mixed-selection ruler state.');
+      }
+    }
   }
   await pause(300);
   const image = await window.webContents.capturePage();
