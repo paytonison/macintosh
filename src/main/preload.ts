@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 import type {
+  ClipboardEditAction,
   ImportFilesOptions,
   IpcChannels,
   MacintoshAPI,
@@ -17,8 +18,10 @@ const IPC_CHANNELS = {
   mutateVfs: 'macintosh:vfs:mutate',
   importFiles: 'macintosh:files:import',
   requestPaste: 'macintosh:clipboard:paste',
+  editClipboard: 'macintosh:clipboard:edit',
   normalQuitReady: 'macintosh:app:normal-quit-ready',
   normalQuitRequested: 'macintosh:app:normal-quit-requested',
+  cancelNormalQuit: 'macintosh:app:normal-quit-cancel',
   flushPresentationAndQuit: 'macintosh:app:flush-presentation-and-quit',
   saveAndQuitAfterEject: 'macintosh:app:save-and-quit-after-eject',
 } as const satisfies IpcChannels;
@@ -44,12 +47,15 @@ const api: MacintoshAPI = Object.freeze({
     return ipcRenderer.invoke(IPC_CHANNELS.importFiles, { ...options, paths });
   },
   requestPaste: () => ipcRenderer.invoke(IPC_CHANNELS.requestPaste),
+  editClipboard: (action: ClipboardEditAction) =>
+    ipcRenderer.invoke(IPC_CHANNELS.editClipboard, action),
   signalNormalQuitReady: () => ipcRenderer.invoke(IPC_CHANNELS.normalQuitReady),
   onNormalQuitRequested: (listener: () => void) => {
     const handleRequest = (): void => listener();
     ipcRenderer.on(IPC_CHANNELS.normalQuitRequested, handleRequest);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.normalQuitRequested, handleRequest);
   },
+  cancelNormalQuit: () => ipcRenderer.invoke(IPC_CHANNELS.cancelNormalQuit),
   flushPresentationAndQuit: (presentation: PresentationPatch | null) =>
     ipcRenderer.invoke(IPC_CHANNELS.flushPresentationAndQuit, presentation),
   saveAndQuitAfterEject: (presentation: PresentationPatch) =>

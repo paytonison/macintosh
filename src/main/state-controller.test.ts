@@ -81,12 +81,20 @@ describe('authoritative state controller', () => {
     });
     const patch = projectPresentation(original);
     patch.desktop = { ...patch.desktop, trashPosition: { x: 401, y: 299 } };
-    (patch as unknown as { nodes: unknown[] }).nodes = [];
+    (patch as unknown as { nodes: unknown[] }).nodes = [
+      {
+        id: 'welcome',
+        payload: { format: 'plain-text', text: 'Unsaved renderer draft' },
+      },
+    ];
 
     await controller.savePresentation(patch);
 
     expect(written?.desktop.trashPosition).toEqual({ x: 401, y: 299 });
     expect(written?.nodes).toHaveLength(original.nodes.length);
+    expect(written?.nodes.find((node) => node.id === 'welcome')?.payload).toEqual(
+      original.nodes.find((node) => node.id === 'welcome')?.payload,
+    );
   });
 
   it('orders asynchronous transitions and closes successful finalization to later writes', async () => {

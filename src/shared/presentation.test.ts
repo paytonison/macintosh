@@ -48,7 +48,7 @@ describe('presentation persistence boundary', () => {
         {
           ...currentWelcome,
           name: 'Renderer replacement',
-          content: 'Renderer replacement',
+          payload: { format: 'plain-text', text: 'Renderer replacement' },
         },
       ],
     });

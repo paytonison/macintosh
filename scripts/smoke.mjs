@@ -19,6 +19,7 @@ const CANONICAL_CREATED_AT_BY_NODE_ID = new Map([
   ['welcome', BUILT_IN_ITEM_CREATED_AT],
   ['finder-notes', BUILT_IN_ITEM_CREATED_AT],
   ['read-me', BUILT_IN_ITEM_CREATED_AT],
+  ['write', BUILT_IN_ITEM_CREATED_AT],
 ]);
 const electronPath = await getBrandedElectronExecutable();
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -35,6 +36,21 @@ const assertCanonicalCreationMetadata = (state, label) => {
   }
 };
 
+const documentText = (node) => {
+  const payload = node?.payload;
+  if (payload?.format === 'plain-text') return payload.text;
+  if (payload?.format !== 'write-v1' || !Array.isArray(payload.blocks)) return '';
+  return payload.blocks
+    .map((block) =>
+      block.type === 'page-break'
+        ? '\f'
+        : (block.content ?? [])
+            .map((inline) => (inline.type === 'tab' ? '\t' : (inline.text ?? '')))
+            .join(''),
+    )
+    .join('\n');
+};
+
 const runElectron = (flag) =>
   new Promise((resolve, reject) => {
     const child = spawn(electronPath, ['.', flag], {
@@ -46,10 +62,11 @@ const runElectron = (flag) =>
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
+    const timeout = flag === '--smoke-test' ? 40_000 : 20_000;
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
       reject(new Error(`Electron ${flag} timed out.\n${output}`));
-    }, 20_000);
+    }, timeout);
 
     child.stdout.on('data', (chunk) => {
       output += chunk.toString();
@@ -72,8 +89,8 @@ try {
   await runElectron('--smoke-test');
 
   const state = JSON.parse(await readFile(path.join(userData, 'macintosh-state.json'), 'utf8'));
-  if (state.schemaVersion !== 3)
-    throw new Error('The persisted state was not migrated to schema 3.');
+  if (state.schemaVersion !== 4)
+    throw new Error('The persisted state was not migrated to schema 4.');
   const disk = state.nodes.find((node) => node.id === 'system-disk');
   if (!disk || disk.kind !== 'disk') throw new Error('The persisted virtual disk was removed.');
   assertCanonicalCreationMetadata(state, 'Smoke state');
@@ -91,7 +108,15 @@ try {
     (node) => node.parentId === 'desktop' && node.name === 'Dropped Note.txt',
   );
   if (
-    !desktopDocument?.content?.includes('external Electron drop') ||
+    desktopDocument?.payload?.format !== 'write-v1' ||
+    !documentText(desktopDocument).includes('external Electron drop') ||
+    !desktopDocument.payload.blocks.some(
+      (block) =>
+        block.type === 'paragraph' &&
+        block.content.some(
+          (inline) => inline.type === 'text' && inline.marks?.some((mark) => mark.type === 'bold'),
+        ),
+    ) ||
     desktopDocument.iconPosition?.x !== 121 ||
     desktopDocument.iconPosition?.y !== 591
   ) {
@@ -100,20 +125,45 @@ try {
   const droppedDocument = state.nodes.find(
     (node) => node.parentId === 'system-disk' && node.name === 'Dropped Note.txt',
   );
-  if (!droppedDocument?.content?.includes('external Electron drop')) {
+  if (!documentText(droppedDocument).includes('external Electron drop')) {
     throw new Error('The externally dropped document and its contents were not persisted.');
   }
   const droppedCopy = state.nodes.find(
     (node) => node.parentId === 'system-disk' && node.name === 'Dropped Note copy.txt',
   );
-  if (droppedCopy?.content !== droppedDocument.content) {
+  if (JSON.stringify(droppedCopy?.payload) !== JSON.stringify(droppedDocument.payload)) {
     throw new Error('The copied and pasted virtual document was not persisted correctly.');
   }
   const clipboardDocument = state.nodes.find(
     (node) => node.parentId === 'system-disk' && node.name === 'Clipboard',
   );
-  if (clipboardDocument?.content !== 'This document arrived through Paste.') {
+  if (documentText(clipboardDocument) !== 'This document arrived through Paste.') {
     throw new Error('The pasted Clipboard document was not persisted.');
+  }
+  const writeApplication = state.nodes.find((node) => node.id === 'write');
+  if (
+    writeApplication?.kind !== 'application' ||
+    writeApplication.applicationId !== 'write' ||
+    writeApplication.parentId !== 'applications'
+  ) {
+    throw new Error('The built-in Write application was not persisted correctly.');
+  }
+  const smokeWrite = state.nodes.find(
+    (node) => node.parentId === 'system-disk' && node.name === 'Smoke Write',
+  );
+  if (
+    smokeWrite?.payload?.format !== 'write-v1' ||
+    !documentText(smokeWrite).includes('Write smoke document') ||
+    !documentText(smokeWrite).includes('Page two') ||
+    documentText(smokeWrite).includes('unsaved') ||
+    !smokeWrite.payload.blocks.some((block) => block.type === 'page-break') ||
+    !smokeWrite.payload.blocks.some(
+      (block) => block.type === 'paragraph' && block.style.tabStops.includes(54),
+    )
+  ) {
+    throw new Error(
+      `The saved Write document payload was incomplete: ${JSON.stringify(smokeWrite)}.`,
+    );
   }
   const droppedFolder = state.nodes.find(
     (node) => node.parentId === 'desktop' && node.name === 'Drop Folder',
@@ -169,9 +219,9 @@ try {
     );
   }
   const savedWindow = state.desktop.windows.find((item) => item.id === 'window-applications');
-  if (!savedWindow || savedWindow.x !== 405 || savedWindow.y !== 105) {
+  if (!savedWindow || savedWindow.x !== 198 || savedWindow.y !== 94) {
     throw new Error(
-      `The Finder window release position was not persisted: ${JSON.stringify(savedWindow)}`,
+      `The Finder window lost-capture cancellation was not persisted: ${JSON.stringify(savedWindow)}`,
     );
   }
 
@@ -236,12 +286,32 @@ try {
   ) {
     throw new Error('Desktop VFS items did not restore their exact free positions on relaunch.');
   }
+  if (
+    !proof.writeReopened ||
+    proof.writeFormat !== 'write-v1' ||
+    !proof.writeText?.includes('Write smoke document') ||
+    !proof.writeText?.includes('Page two') ||
+    proof.writeText?.includes('unsaved') ||
+    !proof.writeClean ||
+    !proof.writeZoom75 ||
+    proof.writePageCount !== 2 ||
+    proof.writeLayoutState !== 'stable' ||
+    !Number.isFinite(proof.writeLayoutGeneration) ||
+    proof.writeLayoutGeneration <= 0 ||
+    proof.writeExpandedSelection ||
+    !proof.writeUndoDisabled ||
+    !proof.writeRedoDisabled
+  ) {
+    throw new Error(
+      `The saved Write document did not reopen on relaunch: ${JSON.stringify(proof)}.`,
+    );
+  }
 
   console.log(
-    'Electron smoke passed: native The Macintosh identity/icon, pixel cursor assets/hotspots, pointer menu selection, Finder zoom/resize controls, host file/folder Desktop placement, Desktop selection/open/info, direct System Disk import, blocked document fall-through, external Trash rejection, pointer-owned Finder-to-Desktop movement and free reposition, document paste and duplication, free Finder icon placement, direct folder move, drag-session input ownership, focus-loss preview/cursor cleanup, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled and committed Trash movement, precise glyph-edge/label/internal/scaled Trash hit testing with an ordinary VFS commit at 1.25x, free System Disk placement with an icon-only preview, eject animation, persisted eject, normal-quit save failure recovery, repeated quit coalescing, canonical built-in metadata, committed presentation persistence inside the debounce window, and provisional resize cancellation before quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, pixel cursor assets/hotspots, pointer menu selection, Finder zoom/resize controls, host file/folder Desktop placement, Desktop selection/open/info, direct System Disk import, blocked document fall-through, external Trash rejection, pointer-owned Finder-to-Desktop movement and free reposition, document paste and duplication, free Finder icon placement, direct folder move, drag-session input ownership, focus-loss preview/cursor cleanup, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled and committed Trash movement, precise glyph-edge/label/internal/scaled Trash hit testing with an ordinary VFS commit at 1.25x, free System Disk placement with an icon-only preview, Write launch and document routing, automatic pagination and backflow, rich formatting, ruler tabs, manual page breaks, Save As, virtual Open, dirty-close choices, multi-document quit cancellation, eject animation, persisted eject, normal-quit save failure recovery, repeated quit coalescing, canonical schema-4 built-in metadata, committed presentation persistence inside the debounce window, and provisional resize cancellation before quit.',
   );
   console.log(
-    'Persistence relaunch passed: normal-quit committed Finder geometry, exact Desktop and Finder icon positions, canonical System Disk metadata, and virtual filesystem reloaded.',
+    'Persistence relaunch passed: normal-quit committed Finder geometry, exact Desktop and Finder icon positions, canonical System Disk metadata, schema-4 virtual filesystem reload, and the saved rich Write document reopened without discarded edits.',
   );
 } finally {
   await rm(userData, { recursive: true, force: true });

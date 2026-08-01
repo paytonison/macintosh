@@ -8,7 +8,7 @@ export interface MenuEntry {
   id: string;
   label?: string;
   shortcut?: MenuShortcut;
-  checked?: boolean;
+  checked?: boolean | 'mixed';
   disabled?: boolean;
   separator?: boolean;
   action?: () => void;
@@ -47,7 +47,7 @@ export function MenuBar({ menus, clock, openMenu, onOpenMenuChange, onInvoke }: 
 
   return (
     <header className="menu-bar" ref={bar}>
-      <nav aria-label="Finder menus" className="menu-strip">
+      <nav aria-label="Application menus" className="menu-strip">
         {menus.map((menu) => {
           const open = openMenu === menu.id;
           return (
@@ -86,7 +86,9 @@ export function MenuBar({ menus, clock, openMenu, onOpenMenuChange, onInvoke }: 
                         role={entry.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
                         type="button"
                       >
-                        <span className="menu-check">{entry.checked ? '✓' : ''}</span>
+                        <span className="menu-check">
+                          {entry.checked === 'mixed' ? '−' : entry.checked ? '✓' : ''}
+                        </span>
                         <span className="menu-label">{entry.label}</span>
                         <span className="menu-shortcut">
                           {entry.shortcut ? menuShortcutLabel(entry.shortcut) : ''}

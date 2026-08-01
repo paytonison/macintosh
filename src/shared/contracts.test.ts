@@ -10,8 +10,10 @@ describe('Electron capability contract', () => {
       mutateVfs: 'macintosh:vfs:mutate',
       importFiles: 'macintosh:files:import',
       requestPaste: 'macintosh:clipboard:paste',
+      editClipboard: 'macintosh:clipboard:edit',
       normalQuitReady: 'macintosh:app:normal-quit-ready',
       normalQuitRequested: 'macintosh:app:normal-quit-requested',
+      cancelNormalQuit: 'macintosh:app:normal-quit-cancel',
       flushPresentationAndQuit: 'macintosh:app:flush-presentation-and-quit',
       saveAndQuitAfterEject: 'macintosh:app:save-and-quit-after-eject',
     });

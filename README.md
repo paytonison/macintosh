@@ -1,10 +1,140 @@
 # The Macintosh
 
-The Macintosh is a clean-room Electron recreation of the tactile black-and-white desktop language associated with classic Macintosh System 6 and System 7. It is a desktop shell, not an emulator: it contains no Apple ROMs, copied system files, extracted icons, or proprietary startup artwork.
+The Macintosh is a clean-room Electron recreation of the tactile black-and-white desktop
+language associated with classic Macintosh System 6 and System 7. It is a working desktop shell,
+not an emulator and not a modern application with a retro theme laid over it.
 
-On macOS, the native application menu and Dock identify the program as **The Macintosh**, with an original monochrome compact-computer icon that follows the desktop's clean-room visual language.
+The program contains no Apple ROMs, copied system files, extracted icons, proprietary startup
+artwork, or copied system sounds. Its interface, bitmap artwork, startup sequence, and audio are
+original.
 
-The first version includes an original monochrome startup sequence, fixed Finder-style menu bar, pixel-authored pointer states, draggable desktop icons, marquee and multi-selection, active/inactive draggable and resizable Finder windows, internal and host file drag-and-drop, document Copy/Paste, custom scrollbars, working Finder commands, a functional Calculator desk accessory, an About dialog, original code-drawn 1-bit bitmap icons, synthesized system sounds, and a persistent virtual disk.
+The current version is a small, coherent Macintosh environment with a persistent Finder, a virtual
+disk, a Calculator desk accessory, and **Write**, a page-oriented word processor. On macOS, the
+application menu and Dock identify it as **The Macintosh** with an original monochrome
+compact-computer icon.
+
+## What is included
+
+### Desktop and Finder
+
+- An original monochrome startup sequence and an application-owned Finder-style menu bar.
+- A persistent System Disk, Trash, hidden Desktop root, and ordinary desktop files and folders.
+- Finder windows with active and inactive states, title-bar movement, resizing, zooming, custom
+  scrollbars, and stepped opening and closing animations.
+- Icon and name views. Icon view supports free, per-pixel placement inside Finder windows; name view
+  remains sorted and restores saved icon positions when icon view returns.
+- Click, Shift-click, marquee, and multi-item selection across the desktop and the active Finder
+  window.
+- Pointer-owned internal drags with authored pointing-finger, open-hand, and closed-fist cursors.
+  Drag previews preserve the selected items' arrangement and use icon-shaped shadows that remain
+  legible over either the patterned desktop or white windows.
+- Movement between folders, the desktop, System Disk, and Trash, including recursive folder moves
+  and protection against invalid descendant drops.
+- New Folder, Open, Close Window, Get Info, Copy, Paste, Select All, Clear Selection, View by Icon,
+  View by Name, Empty Trash, and Clean Up Desktop commands.
+- Original Get Info, About, error, and ejection dialogs with modal input ownership.
+- Synthesized menu and ejection sounds.
+
+System Disk and Trash can be repositioned independently. Dragging System Disk onto the visible
+Trash artwork begins the Macintosh shutdown gesture: dirty Write documents are reviewed, the latest
+desktop and virtual-disk state is saved, and the application quits only after persistence succeeds.
+
+### Write
+
+Write is a built-in, page-oriented WYSIWYG word processor. Open it from **Applications**, or open any
+virtual document directly from the desktop or Finder.
+
+- Multiple document windows, with one live window per saved document and any number of untitled
+  drafts.
+- US Letter pages with one-inch margins, automatic forward and backward page flow, a current-page
+  status line, semantic manual page breaks, and bounded layout convergence before saving.
+- Helvetica by default, with serif and monospaced alternatives plus 9, 10, 12, 14, 18, and 24 point
+  character formatting that can be applied to part of a paragraph.
+- Bold, italic, and underline; left, center, and right alignment; single, 1.5, and double line
+  spacing; and left, first-line, and right indents.
+- A working ruler with draggable indents, default half-inch tabs, and custom tab stops that can be
+  added, moved, or removed with cancellable pointer sessions.
+- Undo, Redo, Cut, Copy, Paste, Clear, Plain Text, Select All, and exact supported Command-key
+  shortcuts, including Shift-Command-S for Save As and Shift-Command-Z for Redo.
+- 50%, 75%, and 100% page zoom without changing document semantics.
+- Virtual-disk Open, Save, and Save As dialogs. Untitled documents begin in Documents; the dialogs
+  can reach Desktop, System Disk, and ordinary folders; name collisions create a distinct copy; and
+  Trash is never offered as a destination.
+- Exact plain-text preservation until a rich-only operation promotes the document to the bounded
+  `write-v1` format. Rich files store paragraph layout, inline family, size, bold, italic, and
+  underline marks, tabs, and manual page breaks; they do not store HTML, arbitrary CSS, DOM state,
+  or measured page coordinates. Earlier beta paragraph-level family and size values sanitize into
+  equivalent inline marks.
+- Explicit per-window saving with no autosave. Save waits for the latest stable page layout, and an
+  edit made during an older in-flight save remains dirty for the next save. Closing a dirty document
+  offers Save, Don’t Save, and Cancel; failed saves cancel the close or Quit attempt and keep the
+  window and draft recoverable.
+- Dirty-document review during both ordinary Quit and System Disk ejection. Cancel aborts the entire
+  exit, and a failed final save keeps the program open.
+
+Write does not currently provide printing, PDF or HTML export, images, tables, lists, spellcheck,
+collaboration, arbitrary fonts, host Save dialogs, crash recovery, or session restoration.
+
+### Calculator
+
+Calculator is a single-instance desk accessory available from the System menu. It supports pointer
+and keyboard entry for decimal numbers, the four basic operations, repeated equals, clear, and
+classic immediate-execution arithmetic. It can be moved independently, and closing it clears its
+session.
+
+### macOS input bridge
+
+Files and folders can currently move **into** The Macintosh:
+
+- Drop host items from Finder onto the virtual desktop, System Disk, or an open folder.
+- Paste files copied in Finder into the active virtual folder or desktop.
+- Paste plain text to create a new `Clipboard` document.
+- Preserve bounded text contents and nested folder structure. Binary files become clearly marked
+  document placeholders; their original bytes are not copied into the virtual disk.
+
+Host imports are bounded virtual copies, not live references. They do not retain arbitrary host
+paths, follow symbolic links, or give the renderer general filesystem access. Host items cannot be
+dropped into Trash.
+
+The reverse direction is **not implemented yet**: dragging a virtual Macintosh item into Finder,
+Mail, or another macOS application does not currently materialize a native host file. A web browser
+is also not part of the current program. These are intentionally reserved as the two final product
+milestones in [ROADMAP.md](ROADMAP.md).
+
+## Essential controls
+
+- Click, Shift-click, or drag a marquee to select desktop or Finder items.
+- Double-click System Disk, Trash, or a folder to open its Finder window.
+- Double-click a document to open it in Write; double-click Write in Applications for a new untitled
+  document.
+- Drag selected files and folders onto folders, open Finder windows, the desktop, System Disk, or
+  Trash. A bare drop within the same icon view changes only the saved icon layout.
+- Drag Finder or Write title bars to move them with an outline preview, use the lower-right grow box
+  to resize them, and use the zoom box or title-bar double-click to toggle window zoom.
+- Use the System, File, Edit, View, and Special menus for Finder commands. An active Write window
+  replaces them with System, File, Edit, Format, Font, Size, and View.
+- Open Calculator from the System menu. It receives ordinary keyboard input while preserving the
+  current Finder or Write menus; Escape closes it.
+- Quit with Command-Q, the native macOS application menu, or the authored System Disk-to-Trash
+  gesture. Every normal path observes the same dirty-document and final-save rules.
+
+## Persistence
+
+The main process owns the canonical virtual disk and durable desktop state. It persists:
+
+- System Disk, Trash, and ordinary desktop icon positions;
+- per-folder icon positions;
+- Finder window identity, geometry, stack order, and view mode;
+- virtual files, folders, timestamps, and plain-text or `write-v1` document payloads; and
+- the last successful ejection time.
+
+Selections, open menus and dialogs, drag previews, Calculator state, Write windows, untitled drafts,
+undo history, page projection, and zoom are intentionally transient.
+
+State is stored as `macintosh-state.json` in Electron's per-user application-data directory. The
+main process validates mutations, serializes them through one writer, and replaces the state file
+atomically. Normal Quit and ejection do not exit until required document saves and the final desktop
+write have completed successfully.
 
 ## Run it
 
@@ -15,23 +145,32 @@ npm install
 npm run dev
 ```
 
-`npm run dev` builds the production renderer and Electron main/preload processes, then launches the frameless desktop. After a successful build, `npm start` launches it directly. On macOS, both commands create a cached, ad-hoc-signed **The Macintosh.app** development runtime under `dist/runtime/`; the Electron dependency in `node_modules` is left untouched.
+`npm run dev` builds the renderer and Electron main/preload processes, then launches the frameless
+desktop. After a successful build, `npm start` launches it directly. On macOS, both commands create a
+cached, ad-hoc-signed **The Macintosh.app** development runtime under `dist/runtime/`; the Electron
+dependency in `node_modules` remains untouched.
 
-## Controls
+## Architecture and security
 
-- Click, Shift-click, or drag a marquee to select System Disk, Trash, and ordinary desktop files and folders.
-- The authored white-filled, black-outlined 1-bit pointer uses a System 1-style arrow normally. Finder and desktop files and folders, plus the complete System Disk and Trash icon-and-label regions, use a pointing finger on hover, an open hand while pressed before dragging begins, and a closed fist throughout an active drag. Internal item and System Disk drags keep icon-only previews under the pointer, with solid shadows over Desktop and dithered shadows over white window surfaces; the committed source remains in place until release.
-- Drag System Disk or Trash to reposition it.
-- Double-click System Disk, Trash, folders, or documents to open Finder windows with a short stepped scale from the originating icon. The Finder move-preview outline and its hard pixel shadow follow the scaling window; closing reverses the effect.
-- In icon view, drag one or more selected Finder items to any pixel position in the open window. Dropping them onto a folder still moves them into that folder.
-- Drag selected documents or folders onto empty desktop space, into another folder, onto System Disk, or into Trash. Empty-desktop drops preserve a free icon position; moving a folder preserves its contents and invalid descendant drops are refused.
-- Drop files or folders from the host Finder onto the desktop, System Disk, or an open folder. Empty-desktop drops create visible items at the drop point. Text documents keep their readable contents; binary files are represented by a safe document placeholder rather than copied into the virtual disk.
-- Use **Edit > Copy** or Command-C on selected Finder items, then **Paste** or Command-V to duplicate them in the active folder. Host files copied in Finder can also be pasted, while pasted plain text becomes a new `Clipboard` document.
-- Drag a window title bar to move its 1-bit outline; the full window redraws at the new position when released. Use its close and zoom boxes, or resize it from the lower-right grow box.
-- Use the System, File, Edit, View, and Special menus for About, New Folder, Open, Close, Get Info, selection, view, cleanup, and Trash commands.
-- Open **Calculator** from the System menu. It supports mouse or keyboard input for digits, decimal points, the four basic operators, Return/Enter for equals, C/Delete to clear, and Escape to close.
-- Command-Q, the native application-menu Quit item, and closing the application all reconcile one final renderer presentation snapshot into the main process's canonical state through the serialized writer before Electron exits. Repeated requests join the same transaction. If that final save fails, the application stays open and presents a persistence error so the session can be recovered or retried.
-- To quit, drag **System Disk onto Trash**. Trash opens and highlights, the disk ejects with a sound and stepped animation, the current desktop and virtual disk are saved, and the Electron main process quits the application. Releasing the disk anywhere else simply leaves it at that position.
+- `src/main/` owns Electron lifecycle, the secured `BrowserWindow`, canonical state, virtual-disk
+  mutations, bounded host-file inspection, atomic persistence, normal Quit, and ejection.
+- `src/main/preload.ts` exposes a minimal typed capability bridge.
+- `src/renderer/` owns the React desktop, Finder and Write windows, selection, hit testing,
+  interaction previews, page projection, pixel artwork, synthesized audio, and styling. It has no
+  Node.js or direct host-filesystem access.
+- `src/shared/` contains typed IPC contracts, defensive state schemas, virtual-filesystem commands,
+  and the bounded plain-text and `write-v1` document models.
+
+The shell runs with `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, and
+`webSecurity: true`. Navigation and new windows are denied. All current code and visuals are bundled
+locally, and the current version performs no runtime networking.
+
+Authored interface paint uses black, white, and aligned bitmap patterns inside a normal DOM/RGBA
+renderer. The program does not emulate a literal 1-bit framebuffer or apply a destructive global
+image filter.
+
+For the normative interaction, persistence, and ownership rules, see
+[docs/interaction-model.md](docs/interaction-model.md).
 
 ## Validation
 
@@ -40,20 +179,12 @@ npm run check
 npm run smoke
 ```
 
-`npm run check` runs formatting verification, ESLint, strict TypeScript checks for both renderer and Electron, Vitest, and the production build.
+`npm run check` runs formatting verification, ESLint, both strict TypeScript projects, Vitest, and a
+production build.
 
-`npm run smoke` launches the real Electron application with isolated temporary user data. It verifies the native **The Macintosh** application name, menu label, window title, and icon asset; checks the authored 1-bit cursor bindings, dimensions, hotspots, hover, press, thresholded drag, backdrop-contrasted icon shadows, reset transitions, off-center pointer alignment, and focus-loss cleanup; exercises pointer-based menu selection plus Finder zoom and resize controls; places a disk-backed file and nested folder directly on Desktop; tests selection, Open, Get Info, stepped Finder opening and closing with the outline and hard shadow aligned behind sampled frames, blocked document fall-through, and destination-specific System Disk, folder, and Trash drops; moves and freely repositions items on Desktop and in Finder; pastes and duplicates documents; exercises Calculator input, modal precedence, drag-session ownership, save-failure cancellation, and Finder commands through menus and shortcuts; verifies cancelled and committed special-icon movement, System Disk drag preview, exact Trash artwork-edge and label hit testing at normal, scaled, and minimum-window coordinates, and eject animation; proves a failed normal-quit save keeps the app open, repeated quit requests coalesce, and a mutation inside the presentation debounce window survives normal Quit; checks the resulting schema-3 state file and canonical built-in creation metadata; and relaunches Electron to prove exact Desktop/Finder layout, disk, and virtual-filesystem recovery.
+`npm run smoke` builds and launches the real Electron application with isolated temporary user data.
+It exercises the native application identity, desktop and Finder interactions, host import,
+Calculator, Write editing and saving, dirty-document exit review, persistence failures, System Disk
+ejection, atomic state recovery, and relaunch persistence.
 
-## Architecture and security
-
-- `src/main/` owns the frameless `BrowserWindow`, state files, IPC validation, and application quit.
-- `src/renderer/` contains the React desktop, Finder components, interaction state, pixel artwork, sound synthesis, and styling.
-- `src/shared/` contains the typed IPC contract and defensive persistent-state schema.
-- Persistent state is written as `macintosh-state.json` inside Electron's per-user application-data directory using a temporary file followed by an atomic rename. The VFS has required System Disk, Trash, and hidden Desktop roots; ordinary desktop items are direct children of Desktop and always carry explicit persisted coordinates.
-- The window uses `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, and `webSecurity: true`.
-- The preload exposes presentation-only persistence plus typed create, move, duplicate, document, import, Trash, paste-command, and eject capabilities. The main process owns the canonical virtual filesystem, serializes each mutation, and commits it atomically before returning the resulting state.
-- Normal quit uses the same main-owned writer: the renderer supplies only its final allowlisted presentation patch, the main process merges it into canonical state, and Electron exits only after that atomic write succeeds.
-- The renderer owns selection, hit testing, drag previews, and free-form layout interaction, but it has no Node.js or direct host-filesystem access. Import paths can only be derived from browser-granted `File` objects created by a user drop or paste; host inspection and the resulting VFS import commit occur together in the main process.
-- Navigation and new windows are denied. All code and visuals are bundled locally; there are no CDNs or runtime network requests.
-
-The virtual disk deliberately contains documents and folders only. Application modules such as painting, text editing, and control panels can be added later without widening the preload API.
+The project is licensed under the [BSD 3-Clause License](LICENSE).

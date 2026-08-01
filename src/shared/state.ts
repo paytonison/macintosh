@@ -1,10 +1,11 @@
 import { initialDesktopIconPosition } from './desktop-icon-position';
+import { sanitizeDocumentPayload, type DocumentPayload } from './write';
 
-export const STATE_SCHEMA_VERSION = 3 as const;
-const LEGACY_STATE_SCHEMA_VERSIONS = new Set([1, 2]);
-// Schema 2 allowed two required roots plus 510 ordinary nodes. Schema 3 keeps
-// that user-visible capacity while adding the hidden Desktop root.
-export const MAX_VFS_NODES = 513;
+export const STATE_SCHEMA_VERSION = 4 as const;
+const LEGACY_STATE_SCHEMA_VERSIONS = new Set([1, 2, 3]);
+// Schema 2 allowed two required roots plus 510 ordinary nodes. Schema 3 added
+// Desktop and schema 4 adds Write without reducing that user-visible capacity.
+export const MAX_VFS_NODES = 514;
 export const SYSTEM_DISK_CREATED_AT = '1984-01-24T00:00:00.000Z';
 export const BUILT_IN_ITEM_CREATED_AT = '1984-01-24T00:00:00.000Z';
 
@@ -18,12 +19,14 @@ const CANONICAL_CREATED_AT_BY_NODE_ID = new Map<string, string>([
   ['welcome', BUILT_IN_ITEM_CREATED_AT],
   ['finder-notes', BUILT_IN_ITEM_CREATED_AT],
   ['read-me', BUILT_IN_ITEM_CREATED_AT],
+  ['write', BUILT_IN_ITEM_CREATED_AT],
 ]);
 
 export const canonicalCreatedAtForNodeId = (nodeId: string): string | null =>
   CANONICAL_CREATED_AT_BY_NODE_ID.get(nodeId) ?? null;
 
-export type VfsNodeKind = 'desktop' | 'disk' | 'trash' | 'folder' | 'document';
+export type VfsNodeKind = 'desktop' | 'disk' | 'trash' | 'folder' | 'document' | 'application';
+export type ApplicationId = 'write';
 export type FinderViewMode = 'icons' | 'list';
 
 export interface Point {
@@ -46,7 +49,8 @@ export interface VfsNode {
   parentId: string | null;
   name: string;
   kind: VfsNodeKind;
-  content?: string;
+  payload?: DocumentPayload;
+  applicationId?: ApplicationId;
   iconPosition?: Point;
   createdAt: string;
   modifiedAt: string;
@@ -73,13 +77,15 @@ const seedNode = (
   parentId: string | null,
   name: string,
   kind: VfsNodeKind,
-  content?: string,
+  payload?: DocumentPayload,
+  applicationId?: ApplicationId,
 ): VfsNode => ({
   id,
   parentId,
   name,
   kind,
-  ...(content ? { content } : {}),
+  ...(payload ? { payload } : {}),
+  ...(applicationId ? { applicationId } : {}),
   createdAt: canonicalCreatedAtForNodeId(id) ?? seedTimestamp,
   modifiedAt: seedTimestamp,
 });
@@ -110,27 +116,19 @@ export const createDefaultState = (): MacintoshState => ({
     seedNode('applications', 'system-disk', 'Applications', 'folder'),
     seedNode('documents', 'system-disk', 'Documents', 'folder'),
     seedNode('utilities', 'system-disk', 'Utilities', 'folder'),
-    seedNode(
-      'welcome',
-      'system-disk',
-      'Welcome',
-      'document',
-      'Welcome to The Macintosh.\n\nThis clean-room desktop is built from original code and original bitmap artwork. Double-click folders, drag icons, open the menus, and drag System Disk to Trash when it is time to shut down.',
-    ),
-    seedNode(
-      'finder-notes',
-      'system-folder',
-      'Finder Notes',
-      'document',
-      'The Finder keeps the desktop orderly, remembers your windows, and stores this virtual disk locally.',
-    ),
-    seedNode(
-      'read-me',
-      'documents',
-      'Read Me',
-      'document',
-      'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
-    ),
+    seedNode('write', 'applications', 'Write', 'application', undefined, 'write'),
+    seedNode('welcome', 'system-disk', 'Welcome', 'document', {
+      format: 'plain-text',
+      text: 'Welcome to The Macintosh.\n\nThis clean-room desktop is built from original code and original bitmap artwork. Double-click folders, drag icons, open the menus, and drag System Disk to Trash when it is time to shut down.',
+    }),
+    seedNode('finder-notes', 'system-folder', 'Finder Notes', 'document', {
+      format: 'plain-text',
+      text: 'The Finder keeps the desktop orderly, remembers your windows, and stores this virtual disk locally.',
+    }),
+    seedNode('read-me', 'documents', 'Read Me', 'document', {
+      format: 'plain-text',
+      text: 'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
+    }),
   ],
 });
 
@@ -177,9 +175,16 @@ const sanitizeIconPosition = (value: unknown): Point | null => {
   };
 };
 
-const validKinds = new Set<VfsNodeKind>(['desktop', 'disk', 'trash', 'folder', 'document']);
+const validKinds = new Set<VfsNodeKind>([
+  'desktop',
+  'disk',
+  'trash',
+  'folder',
+  'document',
+  'application',
+]);
 
-const sanitizeNode = (value: unknown): VfsNode | null => {
+const sanitizeNode = (value: unknown, legacy: boolean): VfsNode | null => {
   if (!isRecord(value)) return null;
   const kind = value.kind;
   if (typeof kind !== 'string' || !validKinds.has(kind as VfsNodeKind)) return null;
@@ -190,12 +195,21 @@ const sanitizeNode = (value: unknown): VfsNode | null => {
   const modifiedAt = safeTimestamp(value.modifiedAt, createdAt) ?? createdAt;
   const parentId = value.parentId === null ? null : safeString(value.parentId, 'system-disk', 96);
   const iconPosition = parentId === null ? null : sanitizeIconPosition(value.iconPosition);
+  const payload =
+    kind === 'document'
+      ? legacy && typeof value.content === 'string'
+        ? sanitizeDocumentPayload({ format: 'plain-text', text: value.content })
+        : sanitizeDocumentPayload(value.payload)
+      : undefined;
+  const applicationId = kind === 'application' && value.applicationId === 'write' ? 'write' : null;
+  if (kind === 'application' && !applicationId) return null;
   return {
     id,
     parentId,
     name,
     kind: kind as VfsNodeKind,
-    ...(typeof value.content === 'string' ? { content: value.content.slice(0, 64 * 1024) } : {}),
+    ...(payload ? { payload } : {}),
+    ...(applicationId ? { applicationId } : {}),
     ...(iconPosition ? { iconPosition } : {}),
     createdAt,
     modifiedAt,
@@ -270,7 +284,7 @@ const ensureRequiredRoots = (nodes: VfsNode[], fallbackNodes: VfsNode[]): VfsNod
 const materializeDesktopIconPositions = (nodes: VfsNode[]): VfsNode[] =>
   nodes.map((node) =>
     node.parentId === 'desktop' &&
-    (node.kind === 'folder' || node.kind === 'document') &&
+    (node.kind === 'folder' || node.kind === 'document' || node.kind === 'application') &&
     !node.iconPosition
       ? { ...node, iconPosition: initialDesktopIconPosition(node.id) }
       : node,
@@ -292,23 +306,37 @@ export const sanitizeState = (value: unknown): MacintoshState => {
   }
 
   const desktop = isRecord(value.desktop) ? value.desktop : {};
-  const nodes = Array.isArray(value.nodes)
+  const legacy = value.schemaVersion !== STATE_SCHEMA_VERSION;
+  let nodes = Array.isArray(value.nodes)
     ? value.nodes
-        .map(sanitizeNode)
+        .map((node) => sanitizeNode(node, legacy))
         .filter((node): node is VfsNode => node !== null)
         .slice(0, MAX_VFS_NODES)
     : fallback.nodes;
 
+  if (
+    legacy &&
+    !nodes.some((node) => node.kind === 'application' && node.applicationId === 'write')
+  ) {
+    const write = fallback.nodes.find((node) => node.id === 'write');
+    if (write && nodes.length < MAX_VFS_NODES) nodes = [...nodes, write];
+  }
+
   const safeNodes = materializeDesktopIconPositions(
     ensureRequiredRoots(nodes, fallback.nodes).map(normalizeCanonicalCreatedAt),
   );
-  const nodeIds = new Set(
-    safeNodes.filter((node) => node.kind !== 'desktop').map((node) => node.id),
+  const finderWindowNodeIds = new Set(
+    safeNodes
+      .filter((node) => node.kind === 'disk' || node.kind === 'folder' || node.kind === 'trash')
+      .map((node) => node.id),
   );
   const windows = Array.isArray(desktop.windows)
     ? desktop.windows
         .map(sanitizeWindow)
-        .filter((item): item is FinderWindowState => item !== null && nodeIds.has(item.nodeId))
+        .filter(
+          (item): item is FinderWindowState =>
+            item !== null && finderWindowNodeIds.has(item.nodeId),
+        )
         .slice(0, 12)
     : fallback.desktop.windows;
 

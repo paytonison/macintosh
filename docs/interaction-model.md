@@ -20,13 +20,15 @@ The current implementation is the baseline. A rule in this document may also ide
 
 ## Terms
 
-**Desktop surface** is the workspace below the menu bar. It contains desktop icons, Finder windows, desk accessories, dialogs, and transient drag feedback.
+**Desktop surface** is the workspace below the menu bar. It contains desktop icons, Finder windows, application windows, desk accessories, dialogs, and transient drag feedback.
 
-**Finder** is the default application and owner of the desktop, virtual filesystem, Finder windows, and the current menu set.
+**Finder** is the default application and owner of the desktop, virtual filesystem, and Finder windows. It owns the menu set whenever Write is not active.
 
-**Finder window** presents one visible virtual filesystem node. A disk, folder, Trash, or document may have a Finder window. The reserved Desktop root is never exposed as a Finder item or window.
+**Finder window** presents a disk, folder, or Trash node. Documents belong to Write, application nodes launch their application, and the reserved Desktop root is never exposed as a Finder item or window.
 
-**Desk accessory** is a small utility opened from the System menu. Calculator is the first desk accessory. A desk accessory may become the frontmost interaction target without replacing Finder as the menu owner.
+**Application window** is a transient window owned by an application. Write is the first full application and may own several document windows at once.
+
+**Desk accessory** is a small utility opened from the System menu. Calculator is the first desk accessory. A desk accessory may become the frontmost interaction target without replacing the active Finder or Write application as the menu owner.
 
 **Dialog** is a modal question, notice, or information surface. Dialogs are not ordinary application windows.
 
@@ -80,12 +82,14 @@ Automation may shorten delays, but it must preserve the same state transitions a
 
 Finder window order is back-to-front. The final window in the order is the active Finder window.
 
-Opening a node follows these rules:
+Opening a Finder container follows these rules:
 
 - If its Finder window is already open, move that window to the front instead of creating a duplicate.
 - If it is not open, create one window and place it at the front.
 - New windows may cascade from the existing stack, but their geometry must remain within usable desktop bounds.
 - Opening a node clears stale desktop and Finder selections.
+
+Opening a document routes to Write. Opening the Write application creates a new untitled Write window. Neither document nor application nodes are added to the persisted Finder-window stack.
 
 Clicking an inactive Finder window activates it and moves it to the front before performing the requested window operation. Clicking its title bar, content, scroll controls, or grow box counts as interaction with that window.
 
@@ -97,7 +101,7 @@ An inactive Finder window remains visible but uses inactive title-bar treatment.
 
 Calculator is a single-instance desk accessory opened from the System menu.
 
-In version 1, opening Calculator makes it the frontmost interaction target until it closes. Finder remains the menu owner, Finder windows use inactive treatment, and Calculator receives its supported unmodified keyboard input. Pointer interaction with Finder may still occur, but it does not transfer Calculator's keyboard ownership in the current constrained model.
+Opening Calculator makes it the frontmost interaction target. The Finder or Write application that opened it remains the menu owner, other windows use inactive treatment, and Calculator receives its supported unmodified keyboard input. Clicking a Finder or Write window explicitly transfers application activation and keyboard ownership; clicking Calculator transfers keyboard ownership back to the desk accessory without changing the active application.
 
 Opening Calculator while it is already open must not create a second Calculator.
 
@@ -111,11 +115,11 @@ Calculator state is session-local:
 
 Calculator movement uses an outline preview. Its actual frame remains fixed during the drag and moves only when the pointer is released successfully. Cancellation restores the original position.
 
-When a second real desk accessory or application is added, replace one-off precedence flags with an explicit shared model for active interaction target, stacking, keyboard ownership, and optional persistence. Do not build that framework before a second implementation demonstrates the common behavior it must support.
+Finder, Write, and Calculator share an explicit active-application and active-target model. The active application owns the menu set, the active target owns ordinary keyboard input, and one transient ordinary-window order determines visual stacking while application-specific state remains local.
 
 ## Menus and commands
 
-The menu bar is a single global surface. Finder owns the current menu definitions in version 1. A desk accessory may be the active interaction target without replacing the Finder menu set.
+The menu bar is a single global surface. Finder owns System, File, Edit, View, and Special while Finder is the active application. Write owns System, File, Edit, Format, Font, Size, and View while Write is the active application. Calculator may become the active keyboard target without changing that menu owner. Activating a Finder or Write window changes the active application and menu set immediately.
 
 Menu behavior follows these rules:
 
@@ -141,9 +145,69 @@ Current Finder command context is:
 - **Select All** selects all children of the active non-document Finder window; otherwise it selects the desktop icons.
 - **Clear Selection** clears both selection domains.
 - **View by Icon** and **View by Name** change the persisted Finder view mode.
-- **Empty Trash** is enabled only when Trash contains nodes.
+- **Empty Trash** is enabled only when Trash contains nodes and no open saved Write document is
+  directly or indirectly inside Trash. The action repeats that check against current state before
+  mutating the VFS.
 - **Clean Up Desktop** restores the default System Disk and Trash positions; ordinary Desktop item positions remain free-form.
 - **Eject System Disk…** explains the drag-to-Trash shutdown gesture; it does not eject by itself.
+
+## Write
+
+Write is the built-in page-oriented WYSIWYG word processor. Its original code-drawn application icon lives in Applications as a VFS node with `kind: application` and `applicationId: write`.
+
+### Document and window identity
+
+- Opening Write creates a transient, untitled plain-text document. It does not allocate a VFS node until Save or Save As succeeds.
+- Opening any VFS document opens it in Write, including imported and legacy plain-text documents.
+- One saved document has at most one open Write window. Reopening it activates and raises that window instead of creating a duplicate.
+- Several different saved documents and untitled documents may be open at once. Finder, Write, and
+  Calculator share one transient back-to-front ordinary-window order. The active Write application
+  owns Write menus, while its active document editor owns Write keyboard input unless Calculator is
+  the active target.
+- Write window geometry, zoom, selection, undo history, page projection, and open-window state are session-local. They are not restored after relaunch.
+- Write uses the same stationary-outline move session, bounded local resize preview, zoom-box and
+  title-bar-double-click action, inactive-control activation rule, and stepped opening or closing
+  frame treatment as Finder. Reopening a saved document during its closing animation cancels the
+  close and raises the existing window. With no visible source icon, an animation originates from
+  the final frame center.
+
+### Page model
+
+Write displays US Letter pages at 612 by 792 logical points with 72-point margins, a 468-point text width, and 648-point usable page height. The initial view is 75%; View provides 50%, 75%, and 100% without changing document semantics.
+
+Automatic overflow and backflow are editor projection. Manual page breaks are explicit semantic blocks, but automatic page boundaries, page count, caret page, page gaps, and measured layout never enter persistent state. Editing before an automatic boundary may move later text between pages. Each semantic editor generation removes prior projection paint, measures on a later animation frame, and requires two consecutive matching layout signatures within four passes. A superseded generation cannot publish stale pagination. Failure remains visible and recoverable, and Save refuses to mutate the VFS until the newest generation has a stable projection. The status line reports the caret page, total pages, current zoom, or the current layout failure.
+
+### Editing and formatting
+
+Write uses a custom ProseMirror schema and authored controls rather than a packaged editor UI. The implicit character default is 12-point Helvetica through the logical sans family. The default paragraph is left aligned, single spaced, with no indents and default tabs every 36 points.
+
+The supported rich surface is deliberately finite:
+
+- serif, sans, and monospaced font-family marks on text selections;
+- 9, 10, 12, 14, 18, and 24 point size marks on text selections;
+- bold, italic, and underline marks;
+- left, center, and right paragraph alignment;
+- left, first-line, and right indents;
+- single, 1.5, and double line spacing;
+- inline tabs, draggable or removable custom tab stops, and new ruler stops;
+- manual page breaks;
+- Undo, Redo, Cut, Copy, Paste, Clear, Plain Text, and Select All.
+
+Menu items, keyboard shortcuts, and ruler controls dispatch the same editor commands and read availability or checked state from the same active editor context. Mixed selections expose no invented paragraph value; character marks and ruler state use an explicit indeterminate presentation. Plain Text removes bold, italic, and underline only; it retains font family, font size, and paragraph formatting. Clear deletes only the current non-empty selection. Clipboard commands cross only a narrow semantic main-process capability; the renderer receives no general Electron or host-filesystem access. Supported rich clipboard structure is retained, including partial-selection family and size marks. Unsupported families, sizes, HTML capabilities, and arbitrary CSS are discarded by the finite schema, and a file paste owned by Write never becomes a Finder import.
+
+An existing plain document remains `{format: plain-text, text}` through ordinary text editing, line breaks, and plain tabs. The first rich-only action promotes it in place to `write-v1` without changing its text or whitespace. A rich document persists a linear list of paragraph and page-break blocks. Paragraphs contain allowlisted alignment, indent, tab-stop, and line-spacing state; text inlines carry allowlisted family, size, bold, italic, and underline marks. Sans at 12 points remains implicit until a different value is explicitly applied. Sanitization upgrades the earlier beta representation that stored family and size on a paragraph into equivalent inline marks, preserving explicit serif or other supported legacy formatting. Write does not persist HTML, DOM state, measured coordinates, cached pages, or arbitrary CSS.
+
+### Open, save, close, and quit
+
+Write does not autosave and has no crash recovery or session restoration. Save first waits for the live editor's newest stable layout and then explicitly replaces the canonical payload of an existing VFS document through the typed main-process mutation. Each window has an independent coalescing save queue. A completed older snapshot advances only the saved baseline; it never overwrites a newer live draft, which remains dirty until saved. Save As creates a new VFS document, resolves name collisions without overwriting, and then binds the current window to the committed node. A payload that cannot be stored completely is rejected atomically: Write never accepts a truncated save, and the draft remains dirty and recoverable.
+
+Open and Save As browse the virtual disk only, begin in Documents, and provide routes to Desktop, System Disk, and nested ordinary folders. Open lists documents and folders; Save As lists destination folders only. Both exclude Trash and every descendant of Trash. They do not expose host paths. Host documents enter the VFS only through the existing explicit drop or paste import path.
+
+Closing a clean Write window needs no prompt and removes it after the closing animation. Closing a dirty window asks Save, Don’t Save, or Cancel. Saving an untitled window enters Save As; a failed save cancels that close attempt and keeps the window and draft recoverable behind a visible persistence error. A close or Quit request made during an in-flight save joins that window's queue and cannot advance until the latest requested generation is clean.
+
+Normal Quit and System Disk ejection review every dirty Write window before final shutdown. Each document receives its own Save, Don’t Save, or Cancel decision. Cancel or a failed document save aborts the whole exit and preserves every open draft, including a draft previously reviewed with Don’t Save during that canceled attempt. A dirty discard-close animation already in progress yields to a newer Quit or ejection review instead of deleting its document underneath that review. Electron may proceed only after required document mutations and the final presentation save succeed.
+
+Printing, PDF or HTML export, images, tables, lists, spellcheck, collaboration, arbitrary font loading, and host Save dialogs are outside this version.
 
 ## Selection
 
@@ -165,7 +229,7 @@ The current command model acts on one selected node for Open and Get Info. Multi
 
 There is at most one Finder window for a given virtual filesystem node. The window identifier is stable for that node.
 
-Disk, folder, and Trash windows list their children. Document windows display read-only document content until editing is deliberately introduced.
+Disk, folder, and Trash windows list their children. Documents and applications never create Finder windows.
 
 Creating a Finder window uses a short stepped scale from the opening icon to the final
 window frame. The same transparent outline and hard pixel shadow used for Finder window-move
@@ -223,7 +287,7 @@ Ordinary Desktop items follow Finder semantics:
 
 - click and Shift-click use the Desktop selection domain;
 - double-click and **Open** use the same node-opening path as Finder items;
-- folders open Finder windows and documents open read-only document windows;
+- folders open Finder windows, documents open Write windows, and application entries launch their application;
 - marquee and **Select All** include their stable node IDs;
 - **Get Info** reports Desktop as their parent;
 - a folder icon is a drop destination, while a document icon blocks the drop instead of allowing it to fall through to bare Desktop behind it.
@@ -262,11 +326,12 @@ System Disk drag is the eject gesture:
 
 Ejection is a transaction:
 
-1. mark the interface as ejecting;
-2. provide sound and stepped visual feedback;
-3. ask the main process to record the last-eject timestamp;
-4. atomically commit the latest presentation against canonical state;
-5. quit from that same main-process transaction only after the save succeeds.
+1. if Write has dirty documents, restore the disk icon and complete the per-document exit review;
+2. mark the interface as ejecting;
+3. provide sound and stepped visual feedback;
+4. ask the main process to record the last-eject timestamp;
+5. atomically commit the latest presentation against canonical state;
+6. quit from that same main-process transaction only after the save succeeds.
 
 If saving fails, Macintosh Workbench must not quit. It must report the failure, leave durable state recoverable, and return System Disk to its origin.
 
@@ -274,13 +339,13 @@ Repositioning either special desktop icon has no hidden filesystem effect. Their
 
 ## Dialogs and alerts
 
-Only one ordinary dialog is open at a time. About, Get Info, and the eject explanation share the classic dialog behavior.
+Only one ordinary dialog is open at a time. About, Get Info, the eject explanation, Write's virtual Open and Save As, and Write's unsaved-changes question share the classic modal behavior.
 
 Dialogs are modal interaction contexts. They appear above ordinary windows, retain input priority until dismissed, and do not alter Finder stacking merely by opening. Their geometry is transient.
 
 A dialog may be moved by its title bar. Closing it through its close box or default button produces the same result. Modal keyboard behavior should be explicit; do not allow an underlying Calculator or Finder shortcut to consume a key intended for the dialog.
 
-System Disk, Trash, and the shipped folders and documents own canonical simulated creation metadata for January 24, 1984. Their Get Info dialogs render that date exactly as `Created: 1/24/1984`, independent of the host locale and timezone. The hidden Desktop root and user-created, imported, pasted, or duplicated nodes retain their own creation timestamps.
+System Disk, Trash, Write, and the shipped folders and documents own canonical simulated creation metadata for January 24, 1984. Their Get Info dialogs render that date exactly as `Created: 1/24/1984`, independent of the host locale and timezone. The hidden Desktop root and user-created, imported, pasted, or duplicated nodes retain their own creation timestamps.
 
 A persistence error is an alert state with higher priority than ordinary desktop interaction. Dismissing the alert acknowledges the message; it does not fabricate a successful save.
 
@@ -290,9 +355,9 @@ The virtual filesystem is local application state. A user may copy host files or
 that state through an explicit drop or paste, but the imported nodes are bounded virtual copies,
 not live references to host paths.
 
-Each node has a stable identifier, parent identifier, name, kind, and timestamps. Non-root nodes may also carry bounded icon coordinates. Documents may contain bounded text content. System Disk, Trash, and Desktop are required roots. Desktop has the stable identity `desktop`, kind `desktop`, and a null parent. Root nodes never retain `iconPosition`.
+Each node has a stable identifier, parent identifier, name, kind, and timestamps. Non-root nodes may also carry bounded icon coordinates. Documents carry either a bounded exact plain-text payload or a defensively sanitized `write-v1` payload. Application nodes carry an allowlisted application identifier and no executable host path. System Disk, Trash, and Desktop are required roots. Desktop has the stable identity `desktop`, kind `desktop`, and a null parent. Root nodes never retain `iconPosition`.
 
-Finder commands operate on the virtual tree only. Create, move, duplicate, document, host-import,
+Finder and Write commands operate on the virtual tree only. Create, update, move, duplicate, host-import,
 and Trash mutations cross a typed preload boundary and execute against canonical state in the main
 process. Host import paths may come only from browser-granted `File` objects and must be inspected
 behind that boundary; inspection and insertion into the VFS are one serialized main-process
@@ -303,18 +368,18 @@ Opening, selecting, changing view mode, moving a window, and repositioning icons
 
 The renderer owns selection, hit testing, previews, and proposed layout coordinates. It may persist
 only allowlisted presentation fields and parent-scoped icon positions; it cannot replace node
-identity, hierarchy, names, contents, or timestamps through the presentation channel.
+identity, hierarchy, names, document payloads, application identifiers, or timestamps through the presentation channel.
 
 ## Persistence boundary
 
-The following state is durable in schema version 3:
+The following state is durable in schema version 4:
 
 - System Disk and Trash positions;
 - ordinary Desktop-child icon positions;
 - Finder icon positions within disks, folders, and Trash;
 - Finder window identity, geometry, and stack order;
 - Finder view mode;
-- virtual filesystem nodes and document content;
+- virtual filesystem nodes, the Write application entry, and bounded plain-text or `write-v1` document payloads;
 - the last successful eject timestamp.
 
 The following state is transient:
@@ -324,6 +389,7 @@ The following state is transient:
 - the current open menu;
 - dialogs and dialog positions;
 - Calculator open state, calculation state, and position;
+- Write windows, window geometry, active document, untitled drafts, dirty flags, selection, undo history, page projection, ruler previews, and zoom;
 - zoom restore geometry;
 - startup progress;
 - temporary errors after acknowledgement.
@@ -332,16 +398,9 @@ The main process owns canonical durable state. It merges allowlisted renderer pr
 validates semantic VFS commands, and serializes all resulting atomic writes. Canonical state
 advances only after a write succeeds. A relaunch must never observe a partially written state file.
 
-Normal application quit is a persistence transaction. Command-Q, the native Quit item, and closing
-the last application window request one final allowlisted presentation patch, stop further
-interaction, and enqueue its reconciliation with canonical main-process state behind any write
-already in flight. Electron may exit only after the final atomic write succeeds. Repeated quit
-requests join the same transaction. If the write fails, the application remains open, interaction
-resumes behind a visible persistence alert, and the user may retry. Explicit automation shutdown
-and forced process termination remain separate escape paths and must not be mistaken for a
-successful normal save-and-quit.
+Normal application quit is a two-stage persistence transaction. Command-Q, the native Quit item, and closing the last application window first review dirty Write documents without blocking their dialogs behind the final-save layer. Cancel returns the coordinator to idle and resumes presentation persistence. After every dirty document has been saved or deliberately declined, the renderer submits one final allowlisted presentation patch and stops further interaction while the main process reconciles it behind any write already in flight. Electron may exit only after the final atomic write succeeds. Repeated quit requests join the same transaction. If the write fails, the application remains open, interaction resumes behind a visible persistence alert, and the user may retry. Explicit automation shutdown and forced process termination remain separate escape paths and must not be mistaken for a successful normal save-and-quit.
 
-Valid schema version 1 and version 2 states migrate to version 3 without resetting the desktop or virtual disk. Migration inserts the hidden Desktop root while leaving existing System Disk children in place and preserving names, contents, modified timestamps, user-owned creation timestamps, window state, view mode, special icon positions, Finder icon positions, and eject time. Sanitization normalizes the simulated creation date of built-in IDs to January 24, 1984, repairs missing or malformed required roots, removes root `iconPosition` values, and preserves arbitrary bounded positions for Desktop children. A legacy Desktop child without coordinates receives one identity-derived free-form position during sanitization; that materialized position is persisted and never depends on node-array order.
+Valid schema versions 1, 2, and 3 migrate to version 4 without resetting the desktop or virtual disk. Migration preserves legacy document strings exactly by wrapping them as plain-text payloads, inserts the hidden Desktop root when needed, adds the built-in Write entry only for older schemas, preserves the prior ordinary-node capacity, and removes document or application IDs from the Finder-window stack. Existing names, hierarchy, payload text, modified timestamps, user-owned creation timestamps, valid Finder window state, view mode, special icon positions, Finder icon positions, and eject time remain intact. A schema-4 user who deletes or moves Write is authoritative; sanitization does not resurrect it. Sanitization normalizes the simulated creation date of built-in IDs to January 24, 1984, repairs missing or malformed required roots, removes root `iconPosition` values, and preserves arbitrary bounded positions for Desktop children. A legacy Desktop child without coordinates receives one identity-derived free-form position during sanitization; that materialized position is persisted and never depends on node-array order.
 
 Adding durable fields requires all of the following:
 
@@ -357,6 +416,7 @@ Do not persist transient state merely because it is convenient to serialize a co
 Visual feedback must communicate state, not decorate latency.
 
 - Active and inactive windows must be distinguishable without color.
+- Write pages remain white paper with hard black boundaries and shadows over an aligned dithered pasteboard at every supported zoom and window size.
 - Selected items must remain legible under inverse or patterned treatment.
 - Drag outlines must be crisp and aligned to integer pixels.
 - Hover treatment appears only for a meaningful target.
