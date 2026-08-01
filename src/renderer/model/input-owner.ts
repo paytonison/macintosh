@@ -5,6 +5,7 @@ export type KeyboardOwner =
   | 'ejection'
   | 'pointer-session'
   | 'menu'
+  | 'write'
   | 'calculator'
   | 'finder'
   | 'desktop';
@@ -16,6 +17,7 @@ export interface KeyboardContext {
   ejectionInProgress: boolean;
   pointerSessionActive: boolean;
   menuOpen: boolean;
+  writeWindowOpen: boolean;
   calculatorOpen: boolean;
   finderWindowOpen: boolean;
 }
@@ -27,6 +29,7 @@ export const resolveKeyboardOwner = (context: KeyboardContext): KeyboardOwner =>
   if (context.ejectionInProgress) return 'ejection';
   if (context.pointerSessionActive) return 'pointer-session';
   if (context.menuOpen) return 'menu';
+  if (context.writeWindowOpen) return 'write';
   if (context.calculatorOpen) return 'calculator';
   if (context.finderWindowOpen) return 'finder';
   return 'desktop';

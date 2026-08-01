@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createDefaultState, MAX_VFS_NODES } from '../../shared/state';
+import { createDefaultWriteParagraphStyle } from '../../shared/write';
 import {
   addFolder,
   duplicateNodes,
@@ -12,6 +13,7 @@ import {
   moveNodes,
   placeFinderIcons,
   rectanglesOverlap,
+  MAX_VFS_CONTENT,
 } from '../../shared/vfs';
 
 describe('virtual Finder helpers', () => {
@@ -119,10 +121,10 @@ describe('virtual Finder helpers', () => {
       (node) => node.parentId === 'documents' && node.name === 'Project',
     );
     expect(imported.addedCount).toBe(3);
-    expect(copy?.content).toBe('first imported copy');
+    expect(copy?.payload).toEqual({ format: 'plain-text', text: 'first imported copy' });
     expect(imported.state.nodes.find((node) => node.parentId === project?.id)).toMatchObject({
       name: 'Notes.txt',
-      content: 'nested document',
+      payload: { format: 'plain-text', text: 'nested document' },
     });
   });
 
@@ -258,7 +260,10 @@ describe('virtual Finder helpers', () => {
 
     expect(folder).toMatchObject({ parentId: 'desktop', iconPosition: { x: 173, y: 119 } });
     expect(document).toMatchObject({ parentId: 'desktop', iconPosition: { x: 186, y: 130 } });
-    expect(nested).toMatchObject({ name: 'Nested Note.txt', content: 'nested' });
+    expect(nested).toMatchObject({
+      name: 'Nested Note.txt',
+      payload: { format: 'plain-text', text: 'nested' },
+    });
     expect(nested?.iconPosition).toBeUndefined();
   });
 
@@ -314,9 +319,10 @@ describe('virtual Finder helpers', () => {
 
     expect(duplicated.addedCount).toBe(1);
     expect(copy?.id).not.toBe('read-me');
-    expect(copy?.content).toBe(
-      'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
-    );
+    expect(copy?.payload).toEqual({
+      format: 'plain-text',
+      text: 'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
+    });
   });
 
   it('auto-places copied roots while retaining layout inside copied folders', () => {
@@ -365,7 +371,7 @@ describe('virtual Finder helpers', () => {
         type: 'create-document',
         parentId: 'documents',
         name: 'Read Me',
-        content: 'a pasted document',
+        payload: { format: 'plain-text', text: 'a pasted document' },
       },
       timestamp,
     );
@@ -373,19 +379,90 @@ describe('virtual Finder helpers', () => {
       parentId: 'documents',
       name: 'Read Me copy',
       kind: 'document',
-      content: 'a pasted document',
+      payload: { format: 'plain-text', text: 'a pasted document' },
     });
 
-    const oversized = executeVfsCommand(createDefaultState(), {
+    const oversizedBase = createDefaultState();
+    const oversized = executeVfsCommand(oversizedBase, {
       type: 'create-document',
       parentId: 'documents',
       name: 'Large Note',
-      content: 'x'.repeat(64 * 1024 + 1),
+      payload: { format: 'plain-text', text: 'x'.repeat(192 * 1024 + 1) },
     });
-    expect(
-      oversized.state.nodes.find((node) => node.id === oversized.affectedIds[0])?.content,
-    ).toHaveLength(64 * 1024);
+    expect(oversized.state).toBe(oversizedBase);
+    expect(oversized.affectedIds).toEqual([]);
+    expect(oversized.skippedCount).toBe(1);
     expect(oversized.truncatedCount).toBe(1);
+
+    const createdId = document.affectedIds[0]!;
+    const updated = executeVfsCommand(
+      document.state,
+      {
+        type: 'update-document',
+        nodeId: createdId,
+        payload: {
+          format: 'write-v1',
+          pagePreset: 'us-letter-1in',
+          blocks: [
+            {
+              type: 'paragraph',
+              style: {
+                fontFamily: 'serif',
+                fontSize: 12,
+                alignment: 'left',
+                leftIndent: 0,
+                firstLineIndent: 0,
+                rightIndent: 0,
+                tabStops: [36],
+                lineSpacing: 1,
+              },
+              content: [{ type: 'text', text: 'saved', marks: [{ type: 'bold' }] }],
+            },
+          ],
+        },
+      },
+      '2026-07-22T12:01:00.000Z',
+    );
+    expect(updated.state.nodes.find((node) => node.id === createdId)).toMatchObject({
+      payload: {
+        format: 'write-v1',
+        blocks: [
+          {
+            content: [{ type: 'text', text: 'saved', marks: [{ type: 'bold' }] }],
+          },
+        ],
+      },
+      modifiedAt: '2026-07-22T12:01:00.000Z',
+    });
+
+    const unchanged = executeVfsCommand(
+      updated.state,
+      {
+        type: 'update-document',
+        nodeId: createdId,
+        payload: updated.state.nodes.find((node) => node.id === createdId)?.payload ?? {
+          format: 'plain-text',
+          text: '',
+        },
+      },
+      '2026-07-22T12:02:00.000Z',
+    );
+    expect(unchanged.state).toBe(updated.state);
+    expect(unchanged.state.nodes.find((node) => node.id === createdId)?.modifiedAt).toBe(
+      '2026-07-22T12:01:00.000Z',
+    );
+
+    const rejectedUpdate = executeVfsCommand(updated.state, {
+      type: 'update-document',
+      nodeId: createdId,
+      payload: { format: 'plain-text', text: 'x'.repeat(MAX_VFS_CONTENT + 1) },
+    });
+    expect(rejectedUpdate.state).toBe(updated.state);
+    expect(rejectedUpdate).toMatchObject({
+      affectedIds: [],
+      skippedCount: 1,
+      truncatedCount: 1,
+    });
   });
 
   it('rejects malformed commands before mutating state', () => {
@@ -439,8 +516,102 @@ describe('virtual Finder helpers', () => {
         },
       }),
     ).toThrow(TypeError);
+    expect(
+      isVfsCommand({
+        type: 'update-document',
+        nodeId: 'read-me',
+        payload: { format: 'write-v1', pagePreset: 'us-letter-1in' },
+      }),
+    ).toBe(false);
+    expect(
+      isVfsCommand({
+        type: 'update-document',
+        nodeId: 'read-me',
+        payload: {
+          format: 'write-v1',
+          pagePreset: 'us-letter-1in',
+          blocks: [
+            {
+              type: 'paragraph',
+              style: {
+                fontFamily: 'serif',
+                fontSize: 12,
+                alignment: 'left',
+                leftIndent: 0,
+                firstLineIndent: 0,
+                rightIndent: 0,
+                tabStops: [],
+                lineSpacing: 1,
+              },
+              content: [{ type: 'text', text: 'forged', marks: [{ type: 'blink' }] }],
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isVfsCommand({
+        type: 'update-document',
+        nodeId: 'read-me',
+        payload: {
+          format: 'write-v1',
+          pagePreset: 'us-letter-1in',
+          blocks: [
+            {
+              type: 'paragraph',
+              style: {
+                fontFamily: 'mono',
+                fontSize: 10,
+                alignment: 'right',
+                leftIndent: 12,
+                firstLineIndent: 6,
+                rightIndent: 18,
+                tabStops: [36, 72],
+                lineSpacing: 1.5,
+              },
+              content: [{ type: 'text', text: 'valid', marks: [{ type: 'underline' }] }],
+            },
+            { type: 'page-break' },
+          ],
+        },
+      }),
+    ).toBe(true);
     expect(state).toBe(state);
     expect(state.nodes.find((node) => node.id === 'applications')?.parentId).toBe('system-disk');
+  });
+
+  it('rejects structurally valid document payloads that require lossy canonicalization', () => {
+    const state = createDefaultState();
+    const command = {
+      type: 'create-document' as const,
+      parentId: 'documents',
+      name: 'Noncanonical',
+      payload: {
+        format: 'write-v1' as const,
+        pagePreset: 'us-letter-1in' as const,
+        blocks: [
+          {
+            type: 'paragraph' as const,
+            style: { ...createDefaultWriteParagraphStyle(), leftIndent: 999 },
+            content: [
+              {
+                type: 'text' as const,
+                text: 'formatting matters',
+                marks: [{ type: 'bold' as const }, { type: 'bold' as const }],
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    expect(isVfsCommand(command)).toBe(true);
+    expect(executeVfsCommand(state, command)).toMatchObject({
+      state,
+      affectedIds: [],
+      skippedCount: 1,
+      truncatedCount: 1,
+    });
   });
 
   it('uses the final VFS node slot and rejects additions after the cap is reached', () => {

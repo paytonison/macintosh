@@ -9,6 +9,7 @@ const context = (overrides: Partial<KeyboardContext> = {}): KeyboardContext => (
   ejectionInProgress: false,
   pointerSessionActive: false,
   menuOpen: false,
+  writeWindowOpen: false,
   calculatorOpen: false,
   finderWindowOpen: false,
   ...overrides,
@@ -18,6 +19,9 @@ describe('keyboard input ownership', () => {
   it('uses the current visible interaction target', () => {
     expect(resolveKeyboardOwner(context())).toBe('desktop');
     expect(resolveKeyboardOwner(context({ finderWindowOpen: true }))).toBe('finder');
+    expect(resolveKeyboardOwner(context({ finderWindowOpen: true, writeWindowOpen: true }))).toBe(
+      'write',
+    );
     expect(resolveKeyboardOwner(context({ finderWindowOpen: true, calculatorOpen: true }))).toBe(
       'calculator',
     );

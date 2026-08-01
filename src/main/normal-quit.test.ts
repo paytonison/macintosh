@@ -133,6 +133,35 @@ describe('normal quit coordinator', () => {
     );
   });
 
+  it('returns to idle when the renderer cancels a requested quit', async () => {
+    const requestRendererFlush = vi.fn();
+    const persistFinalState = vi.fn().mockResolvedValue(undefined);
+    const quitApplication = vi.fn();
+    const coordinator = createNormalQuitCoordinator<string>({
+      requestRendererFlush,
+      persistFinalState,
+      quitApplication,
+    });
+
+    coordinator.rendererReady();
+    coordinator.requestQuit();
+
+    expect(coordinator.cancelQuit()).toBe(true);
+    expect(coordinator.cancelQuit()).toBe(false);
+    await expect(coordinator.flushAndQuit('discarded')).rejects.toThrow(
+      'Normal quit was not requested.',
+    );
+    expect(persistFinalState).not.toHaveBeenCalled();
+    expect(quitApplication).not.toHaveBeenCalled();
+
+    coordinator.requestQuit();
+    await coordinator.flushAndQuit('later');
+
+    expect(requestRendererFlush).toHaveBeenCalledTimes(2);
+    expect(persistFinalState).toHaveBeenCalledWith('later');
+    expect(quitApplication).toHaveBeenCalledTimes(1);
+  });
+
   it('finalizes queued main-owned state before quitting without a renderer', async () => {
     const write = deferred();
     const persistFinalState = vi.fn(() => write.promise);

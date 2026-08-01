@@ -23,8 +23,10 @@ import {
 } from '../model/pointer-drag';
 
 interface CalculatorWindowProps {
+  active: boolean;
   interactionCancelToken: number;
   keyboardEnabled: boolean;
+  onActivate: () => void;
   onClose: () => void;
   onInteractionChange: (active: boolean) => void;
 }
@@ -81,8 +83,10 @@ const inputForKeyboardKey = (key: string): CalculatorInput | null => {
 };
 
 export function CalculatorWindow({
+  active,
   interactionCancelToken,
   keyboardEnabled,
+  onActivate,
   onClose,
   onInteractionChange,
 }: CalculatorWindowProps) {
@@ -209,10 +213,13 @@ export function CalculatorWindow({
   return (
     <section
       aria-label="Calculator"
-      className={`calculator-window ${previewPosition ? 'is-dragging' : ''}`.trim()}
+      className={`calculator-window ${active ? 'is-active' : 'is-inactive'} ${previewPosition ? 'is-dragging' : ''}`.trim()}
       data-calculator-window="true"
       data-drop-blocked="true"
-      onPointerDown={() => windowElement.current?.focus()}
+      onPointerDown={() => {
+        onActivate();
+        windowElement.current?.focus();
+      }}
       ref={windowElement}
       style={{ left: position.x, top: position.y }}
       tabIndex={-1}

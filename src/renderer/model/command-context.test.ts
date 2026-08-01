@@ -57,32 +57,39 @@ describe('menu shortcut matching', () => {
 describe('Finder command context', () => {
   it('uses Desktop when no active disk or folder window owns creation commands', () => {
     const state = createDefaultState();
-    expect(finderCommandDestinationId(state)).toBe('system-disk');
+    expect(finderCommandDestinationId(state, 'window-system-disk')).toBe('system-disk');
+    expect(finderCommandDestinationId(state, null)).toBe('desktop');
 
     expect(
-      finderCommandDestinationId({
-        ...state,
-        desktop: { ...state.desktop, windows: [] },
-      }),
+      finderCommandDestinationId(
+        {
+          ...state,
+          desktop: { ...state.desktop, windows: [] },
+        },
+        'window-system-disk',
+      ),
     ).toBe('desktop');
 
     expect(
-      finderCommandDestinationId({
-        ...state,
-        desktop: {
-          ...state.desktop,
-          windows: [
-            {
-              id: 'window-welcome',
-              nodeId: 'welcome',
-              x: 100,
-              y: 100,
-              width: 520,
-              height: 390,
-            },
-          ],
+      finderCommandDestinationId(
+        {
+          ...state,
+          desktop: {
+            ...state.desktop,
+            windows: [
+              {
+                id: 'window-welcome',
+                nodeId: 'welcome',
+                x: 100,
+                y: 100,
+                width: 520,
+                height: 390,
+              },
+            ],
+          },
         },
-      }),
+        'window-welcome',
+      ),
     ).toBe('desktop');
   });
 
@@ -91,6 +98,7 @@ describe('Finder command context', () => {
     const context = deriveFinderCommandContext(
       state,
       new Set(['read-me', 'applications', 'missing']),
+      'window-system-disk',
     );
 
     expect(context.activeWindow?.id).toBe('window-system-disk');
@@ -117,6 +125,7 @@ describe('Finder command context', () => {
         },
       },
       new Set(['applications', 'read-me']),
+      'window-documents',
     );
 
     expect(context.activeNode?.id).toBe('documents');
@@ -128,10 +137,21 @@ describe('Finder command context', () => {
     const context = deriveFinderCommandContext(
       { ...state, desktop: { ...state.desktop, windows: [] } },
       new Set(['applications']),
+      null,
     );
 
     expect(context.activeWindow).toBeNull();
     expect(context.activeNode).toBeNull();
     expect(context.visibleSelectionIds).toEqual([]);
+  });
+
+  it('targets Desktop when the desktop owns Finder commands despite an open window', () => {
+    const state = createDefaultState();
+    const context = deriveFinderCommandContext(state, new Set(['applications']), null);
+
+    expect(context.activeWindow).toBeNull();
+    expect(context.activeNode).toBeNull();
+    expect(context.visibleSelectionIds).toEqual([]);
+    expect(finderCommandDestinationId(state, null)).toBe('desktop');
   });
 });

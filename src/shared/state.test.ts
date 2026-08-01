@@ -21,6 +21,7 @@ const BUILT_IN_ITEM_IDS = [
   'welcome',
   'finder-notes',
   'read-me',
+  'write',
 ] as const;
 
 describe('persistent Macintosh state', () => {
@@ -53,7 +54,7 @@ describe('persistent Macintosh state', () => {
     expect(canonicalCreatedAtForNodeId('desktop')).toBeNull();
   });
 
-  it.each([1, 2, STATE_SCHEMA_VERSION])(
+  it.each([1, 2, 3, STATE_SCHEMA_VERSION])(
     'normalizes canonical creation dates in schema %i without rewriting other metadata',
     (schemaVersion) => {
       const saved = createDefaultState();
@@ -83,7 +84,7 @@ describe('persistent Macintosh state', () => {
       systemFolder.parentId = 'desktop';
       systemFolder.name = 'Moved System Folder';
       systemFolder.iconPosition = { x: 173, y: 119 };
-      welcome.content = 'Preserve this built-in content.';
+      welcome.payload = { format: 'plain-text', text: 'Preserve this built-in content.' };
       desktop.createdAt = desktopCreatedAt;
 
       const applicationsCopy: VfsNode = {
@@ -98,7 +99,7 @@ describe('persistent Macintosh state', () => {
         parentId: 'system-disk',
         name: 'Custom Note',
         kind: 'document',
-        content: 'Preserve this custom document.',
+        payload: { format: 'plain-text', text: 'Preserve this custom document.' },
         createdAt: customCreatedAt,
         modifiedAt: customCreatedAt,
       };
@@ -107,7 +108,7 @@ describe('persistent Macintosh state', () => {
         parentId: 'system-disk',
         name: 'Imported Note',
         kind: 'document',
-        content: 'Preserve this import.',
+        payload: { format: 'plain-text', text: 'Preserve this import.' },
         iconPosition: { x: 211, y: 137 },
         createdAt: importedCreatedAt,
         modifiedAt: importedCreatedAt,
@@ -222,11 +223,11 @@ describe('persistent Macintosh state', () => {
     expect(safe.desktop.lastEjectAt).toBe('2026-07-22T12:00:00.000Z');
   });
 
-  it.each([1, 2])(
+  it.each([1, 2, 3])(
     'migrates version %i state without resetting its desktop or virtual disk',
     (schemaVersion) => {
       const legacy = createDefaultState();
-      legacy.nodes = legacy.nodes.filter((node) => node.id !== 'desktop');
+      legacy.nodes = legacy.nodes.filter((node) => node.id !== 'desktop' && node.id !== 'write');
       legacy.desktop.diskPosition = { x: 731, y: 137 };
       legacy.desktop.trashPosition = { x: 97, y: 611 };
       legacy.desktop.windows[0] = { ...legacy.desktop.windows[0]!, x: 319, y: 117 };
@@ -253,9 +254,16 @@ describe('persistent Macintosh state', () => {
         kind: 'desktop',
         parentId: null,
       });
-      expect(migrated.nodes.filter((node) => node.id !== 'desktop').map((node) => node.id)).toEqual(
-        legacy.nodes.map((node) => node.id),
-      );
+      expect(migrated.nodes.find((node) => node.id === 'write')).toMatchObject({
+        kind: 'application',
+        applicationId: 'write',
+        parentId: 'applications',
+      });
+      expect(
+        migrated.nodes
+          .filter((node) => node.id !== 'desktop' && node.id !== 'write')
+          .map((node) => node.id),
+      ).toEqual(legacy.nodes.map((node) => node.id));
     },
   );
 
@@ -277,6 +285,40 @@ describe('persistent Macintosh state', () => {
     expect(migrated.nodes).toHaveLength(MAX_VFS_NODES);
     expect(migrated.nodes.some((node) => node.id === 'desktop')).toBe(true);
     expect(migrated.nodes.some((node) => node.id === 'legacy-509')).toBe(true);
+  });
+
+  it.each([1, 2, 3])(
+    'wraps schema %i document strings exactly and removes document and application Finder windows',
+    (schemaVersion) => {
+      const legacy = createDefaultState();
+      const legacyText = '  leading\n\ntrailing  ';
+      const nodes = legacy.nodes
+        .filter((node) => node.id !== 'write')
+        .map((node) =>
+          node.id === 'read-me' ? { ...node, payload: undefined, content: legacyText } : node,
+        );
+      legacy.desktop.windows.push(
+        { id: 'window-read-me', nodeId: 'read-me', x: 10, y: 10, width: 520, height: 390 },
+        { id: 'window-write', nodeId: 'write', x: 20, y: 20, width: 520, height: 390 },
+      );
+
+      const migrated = sanitizeState({ ...legacy, schemaVersion, nodes });
+
+      expect(migrated.nodes.find((node) => node.id === 'read-me')?.payload).toEqual({
+        format: 'plain-text',
+        text: legacyText,
+      });
+      expect(migrated.desktop.windows.map((windowState) => windowState.nodeId)).toEqual([
+        'system-disk',
+      ]);
+    },
+  );
+
+  it('does not resurrect a deleted Write application in schema 4', () => {
+    const current = createDefaultState();
+    current.nodes = current.nodes.filter((node) => node.id !== 'write');
+
+    expect(sanitizeState(current).nodes.some((node) => node.id === 'write')).toBe(false);
   });
 
   it('preserves arbitrary Desktop-child positions without snapping them to a grid', () => {

@@ -22,6 +22,12 @@
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
+    "prosemirror-commands": "1.7.1",
+    "prosemirror-history": "1.5.0",
+    "prosemirror-keymap": "1.2.3",
+    "prosemirror-model": "1.25.4",
+    "prosemirror-state": "1.4.3",
+    "prosemirror-view": "1.41.3",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

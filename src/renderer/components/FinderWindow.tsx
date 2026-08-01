@@ -16,6 +16,7 @@ import type {
   VfsNode,
   WindowGeometry,
 } from '../../shared/state';
+import { documentPayloadText } from '../../shared/write';
 import { finderIconCanvasSize, resolveFinderIconPositions } from '../model/finder-icon-layout';
 import { createIconDragPreviewItems } from '../model/icon-drag-preview';
 import {
@@ -664,7 +665,9 @@ export function FinderWindow({
           ref={content}
         >
           {isDocument ? (
-            <article className="document-sheet">{node.content ?? ''}</article>
+            <article className="document-sheet">
+              {node.payload ? documentPayloadText(node.payload) : ''}
+            </article>
           ) : viewMode === 'icons' ? (
             <div
               className="finder-icon-grid"

@@ -7,6 +7,7 @@ export interface NormalQuitCoordinatorOptions<State> {
 export interface NormalQuitCoordinator<State> {
   requestQuit: () => void;
   rendererReady: () => void;
+  cancelQuit: () => boolean;
   flushAndQuit: (state: State | null) => Promise<void>;
   finalizeAndQuitWithoutRenderer: () => Promise<void>;
   quitWithoutFlush: () => void;
@@ -87,6 +88,11 @@ export const createNormalQuitCoordinator = <State>({
   return {
     requestQuit,
     rendererReady,
+    cancelQuit: () => {
+      if (phase !== 'requested') return false;
+      phase = 'idle';
+      return true;
+    },
     flushAndQuit,
     finalizeAndQuitWithoutRenderer,
     quitWithoutFlush,

@@ -3,6 +3,7 @@ import { PixelIcon, type PixelIconName, type PixelIconVariant } from './PixelIco
 
 const iconNameForNode = (node: VfsNode): PixelIconName => {
   if (node.id === 'system-folder') return 'system-folder';
+  if (node.kind === 'application' && node.applicationId === 'write') return 'write';
   if (
     node.kind === 'desktop' ||
     node.kind === 'folder' ||

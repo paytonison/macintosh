@@ -47,7 +47,7 @@ export function MenuBar({ menus, clock, openMenu, onOpenMenuChange, onInvoke }: 
 
   return (
     <header className="menu-bar" ref={bar}>
-      <nav aria-label="Finder menus" className="menu-strip">
+      <nav aria-label="Application menus" className="menu-strip">
         {menus.map((menu) => {
           const open = openMenu === menu.id;
           return (

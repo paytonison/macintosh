@@ -110,7 +110,7 @@ function ModalLayer({ children, kind, onClose, persistenceAlert = false }: Modal
   );
 }
 
-function ClassicDialog({
+export function ClassicDialog({
   title,
   children,
   interactionCancelToken,
@@ -292,7 +292,15 @@ export function InfoDialog({
     >
       <div className="info-content">
         <PixelIcon
-          name={node.kind === 'document' ? 'document' : node.kind === 'disk' ? 'disk' : 'folder'}
+          name={
+            node.kind === 'document'
+              ? 'document'
+              : node.kind === 'application'
+                ? 'write'
+                : node.kind === 'disk'
+                  ? 'disk'
+                  : 'folder'
+          }
           size={48}
         />
         <dl>

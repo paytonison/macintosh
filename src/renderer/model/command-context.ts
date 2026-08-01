@@ -1,6 +1,6 @@
 import type { FinderWindowState, MacintoshState, VfsNode } from '../../shared/state';
 
-export type MenuShortcut = 'a' | 'c' | 'i' | 'n' | 'o' | 'v' | 'w';
+export type MenuShortcut = 'a' | 'b' | 'c' | 'i' | 'n' | 'o' | 's' | 'u' | 'v' | 'w' | 'x' | 'z';
 
 interface ShortcutEvent {
   key: string;
@@ -44,8 +44,11 @@ export interface FinderCommandContext {
   visibleSelectionIds: string[];
 }
 
-export const finderCommandDestinationId = (state: MacintoshState): string => {
-  const activeWindow = state.desktop.windows.at(-1);
+export const finderCommandDestinationId = (
+  state: MacintoshState,
+  activeWindowId: string | null,
+): string => {
+  const activeWindow = state.desktop.windows.find((window) => window.id === activeWindowId);
   const activeNode = activeWindow
     ? state.nodes.find((node) => node.id === activeWindow.nodeId)
     : undefined;
@@ -55,8 +58,10 @@ export const finderCommandDestinationId = (state: MacintoshState): string => {
 export const deriveFinderCommandContext = (
   state: MacintoshState | null,
   selectedIds: ReadonlySet<string>,
+  activeWindowId: string | null,
 ): FinderCommandContext => {
-  const activeWindow = state?.desktop.windows.at(-1) ?? null;
+  const activeWindow =
+    state?.desktop.windows.find((window) => window.id === activeWindowId) ?? null;
   const activeNode = activeWindow
     ? (state?.nodes.find((node) => node.id === activeWindow.nodeId) ?? null)
     : null;

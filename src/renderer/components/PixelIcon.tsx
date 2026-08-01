@@ -2,7 +2,7 @@ import { ditherPixelSilhouette, rasterizeOneBitBitmap, type PixelRun } from '../
 import { TRASH_DROP_TOLERANCE_CSS_PX } from '../model/desktop-drop-target';
 
 export type PixelIconName =
-  'computer' | 'disk' | 'trash' | 'trash-full' | 'folder' | 'document' | 'system-folder';
+  'computer' | 'disk' | 'trash' | 'trash-full' | 'folder' | 'document' | 'system-folder' | 'write';
 
 // Stable painted-area union for the empty and full Trash drawings. Keeping one
 // box prevents the drop target from changing when hover swaps the bitmap.
@@ -220,6 +220,36 @@ const drawings: Record<PixelIconName, PixelRun[]> = {
       '#...............#  ',
       '#...............#  ',
       '#################  ',
+    ],
+  }),
+  write: rasterizeOneBitBitmap({
+    x: 4,
+    y: 2,
+    rows: [
+      ' ##################   ',
+      ' #................#   ',
+      ' #.##############.#   ',
+      ' #.#............#.#   ',
+      ' #.#............#.#   ',
+      ' #.#............#.#   ',
+      ' #.#..##....##..#.#   ',
+      ' #.#..##....##..#.#   ',
+      ' #.#..##....##..#.#   ',
+      ' #.#..##.##.##..#.#   ',
+      ' #.#..##.##.##..#.#   ',
+      ' #.#..########..#.#   ',
+      ' #.#...##..##...#.#   ',
+      ' #.#...##..##...#.#   ',
+      ' #.#............#.#   ',
+      ' #.#.##########.#.#   ',
+      ' #.#............#.#   ',
+      ' #.#.########....#.#   ',
+      ' #.#............#.#   ',
+      ' #.##############.#   ',
+      ' #................#   ',
+      ' ##################   ',
+      '    ##........##      ',
+      '   ##############     ',
     ],
   }),
 };

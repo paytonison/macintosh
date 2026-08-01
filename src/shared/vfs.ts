@@ -6,11 +6,26 @@ import {
   type Point,
   type VfsNode,
 } from './state';
+import {
+  documentPayloadEqual,
+  documentPayloadText,
+  MAX_DOCUMENT_TEXT,
+  MAX_WRITE_BLOCKS,
+  MAX_WRITE_INLINES,
+  sanitizeDocumentPayload,
+  WRITE_ALIGNMENTS,
+  WRITE_FONT_FAMILIES,
+  WRITE_FONT_SIZES,
+  WRITE_LINE_SPACINGS,
+  WRITE_MARK_TYPES,
+  WRITE_PAGE_PRESET,
+  type DocumentPayload,
+} from './write';
 
 export { MAX_VFS_NODES };
 export const MAX_VFS_CONTENT = 192 * 1024;
 
-const MAX_DOCUMENT_CONTENT = 64 * 1024;
+const MAX_DOCUMENT_CONTENT = MAX_DOCUMENT_TEXT;
 const MAX_IMPORTED_ROOTS = 64;
 const MAX_IMPORTED_ENTRIES = 256;
 const MAX_IMPORTED_DEPTH = 24;
@@ -61,7 +76,13 @@ export interface CreateDocumentCommand extends DesktopPlacementCommand {
   type: 'create-document';
   parentId: string;
   name: string;
-  content: string;
+  payload: DocumentPayload;
+}
+
+export interface UpdateDocumentCommand {
+  type: 'update-document';
+  nodeId: string;
+  payload: DocumentPayload;
 }
 
 export interface MoveNodesCommand extends DesktopPlacementCommand {
@@ -85,6 +106,7 @@ export interface EmptyTrashCommand {
 export type VfsCommand =
   | CreateFolderCommand
   | CreateDocumentCommand
+  | UpdateDocumentCommand
   | MoveNodesCommand
   | DuplicateNodesCommand
   | EmptyTrashCommand;
@@ -159,6 +181,126 @@ const isNodeIconPlacements = (value: unknown): value is NodeIconPlacement[] =>
 const isTimestamp = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 64 && !Number.isNaN(Date.parse(value));
 
+const isOneOf = <Value extends string | number>(
+  value: unknown,
+  allowed: readonly Value[],
+): value is Value => allowed.some((candidate) => candidate === value);
+
+const isWriteParagraphStyleCandidate = (value: unknown): boolean =>
+  isRecord(value) &&
+  hasOnlyKeys(value, [
+    'fontFamily',
+    'fontSize',
+    'alignment',
+    'leftIndent',
+    'firstLineIndent',
+    'rightIndent',
+    'tabStops',
+    'lineSpacing',
+  ]) &&
+  isOneOf(value.fontFamily, WRITE_FONT_FAMILIES) &&
+  isOneOf(value.fontSize, WRITE_FONT_SIZES) &&
+  isOneOf(value.alignment, WRITE_ALIGNMENTS) &&
+  typeof value.leftIndent === 'number' &&
+  Number.isFinite(value.leftIndent) &&
+  typeof value.firstLineIndent === 'number' &&
+  Number.isFinite(value.firstLineIndent) &&
+  typeof value.rightIndent === 'number' &&
+  Number.isFinite(value.rightIndent) &&
+  Array.isArray(value.tabStops) &&
+  value.tabStops.length <= 32 &&
+  value.tabStops.every((point) => typeof point === 'number' && Number.isFinite(point)) &&
+  isOneOf(value.lineSpacing, WRITE_LINE_SPACINGS);
+
+const isWriteInlineCandidate = (value: unknown): boolean => {
+  if (!isRecord(value) || typeof value.type !== 'string') return false;
+  if (value.type === 'tab') return hasOnlyKeys(value, ['type']);
+  return (
+    value.type === 'text' &&
+    hasOnlyKeys(value, ['type', 'text', 'marks']) &&
+    typeof value.text === 'string' &&
+    value.text.length > 0 &&
+    (value.marks === undefined ||
+      (Array.isArray(value.marks) &&
+        value.marks.length <= WRITE_MARK_TYPES.length &&
+        value.marks.every(
+          (mark) =>
+            isRecord(mark) && hasOnlyKeys(mark, ['type']) && isOneOf(mark.type, WRITE_MARK_TYPES),
+        )))
+  );
+};
+
+const isDocumentPayloadCandidate = (value: unknown): value is DocumentPayload => {
+  if (!isRecord(value)) return false;
+  try {
+    if (JSON.stringify(value).length > 1024 * 1024) return false;
+  } catch {
+    return false;
+  }
+
+  if (value.format === 'plain-text') {
+    return hasOnlyKeys(value, ['format', 'text']) && typeof value.text === 'string';
+  }
+  if (
+    value.format !== 'write-v1' ||
+    value.pagePreset !== WRITE_PAGE_PRESET ||
+    !hasOnlyKeys(value, ['format', 'pagePreset', 'blocks']) ||
+    !Array.isArray(value.blocks) ||
+    value.blocks.length === 0 ||
+    value.blocks.length > MAX_WRITE_BLOCKS
+  ) {
+    return false;
+  }
+
+  let inlineCount = 0;
+  for (const block of value.blocks) {
+    if (!isRecord(block) || typeof block.type !== 'string') return false;
+    if (block.type === 'page-break') {
+      if (!hasOnlyKeys(block, ['type'])) return false;
+      continue;
+    }
+    if (
+      block.type !== 'paragraph' ||
+      !hasOnlyKeys(block, ['type', 'style', 'content']) ||
+      !isWriteParagraphStyleCandidate(block.style) ||
+      !Array.isArray(block.content)
+    ) {
+      return false;
+    }
+    inlineCount += block.content.length;
+    if (
+      inlineCount > MAX_WRITE_INLINES ||
+      !block.content.every((inline) => isWriteInlineCandidate(inline))
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const candidateDocumentTextLength = (payload: DocumentPayload): number => {
+  if (payload.format === 'plain-text') {
+    return typeof payload.text === 'string' ? payload.text.length : 0;
+  }
+  if (!Array.isArray(payload.blocks)) return 0;
+
+  let length = Math.max(0, payload.blocks.length - 1);
+  for (const block of payload.blocks) {
+    if (!isRecord(block)) continue;
+    if (block.type === 'page-break') {
+      length += 1;
+      continue;
+    }
+    if (block.type !== 'paragraph' || !Array.isArray(block.content)) continue;
+    for (const inline of block.content) {
+      if (!isRecord(inline)) continue;
+      if (inline.type === 'tab') length += 1;
+      if (inline.type === 'text' && typeof inline.text === 'string') length += inline.text.length;
+    }
+  }
+  return length;
+};
+
 const isImportedEntries = (value: unknown): value is ImportedEntry[] => {
   if (!Array.isArray(value) || value.length > MAX_IMPORTED_ROOTS) return false;
 
@@ -227,13 +369,18 @@ export const isVfsCommand = (value: unknown): value is VfsCommand => {
       );
     case 'create-document':
       return (
-        hasOnlyKeys(value, ['type', 'parentId', 'name', 'content', 'desktopPlacement']) &&
+        hasOnlyKeys(value, ['type', 'parentId', 'name', 'payload', 'desktopPlacement']) &&
         isBoundedString(value.parentId, 96) &&
         value.parentId !== 'trash' &&
         isBoundedString(value.name, 96) &&
-        typeof value.content === 'string' &&
-        value.content.length <= MAX_VFS_CONTENT &&
+        isDocumentPayloadCandidate(value.payload) &&
         hasValidOptionalDesktopPlacement(value, value.parentId)
+      );
+    case 'update-document':
+      return (
+        hasOnlyKeys(value, ['type', 'nodeId', 'payload']) &&
+        isBoundedString(value.nodeId, 96) &&
+        isDocumentPayloadCandidate(value.payload)
       );
     case 'move-nodes':
       return (
@@ -359,7 +506,7 @@ const topLevelSelection = (nodes: VfsNode[], ids: Iterable<string>): VfsNode[] =
       node.id === 'desktop' ||
       node.id === 'system-disk' ||
       node.id === 'trash' ||
-      (node.kind !== 'folder' && node.kind !== 'document')
+      (node.kind !== 'folder' && node.kind !== 'document' && node.kind !== 'application')
     ) {
       return false;
     }
@@ -375,7 +522,10 @@ const topLevelSelection = (nodes: VfsNode[], ids: Iterable<string>): VfsNode[] =
 };
 
 const contentSize = (nodes: VfsNode[]): number =>
-  nodes.reduce((total, node) => total + (node.content?.length ?? 0), 0);
+  nodes.reduce(
+    (total, node) => total + (node.payload ? documentPayloadText(node.payload).length : 0),
+    0,
+  );
 
 const validTimestamp = (value: string, fallback: string): string =>
   value.length <= 64 && !Number.isNaN(Date.parse(value)) ? value : fallback;
@@ -489,14 +639,18 @@ export const duplicateNodes = (
       skippedCount += 1 + descendantsOf(state.nodes, source.id).size;
       return null;
     }
-    const id = uniqueId(source.kind === 'folder' ? 'folder' : 'document', ids);
-    let content = source.content;
-    if (content && content.length > remainingContent) {
-      content = content.slice(0, remainingContent);
+    const id = uniqueId(source.kind, ids);
+    let payload = source.payload;
+    const payloadTextLength = payload ? documentPayloadText(payload).length : 0;
+    if (payload && payloadTextLength > remainingContent) {
+      payload = {
+        format: 'plain-text',
+        text: documentPayloadText(payload).slice(0, remainingContent),
+      };
       remainingContent = 0;
       truncatedCount += 1;
     } else {
-      remainingContent -= content?.length ?? 0;
+      remainingContent -= payloadTextLength;
     }
     const copy: VfsNode = {
       ...source,
@@ -504,7 +658,7 @@ export const duplicateNodes = (
       parentId: destinationId,
       name,
       iconPosition: retainIconPosition ? source.iconPosition : undefined,
-      ...(content === undefined ? {} : { content }),
+      ...(payload === undefined ? {} : { payload }),
       createdAt: timestamp,
       modifiedAt: timestamp,
     };
@@ -571,20 +725,22 @@ export const mergeImportedEntries = (
     const name = uniqueName(entry.name, kind, siblingNames);
     siblingNames.add(name);
     const now = new Date().toISOString();
-    let content = kind === 'document' ? (entry.content ?? '') : undefined;
-    if (content && content.length > remainingContent) {
-      content = content.slice(0, remainingContent);
+    let payload: DocumentPayload | undefined =
+      kind === 'document' ? { format: 'plain-text', text: entry.content ?? '' } : undefined;
+    const payloadText = payload?.format === 'plain-text' ? payload.text : '';
+    if (payload && payloadText.length > remainingContent) {
+      payload = { format: 'plain-text', text: payloadText.slice(0, remainingContent) };
       remainingContent = 0;
       truncatedCount += 1;
     } else {
-      remainingContent -= content?.length ?? 0;
+      remainingContent -= payloadText.length;
     }
     const node: VfsNode = {
       id: uniqueId(kind, ids),
       parentId: destinationId,
       name,
       kind,
-      ...(content === undefined ? {} : { content }),
+      ...(payload === undefined ? {} : { payload }),
       createdAt: validTimestamp(entry.createdAt, now),
       modifiedAt: validTimestamp(entry.modifiedAt, now),
     };
@@ -788,7 +944,17 @@ const createDocumentMutation = (
   const name = uniqueName(command.name, 'document', names);
   const remainingContent = Math.max(0, MAX_VFS_CONTENT - contentSize(state.nodes));
   const contentLimit = Math.min(MAX_DOCUMENT_CONTENT, remainingContent);
-  const content = command.content.slice(0, contentLimit);
+  const requestedTextLength = candidateDocumentTextLength(command.payload);
+  const requestedPayload = sanitizeDocumentPayload(command.payload);
+  const requestedText = documentPayloadText(requestedPayload);
+  if (
+    requestedTextLength > contentLimit ||
+    requestedText.length !== requestedTextLength ||
+    !documentPayloadEqual(command.payload, requestedPayload)
+  ) {
+    return { state, affectedIds: [], addedCount: 0, skippedCount: 1, truncatedCount: 1 };
+  }
+  const payload = requestedPayload;
   const id = uniqueId('document', new Set(state.nodes.map((node) => node.id)));
   return {
     state: {
@@ -800,7 +966,7 @@ const createDocumentMutation = (
           parentId: command.parentId,
           name,
           kind: 'document',
-          content,
+          payload,
           createdAt: timestamp,
           modifiedAt: timestamp,
         },
@@ -809,7 +975,47 @@ const createDocumentMutation = (
     affectedIds: [id],
     addedCount: 1,
     skippedCount: 0,
-    truncatedCount: content.length < command.content.length ? 1 : 0,
+    truncatedCount: 0,
+  };
+};
+
+const updateDocumentMutation = (
+  state: MacintoshState,
+  command: UpdateDocumentCommand,
+  timestamp: string,
+): VfsMutationResult => {
+  const target = state.nodes.find((node) => node.id === command.nodeId);
+  if (!target || target.kind !== 'document') {
+    return { state, affectedIds: [], addedCount: 0, skippedCount: 1, truncatedCount: 0 };
+  }
+  const otherContent =
+    contentSize(state.nodes) - (target.payload ? documentPayloadText(target.payload).length : 0);
+  const contentLimit = Math.min(MAX_DOCUMENT_CONTENT, Math.max(0, MAX_VFS_CONTENT - otherContent));
+  const requestedTextLength = candidateDocumentTextLength(command.payload);
+  const requestedPayload = sanitizeDocumentPayload(command.payload);
+  const requestedText = documentPayloadText(requestedPayload);
+  if (
+    requestedTextLength > contentLimit ||
+    requestedText.length !== requestedTextLength ||
+    !documentPayloadEqual(command.payload, requestedPayload)
+  ) {
+    return { state, affectedIds: [], addedCount: 0, skippedCount: 1, truncatedCount: 1 };
+  }
+  const payload = requestedPayload;
+  if (target.payload && documentPayloadEqual(target.payload, payload)) {
+    return { state, affectedIds: [target.id], addedCount: 0, skippedCount: 0, truncatedCount: 0 };
+  }
+  return {
+    state: {
+      ...state,
+      nodes: state.nodes.map((node) =>
+        node.id === target.id ? { ...node, payload, modifiedAt: timestamp } : node,
+      ),
+    },
+    affectedIds: [target.id],
+    addedCount: 0,
+    skippedCount: 0,
+    truncatedCount: 0,
   };
 };
 
@@ -851,6 +1057,8 @@ export const executeVfsCommand = (
         undefined,
         value.desktopPlacement,
       );
+    case 'update-document':
+      return updateDocumentMutation(state, value, safeTimestamp);
     case 'move-nodes':
       return applyMutationPlacements(
         moveNodes(state, value.nodeIds, value.parentId, safeTimestamp),
