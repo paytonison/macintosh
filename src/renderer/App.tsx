@@ -209,21 +209,47 @@ const desktopPlacementFrom = (
     ? { point: location.point, surfaceSize: location.surfaceSize }
     : undefined;
 
-const resolveWindowAnimationOrigin = (
-  source: WindowAnimationSource,
-  windowState: WindowGeometry,
-): Point => {
-  const surfaceBounds = source?.closest<HTMLElement>('.desktop-surface')?.getBoundingClientRect();
-  const sourceBounds = source?.getBoundingClientRect();
-  return surfaceBounds && sourceBounds
-    ? {
-        x: Math.round(sourceBounds.left + sourceBounds.width / 2 - surfaceBounds.left),
-        y: Math.round(sourceBounds.top + sourceBounds.height / 2 - surfaceBounds.top),
+const resolveWindowAnimationOrigin = (source: WindowAnimationSource): Point | null => {
+  const artwork = source?.querySelector<SVGSVGElement>(
+    '.pixel-icon[data-pixel-icon-variant="artwork"]',
+  );
+  const surface = artwork?.closest<HTMLElement>('.desktop-surface');
+  if (!artwork || !surface) return null;
+  const artworkBounds = artwork.getBoundingClientRect();
+  const surfaceBounds = surface.getBoundingClientRect();
+  if (artworkBounds.width <= 0 || artworkBounds.height <= 0) return null;
+  return {
+    x: Math.round(artworkBounds.left + artworkBounds.width / 2 - surfaceBounds.left),
+    y: Math.round(artworkBounds.top + artworkBounds.height / 2 - surfaceBounds.top),
+  };
+};
+
+const artworkIsFullyUnclipped = (
+  artwork: SVGSVGElement,
+  surface: HTMLElement,
+  bounds: DOMRect,
+): boolean => {
+  const clippingOverflow = new Set(['auto', 'clip', 'hidden', 'scroll']);
+  for (let ancestor = artwork.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const style = getComputedStyle(ancestor);
+    const clipsX = clippingOverflow.has(style.overflowX);
+    const clipsY = clippingOverflow.has(style.overflowY);
+    if (clipsX || clipsY) {
+      const ancestorBounds = ancestor.getBoundingClientRect();
+      const clipLeft = ancestorBounds.left + ancestor.clientLeft;
+      const clipTop = ancestorBounds.top + ancestor.clientTop;
+      const clipRight = clipLeft + ancestor.clientWidth;
+      const clipBottom = clipTop + ancestor.clientHeight;
+      if (
+        (clipsX && (bounds.left < clipLeft || bounds.right > clipRight)) ||
+        (clipsY && (bounds.top < clipTop || bounds.bottom > clipBottom))
+      ) {
+        return false;
       }
-    : {
-        x: Math.round(windowState.x + windowState.width / 2),
-        y: Math.round(windowState.y + windowState.height / 2),
-      };
+    }
+    if (ancestor === surface) return true;
+  }
+  return false;
 };
 
 const findNodeAnimationSource = (nodeId: string): HTMLElement | null =>
@@ -232,26 +258,20 @@ const findNodeAnimationSource = (nodeId: string): HTMLElement | null =>
       if (element.dataset.vfsNodeId !== nodeId && element.dataset.vfsItem !== nodeId) return false;
       const surface = element.closest<HTMLElement>('.desktop-surface');
       if (!surface) return false;
-      const bounds = element.getBoundingClientRect();
-      const surfaceBounds = surface.getBoundingClientRect();
+      const artwork = element.querySelector<SVGSVGElement>(
+        '.pixel-icon[data-pixel-icon-variant="artwork"]',
+      );
+      if (!artwork) return false;
+      const bounds = artwork.getBoundingClientRect();
       if (
         bounds.width <= 0 ||
         bounds.height <= 0 ||
-        bounds.right <= surfaceBounds.left ||
-        bounds.left >= surfaceBounds.right ||
-        bounds.bottom <= surfaceBounds.top ||
-        bounds.top >= surfaceBounds.bottom
+        !artworkIsFullyUnclipped(artwork, surface, bounds)
       ) {
         return false;
       }
-      const centerX = Math.max(
-        surfaceBounds.left,
-        Math.min(surfaceBounds.right - 1, bounds.left + bounds.width / 2),
-      );
-      const centerY = Math.max(
-        surfaceBounds.top,
-        Math.min(surfaceBounds.bottom - 1, bounds.top + bounds.height / 2),
-      );
+      const centerX = bounds.left + bounds.width / 2;
+      const centerY = bounds.top + bounds.height / 2;
       const hit = document.elementFromPoint(centerX, centerY);
       return hit !== null && element.contains(hit);
     },
@@ -745,7 +765,7 @@ export default function App() {
         ...writeWindowAnimationsRef.current,
         [id]: {
           phase: 'opening',
-          origin: resolveWindowAnimationOrigin(source, windowState),
+          origin: resolveWindowAnimationOrigin(source),
           token: (windowAnimationToken.current += 1),
         } satisfies WriteWindowAnimation,
       };
@@ -797,7 +817,7 @@ export default function App() {
         ...writeWindowAnimationsRef.current,
         [id]: {
           phase: 'opening',
-          origin: resolveWindowAnimationOrigin(source, windowState),
+          origin: resolveWindowAnimationOrigin(source),
           token: (windowAnimationToken.current += 1),
         } satisfies WriteWindowAnimation,
       };
@@ -897,7 +917,7 @@ export default function App() {
       ...writeWindowAnimationsRef.current,
       [windowId]: {
         phase: 'closing',
-        origin: resolveWindowAnimationOrigin(source, target),
+        origin: resolveWindowAnimationOrigin(source),
         token,
       } satisfies WriteWindowAnimation,
     };
@@ -1478,7 +1498,7 @@ export default function App() {
           ...currentAnimations,
           [windowId]: {
             phase: 'opening',
-            origin: resolveWindowAnimationOrigin(source, nextWindow),
+            origin: resolveWindowAnimationOrigin(source),
             token: (windowAnimationToken.current += 1),
           } satisfies FinderWindowAnimation,
         };
@@ -1518,7 +1538,7 @@ export default function App() {
         ...windowAnimationsRef.current,
         [windowId]: {
           phase: 'closing',
-          origin: resolveWindowAnimationOrigin(findNodeAnimationSource(target.nodeId), target),
+          origin: resolveWindowAnimationOrigin(findNodeAnimationSource(target.nodeId)),
           token: (windowAnimationToken.current += 1),
         } satisfies FinderWindowAnimation,
       };
@@ -2343,8 +2363,17 @@ export default function App() {
   }, []);
 
   const openSelected = useCallback((): void => {
-    if (selectedNode) openNode(selectedNode.id);
-  }, [openNode, selectedNode]);
+    if (!selectedNode) return;
+    const nodeId = selectedNode.id;
+    const openFromVisibleSource = (): void => {
+      openNode(nodeId, findNodeAnimationSource(nodeId));
+    };
+    if (openMenu) {
+      requestAnimationFrame(openFromVisibleSource);
+      return;
+    }
+    openFromVisibleSource();
+  }, [openMenu, openNode, selectedNode]);
 
   const selectAll = useCallback((): void => {
     if (!state) return;

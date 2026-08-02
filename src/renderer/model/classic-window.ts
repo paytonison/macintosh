@@ -84,14 +84,30 @@ export const committedWindowGeometry = (
 
 export const windowAnimationStartGeometry = (
   geometry: WindowGeometry,
-  origin: Point,
+  origin: Point | null,
 ): WindowGeometry => {
   const width = Math.max(1, Math.round(geometry.width * WINDOW_ANIMATION_START_SCALE));
   const height = Math.max(1, Math.round(geometry.height * WINDOW_ANIMATION_START_SCALE));
 
+  if (origin === null) {
+    const centerX = Math.round(geometry.x + geometry.width / 2);
+    const centerY = Math.round(geometry.y + geometry.height / 2);
+    return {
+      x: Math.round(centerX - width / 2),
+      y: Math.round(centerY - height / 2),
+      width,
+      height,
+    };
+  }
+
+  const finalRight = geometry.x + geometry.width;
+  const finalBottom = geometry.y + geometry.height;
+  const anchorLeft = Math.abs(origin.x - geometry.x) <= Math.abs(origin.x - finalRight);
+  const anchorTop = Math.abs(origin.y - geometry.y) <= Math.abs(origin.y - finalBottom);
+
   return {
-    x: Math.round(origin.x - width / 2),
-    y: Math.round(origin.y - height / 2),
+    x: anchorLeft ? origin.x : origin.x - width,
+    y: anchorTop ? origin.y : origin.y - height,
     width,
     height,
   };
@@ -99,16 +115,26 @@ export const windowAnimationStartGeometry = (
 
 export const windowAnimationGeometryFrames = (
   geometry: WindowGeometry,
-  origin: Point,
+  origin: Point | null,
 ): WindowGeometry[] => {
   const start = windowAnimationStartGeometry(geometry, origin);
+  const startRight = start.x + start.width;
+  const startBottom = start.y + start.height;
+  const finalRight = geometry.x + geometry.width;
+  const finalBottom = geometry.y + geometry.height;
+
   return Array.from({ length: WINDOW_ANIMATION_STEPS + 1 }, (_, index) => {
     const progress = index / WINDOW_ANIMATION_STEPS;
+    const left = Math.round(start.x + (geometry.x - start.x) * progress);
+    const right = Math.round(startRight + (finalRight - startRight) * progress);
+    const top = Math.round(start.y + (geometry.y - start.y) * progress);
+    const bottom = Math.round(startBottom + (finalBottom - startBottom) * progress);
+
     return {
-      x: Math.round(start.x + (geometry.x - start.x) * progress),
-      y: Math.round(start.y + (geometry.y - start.y) * progress),
-      width: Math.round(start.width + (geometry.width - start.width) * progress),
-      height: Math.round(start.height + (geometry.height - start.height) * progress),
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top,
     };
   });
 };

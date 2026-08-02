@@ -407,6 +407,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     shadowPointerEvents: string;
     shadowTitleDivider: string;
     shadowTransform: string;
+    frames: { x: string; y: string; width: string; height: string }[];
   };
   const clickAt = async (point: SmokePoint): Promise<void> => {
     await ensureNativeInputFocus('Native click');
@@ -882,7 +883,13 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
               shadowTitleDivider: shadowTitleStyle
                 ? [shadowTitleStyle.borderTopWidth, shadowTitleStyle.borderTopStyle, shadowTitleStyle.borderTopColor].join(' ')
                 : '',
-              shadowTransform
+              shadowTransform,
+              frames: Array.from({ length: 7 }, (_, index) => ({
+                x: shadowStyle.getPropertyValue('--window-animation-frame-' + index + '-x').trim(),
+                y: shadowStyle.getPropertyValue('--window-animation-frame-' + index + '-y').trim(),
+                width: shadowStyle.getPropertyValue('--window-animation-frame-' + index + '-width').trim(),
+                height: shadowStyle.getPropertyValue('--window-animation-frame-' + index + '-height').trim()
+              }))
             };
             if (shadowAnimation && !${hold ? 'true' : 'false'}) {
               shadowAnimation.currentTime = 0;
@@ -936,11 +943,50 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       endWidth,
       endHeight,
     ];
-    const between = (value: number, first: number, second: number): boolean =>
-      value >= Math.min(first, second) - 0.05 && value <= Math.max(first, second) + 0.05;
+    const frames = (animation?.frames ?? []).map((frame) => ({
+      x: Number.parseFloat(frame.x),
+      y: Number.parseFloat(frame.y),
+      width: Number.parseFloat(frame.width),
+      height: Number.parseFloat(frame.height),
+    }));
+    const frameValuesAreInteger =
+      frames.length === 7 &&
+      frames.every(
+        (frame) =>
+          [frame.x, frame.y, frame.width, frame.height].every(
+            (value) => Number.isFinite(value) && Number.isInteger(value),
+          ) &&
+          frame.width > 0 &&
+          frame.height > 0,
+      );
+    const expectedFrames = Array.from({ length: 7 }, (_, index) => {
+      const progress = index / 6;
+      const left = Math.round(startX + (endX - startX) * progress);
+      const top = Math.round(startY + (endY - startY) * progress);
+      const right = Math.round(
+        startX + startWidth + (endX + endWidth - startX - startWidth) * progress,
+      );
+      const bottom = Math.round(
+        startY + startHeight + (endY + endHeight - startY - startHeight) * progress,
+      );
+      return { x: left, y: top, width: right - left, height: bottom - top };
+    });
+    const framesFollowAuthoredPath =
+      frameValuesAreInteger &&
+      frames.every(
+        (frame, index) =>
+          frame.x === expectedFrames[index]?.x &&
+          frame.y === expectedFrames[index]?.y &&
+          frame.width === expectedFrames[index]?.width &&
+          frame.height === expectedFrames[index]?.height,
+      );
+    const midpoint = frames[3];
     if (
       !animation ||
       !geometryValues.every((value) => Number.isFinite(value) && Number.isInteger(value)) ||
+      startWidth !== Math.max(1, Math.round(endWidth * 0.12)) ||
+      startHeight !== Math.max(1, Math.round(endHeight * 0.12)) ||
+      !framesFollowAuthoredPath ||
       animation.frameAnimationName !== 'none' ||
       animation.frameAnimationPresent ||
       animation.shadowAnimationName !== expectedName ||
@@ -953,12 +999,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       Math.abs(animation.frameBounds.top - endY) > 0.05 ||
       Math.abs(animation.frameBounds.width - endWidth) > 0.05 ||
       Math.abs(animation.frameBounds.height - endHeight) > 0.05 ||
-      !between(animation.shadowBounds.left, startX, endX) ||
-      !between(animation.shadowBounds.top, startY, endY) ||
-      !(animation.shadowBounds.width > startWidth) ||
-      !(animation.shadowBounds.width < endWidth) ||
-      !(animation.shadowBounds.height > startHeight) ||
-      !(animation.shadowBounds.height < endHeight) ||
+      !midpoint ||
+      Math.abs(animation.shadowBounds.left - midpoint.x) > 0.05 ||
+      Math.abs(animation.shadowBounds.top - midpoint.y) > 0.05 ||
+      Math.abs(animation.shadowBounds.width - midpoint.width) > 0.05 ||
+      Math.abs(animation.shadowBounds.height - midpoint.height) > 0.05 ||
       animation.shadowBackgroundColor !== 'rgba(0, 0, 0, 0)' ||
       animation.shadowBorderColor !== 'rgb(0, 0, 0)' ||
       animation.shadowBorderStyle !== 'solid' ||
@@ -985,7 +1030,41 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     source: SmokePoint,
     label: string,
   ): void => {
-    const center = {
+    const start = {
+      x: Number.parseFloat(animation?.startX ?? 'NaN'),
+      y: Number.parseFloat(animation?.startY ?? 'NaN'),
+      width: Number.parseFloat(animation?.startWidth ?? 'NaN'),
+      height: Number.parseFloat(animation?.startHeight ?? 'NaN'),
+    };
+    const end = {
+      x: Number.parseFloat(animation?.endX ?? 'NaN'),
+      y: Number.parseFloat(animation?.endY ?? 'NaN'),
+      width: Number.parseFloat(animation?.endWidth ?? 'NaN'),
+      height: Number.parseFloat(animation?.endHeight ?? 'NaN'),
+    };
+    const anchorLeft = Math.abs(source.x - end.x) <= Math.abs(source.x - (end.x + end.width));
+    const anchorTop = Math.abs(source.y - end.y) <= Math.abs(source.y - (end.y + end.height));
+    const corner = {
+      x: anchorLeft ? start.x : start.x + start.width,
+      y: anchorTop ? start.y : start.y + start.height,
+    };
+    if (
+      ![start.x, start.y, start.width, start.height, end.x, end.y, end.width, end.height].every(
+        Number.isFinite,
+      ) ||
+      Math.abs(corner.x - source.x) > 0.05 ||
+      Math.abs(corner.y - source.y) > 0.05
+    ) {
+      throw new Error(
+        `${label} did not anchor its nearest corner to the artwork center: ${JSON.stringify({ source, corner, anchorLeft, anchorTop, animation })}.`,
+      );
+    }
+  };
+  const assertWindowAnimationCenteredFallback = (
+    animation: SmokeWindowAnimation | null,
+    label: string,
+  ): void => {
+    const startCenter = {
       x:
         Number.parseFloat(animation?.startX ?? 'NaN') +
         Number.parseFloat(animation?.startWidth ?? 'NaN') / 2,
@@ -993,16 +1072,133 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         Number.parseFloat(animation?.startY ?? 'NaN') +
         Number.parseFloat(animation?.startHeight ?? 'NaN') / 2,
     };
+    const endCenter = {
+      x:
+        Number.parseFloat(animation?.endX ?? 'NaN') +
+        Number.parseFloat(animation?.endWidth ?? 'NaN') / 2,
+      y:
+        Number.parseFloat(animation?.endY ?? 'NaN') +
+        Number.parseFloat(animation?.endHeight ?? 'NaN') / 2,
+    };
     if (
-      !Number.isFinite(center.x) ||
-      !Number.isFinite(center.y) ||
-      Math.abs(center.x - source.x) > 1 ||
-      Math.abs(center.y - source.y) > 1
+      ![startCenter.x, startCenter.y, endCenter.x, endCenter.y].every(Number.isFinite) ||
+      Math.abs(startCenter.x - endCenter.x) > 0.5 ||
+      Math.abs(startCenter.y - endCenter.y) > 0.5
     ) {
       throw new Error(
-        `${label} did not begin at its source: ${JSON.stringify({ source, center, animation })}.`,
+        `${label} did not use the centered source-less fallback: ${JSON.stringify({ startCenter, endCenter, animation })}.`,
       );
     }
+  };
+  const findWindowAnimationArtworkSource = async (
+    sourceSelector: string,
+  ): Promise<SmokePoint | null> => {
+    const source = (await window.webContents.executeJavaScript(
+      `(() => {
+        const item = document.querySelector(${JSON.stringify(sourceSelector)});
+        const artwork = item?.querySelector(
+          '.pixel-icon[data-pixel-icon-variant="artwork"]'
+        );
+        const surface = item?.closest('.desktop-surface');
+        if (!(item instanceof HTMLElement) || !(artwork instanceof SVGElement) || !(surface instanceof HTMLElement)) return null;
+        const artworkBounds = artwork.getBoundingClientRect();
+        const surfaceBounds = surface.getBoundingClientRect();
+        const centerX = artworkBounds.left + artworkBounds.width / 2;
+        const centerY = artworkBounds.top + artworkBounds.height / 2;
+        const hit = document.elementFromPoint(centerX, centerY);
+        const clippingOverflow = new Set(['auto', 'clip', 'hidden', 'scroll']);
+        let fullyUnclipped = false;
+        for (let ancestor = artwork.parentElement; ancestor; ancestor = ancestor.parentElement) {
+          const style = getComputedStyle(ancestor);
+          const clipsX = clippingOverflow.has(style.overflowX);
+          const clipsY = clippingOverflow.has(style.overflowY);
+          if (clipsX || clipsY) {
+            const ancestorBounds = ancestor.getBoundingClientRect();
+            const clipLeft = ancestorBounds.left + ancestor.clientLeft;
+            const clipTop = ancestorBounds.top + ancestor.clientTop;
+            const clipRight = clipLeft + ancestor.clientWidth;
+            const clipBottom = clipTop + ancestor.clientHeight;
+            if (
+              (clipsX &&
+                (artworkBounds.left < clipLeft || artworkBounds.right > clipRight)) ||
+              (clipsY &&
+                (artworkBounds.top < clipTop || artworkBounds.bottom > clipBottom))
+            ) {
+              return null;
+            }
+          }
+          if (ancestor === surface) {
+            fullyUnclipped = true;
+            break;
+          }
+        }
+        if (
+          artworkBounds.width <= 0 ||
+          artworkBounds.height <= 0 ||
+          !fullyUnclipped ||
+          !(hit instanceof Element) ||
+          !item.contains(hit)
+        ) return null;
+        return {
+          x: Math.round(centerX - surfaceBounds.left),
+          y: Math.round(centerY - surfaceBounds.top)
+        };
+      })()`,
+      true,
+    )) as SmokePoint | null;
+    return source;
+  };
+  const readWindowAnimationArtworkSource = async (
+    sourceSelector: string,
+    label: string,
+  ): Promise<SmokePoint> => {
+    const source = await findWindowAnimationArtworkSource(sourceSelector);
+    if (!source) {
+      const details = await window.webContents.executeJavaScript(
+        `(() => {
+          const item = document.querySelector(${JSON.stringify(sourceSelector)});
+          const artwork = item?.querySelector(
+            '.pixel-icon[data-pixel-icon-variant="artwork"]'
+          );
+          if (!(item instanceof HTMLElement) || !(artwork instanceof SVGElement)) {
+            return { itemPresent: Boolean(item), artworkPresent: Boolean(artwork) };
+          }
+          const bounds = artwork.getBoundingClientRect();
+          const center = { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
+          const hit = document.elementFromPoint(center.x, center.y);
+          return {
+            bounds: { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom },
+            center,
+            hidden: item.hidden,
+            hit: hit instanceof Element ? hit.outerHTML.slice(0, 160) : null,
+            hitInsideItem: hit instanceof Element && item.contains(hit),
+            ancestors: [...(function* () {
+              for (let ancestor = artwork.parentElement; ancestor; ancestor = ancestor.parentElement) {
+                const style = getComputedStyle(ancestor);
+                const rect = ancestor.getBoundingClientRect();
+                yield {
+                  className: ancestor.className,
+                  overflowX: style.overflowX,
+                  overflowY: style.overflowY,
+                  clip: {
+                    left: rect.left + ancestor.clientLeft,
+                    top: rect.top + ancestor.clientTop,
+                    right: rect.left + ancestor.clientLeft + ancestor.clientWidth,
+                    bottom: rect.top + ancestor.clientTop + ancestor.clientHeight
+                  }
+                };
+                if (ancestor.classList.contains('desktop-surface')) break;
+              }
+            })()]
+          };
+        })()`,
+        true,
+      );
+      throw new Error(
+        `${label} pixel artwork could not be located, was clipped, or was occluded: ${JSON.stringify(details)}.`,
+      );
+    }
+    return source;
   };
   const waitForWindowSettled = async (
     windowSelector: string,
@@ -2530,8 +2726,45 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   if (!desktopSelectionWorked) throw new Error('Desktop VFS Shift-selection did not work.');
 
-  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'O', modifiers: ['meta'] });
-  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'O', modifiers: ['meta'] });
+  const desktopDocumentSourceRevealed = await window.webContents.executeJavaScript(
+    `(() => {
+      const folder = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Drop Folder"]'
+      );
+      if (!(folder instanceof HTMLElement)) return false;
+      folder.style.visibility = 'hidden';
+      return true;
+    })()`,
+    true,
+  );
+  if (!desktopDocumentSourceRevealed) {
+    throw new Error(
+      'The overlapping Desktop folder could not be hidden for the Write source probe.',
+    );
+  }
+  const desktopDocumentAnimationSource = await readWindowAnimationArtworkSource(
+    '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]',
+    'The Desktop document animation source',
+  );
+  const desktopDocumentOpenAnimation = await observeWindowAnimation(
+    '[data-write-title="Dropped Note.txt"]',
+    'opening',
+    () => invokeRendererMenuAction('file', 'open'),
+  );
+  assertWindowAnimationOutline(
+    desktopDocumentOpenAnimation,
+    'Desktop File Open Write opening animation',
+  );
+  assertWindowAnimationSource(
+    desktopDocumentOpenAnimation,
+    desktopDocumentAnimationSource,
+    'Desktop File Open Write opening outline',
+  );
+  await waitForWindowSettled(
+    '[data-write-title="Dropped Note.txt"]',
+    'Desktop Write window',
+    desktopDocumentOpenAnimation!.windowId,
+  );
   await pause(100);
   const desktopDocumentOpened = (await window.webContents.executeJavaScript(
     `(() => {
@@ -2628,6 +2861,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   assertWindowAnimationOutline(heldDesktopDocumentClose, 'Held Write closing animation');
+  assertWindowAnimationSource(
+    heldDesktopDocumentClose,
+    desktopDocumentAnimationSource,
+    'Held Write closing outline',
+  );
   await assertHeldCloseReopened(
     '[data-write-title="Dropped Note.txt"]',
     'Dropped Note Write window',
@@ -2647,6 +2885,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!desktopDocumentClosed) throw new Error('A clean Write window did not close.');
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-desktop-vfs-item][aria-label="Drop Folder"]')
+      ?.style.removeProperty('visibility')`,
+    true,
+  );
 
   await window.webContents.executeJavaScript(
     `document.querySelector('[data-desktop-vfs-item][aria-label="Dropped Note.txt"]')?.click()`,
@@ -2668,25 +2911,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
 
-  const desktopFolderAnimationSource = (await window.webContents.executeJavaScript(
-    `(() => {
-      const source = document.querySelector(
-        '[data-desktop-vfs-item][aria-label="Drop Folder"]'
-      );
-      const surface = document.querySelector('.desktop-surface');
-      if (!(source instanceof HTMLElement) || !(surface instanceof HTMLElement)) return null;
-      const bounds = source.getBoundingClientRect();
-      const surfaceBounds = surface.getBoundingClientRect();
-      return {
-        x: Math.round(bounds.left + bounds.width / 2 - surfaceBounds.left),
-        y: Math.round(bounds.top + bounds.height / 2 - surfaceBounds.top)
-      };
-    })()`,
-    true,
-  )) as SmokePoint | null;
-  if (!desktopFolderAnimationSource) {
-    throw new Error('The Desktop folder animation source could not be located.');
-  }
+  const desktopFolderAnimationSource = await readWindowAnimationArtworkSource(
+    '[data-desktop-vfs-item][aria-label="Drop Folder"]',
+    'The Desktop folder animation source',
+  );
   const desktopFolderOpenAnimation = await observeWindowAnimation(
     '[aria-label="Drop Folder window"]',
     'opening',
@@ -3146,6 +3374,69 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!listViewVisible) throw new Error('View by Name did not replace the free icon canvas.');
+  const nameViewApplicationsSelector =
+    '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]';
+  const nameViewApplicationsSource = await readWindowAnimationArtworkSource(
+    nameViewApplicationsSelector,
+    'The Finder name-view Applications animation source',
+  );
+  const nameViewApplicationsOpenAnimation = await observeWindowAnimation(
+    '[data-finder-window="window-applications"]',
+    'opening',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(nameViewApplicationsSelector)})
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
+  );
+  assertWindowAnimationOutline(
+    nameViewApplicationsOpenAnimation,
+    'Finder name-view opening animation',
+  );
+  assertWindowAnimationSource(
+    nameViewApplicationsOpenAnimation,
+    nameViewApplicationsSource,
+    'Finder name-view opening outline',
+  );
+  await waitForWindowSettled(
+    '[data-finder-window="window-applications"]',
+    'Applications name-view source window',
+    nameViewApplicationsOpenAnimation!.windowId,
+  );
+  const visibleNameViewCloseSource = await findWindowAnimationArtworkSource(
+    nameViewApplicationsSelector,
+  );
+  const nameViewApplicationsCloseAnimation = await observeWindowAnimation(
+    '[data-finder-window="window-applications"]',
+    'closing',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Close Applications"]')?.click()`,
+        true,
+      ),
+  );
+  assertWindowAnimationOutline(
+    nameViewApplicationsCloseAnimation,
+    'Finder name-view closing animation',
+  );
+  if (visibleNameViewCloseSource) {
+    assertWindowAnimationSource(
+      nameViewApplicationsCloseAnimation,
+      visibleNameViewCloseSource,
+      'Finder name-view closing outline',
+    );
+  } else {
+    assertWindowAnimationCenteredFallback(
+      nameViewApplicationsCloseAnimation,
+      'Finder name-view occluded-source closing outline',
+    );
+  }
+  await waitForWindowAbsence(
+    '[data-finder-window="window-applications"]',
+    'Applications name-view source window',
+    nameViewApplicationsCloseAnimation!.windowId,
+  );
   await window.webContents.executeJavaScript(
     `document.querySelector('[data-menu="view"]')?.click()`,
     true,
@@ -3495,35 +3786,258 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error('Finder command ownership did not resume after an internal drop.');
   }
 
-  const applicationsOpened = await window.webContents.executeJavaScript(
+  const finderIconApplicationsSelector =
+    '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]';
+  const finderIconApplicationsSource = await readWindowAnimationArtworkSource(
+    finderIconApplicationsSelector,
+    'The Finder icon-view Applications animation source',
+  );
+  const finderIconApplicationsOpenAnimation = await observeWindowAnimation(
+    '[data-finder-window="window-applications"]',
+    'opening',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(finderIconApplicationsSelector)})
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
+  );
+  assertWindowAnimationOutline(
+    finderIconApplicationsOpenAnimation,
+    'Finder icon-view opening animation',
+  );
+  assertWindowAnimationSource(
+    finderIconApplicationsOpenAnimation,
+    finderIconApplicationsSource,
+    'Finder icon-view opening outline',
+  );
+  await waitForWindowSettled(
+    '[data-finder-window="window-applications"]',
+    'Applications icon-view source window',
+    finderIconApplicationsOpenAnimation!.windowId,
+  );
+
+  const clippedIconViewClosePrepared = await window.webContents.executeJavaScript(
     `(() => {
-      const applications = document.querySelector('[data-vfs-item="applications"]');
-      if (!(applications instanceof HTMLElement)) return false;
-      applications.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      const source = document.querySelector(${JSON.stringify(finderIconApplicationsSelector)});
+      const artwork = source?.querySelector(
+        '.pixel-icon[data-pixel-icon-variant="artwork"]'
+      );
+      const grid = source?.closest('.finder-icon-grid');
+      const content = source?.closest('.window-content');
+      const applicationsWindow = document.querySelector(
+        '[data-finder-window="window-applications"]'
+      );
+      if (
+        !(source instanceof HTMLElement) ||
+        !(artwork instanceof SVGElement) ||
+        !(grid instanceof HTMLElement) ||
+        !(content instanceof HTMLElement) ||
+        !(applicationsWindow instanceof HTMLElement)
+      ) return false;
+      const artworkBounds = artwork.getBoundingClientRect();
+      const contentBounds = content.getBoundingClientRect();
+      const clipTop = contentBounds.top + content.clientTop;
+      const shift = Math.round(clipTop - artworkBounds.top - artworkBounds.height / 4);
+      grid.dataset.smokeOriginalTransform = grid.style.transform;
+      grid.style.transform = 'translateY(' + shift + 'px)';
+      applicationsWindow.style.visibility = 'hidden';
+      const clippedBounds = artwork.getBoundingClientRect();
+      const centerX = clippedBounds.left + clippedBounds.width / 2;
+      const centerY = clippedBounds.top + clippedBounds.height / 2;
+      const hit = document.elementFromPoint(centerX, centerY);
+      return (
+        clippedBounds.top < clipTop &&
+        clippedBounds.bottom > clipTop &&
+        centerY > clipTop &&
+        source.contains(hit)
+      );
+    })()`,
+    true,
+  );
+  if (!clippedIconViewClosePrepared) {
+    throw new Error('Finder icon-view artwork could not be partially clipped for the close probe.');
+  }
+  const clippedIconViewCloseAnimation = await observeWindowAnimation(
+    '[data-finder-window="window-applications"]',
+    'closing',
+    () =>
+      window.webContents.executeJavaScript(
+        `(() => {
+          const applicationsWindow = document.querySelector(
+            '[data-finder-window="window-applications"]'
+          );
+          document.querySelector('[aria-label="Close Applications"]')?.click();
+          if (applicationsWindow instanceof HTMLElement) {
+            applicationsWindow.style.removeProperty('visibility');
+          }
+        })()`,
+        true,
+      ),
+  );
+  assertWindowAnimationOutline(
+    clippedIconViewCloseAnimation,
+    'Finder clipped icon-view closing animation',
+  );
+  assertWindowAnimationCenteredFallback(
+    clippedIconViewCloseAnimation,
+    'Finder clipped icon-view closing outline',
+  );
+  await waitForWindowAbsence(
+    '[data-finder-window="window-applications"]',
+    'Applications clipped icon-view source window',
+    clippedIconViewCloseAnimation!.windowId,
+  );
+  const clippedIconViewSourceRestored = await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(${JSON.stringify(finderIconApplicationsSelector)});
+      const grid = source?.closest('.finder-icon-grid');
+      if (!(grid instanceof HTMLElement)) return false;
+      grid.style.transform = grid.dataset.smokeOriginalTransform ?? '';
+      delete grid.dataset.smokeOriginalTransform;
       return true;
     })()`,
     true,
   );
-  if (!applicationsOpened) throw new Error('Smoke test could not open Applications.');
-  await pause(80);
+  if (!clippedIconViewSourceRestored) {
+    throw new Error('Finder icon-view artwork could not be restored after the close probe.');
+  }
+  const restoredFinderIconApplicationsSource = await readWindowAnimationArtworkSource(
+    finderIconApplicationsSelector,
+    'The restored Finder icon-view Applications animation source',
+  );
+  const finderIconApplicationsReopenAnimation = await observeWindowAnimation(
+    '[data-finder-window="window-applications"]',
+    'opening',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(finderIconApplicationsSelector)})
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
+  );
+  assertWindowAnimationOutline(
+    finderIconApplicationsReopenAnimation,
+    'Finder restored icon-view opening animation',
+  );
+  assertWindowAnimationSource(
+    finderIconApplicationsReopenAnimation,
+    restoredFinderIconApplicationsSource,
+    'Finder restored icon-view opening outline',
+  );
+  await waitForWindowSettled(
+    '[data-finder-window="window-applications"]',
+    'Restored Applications icon-view source window',
+    finderIconApplicationsReopenAnimation!.windowId,
+  );
 
-  const writeApplicationSource = (await window.webContents.executeJavaScript(
+  const visibleIconViewClosePrepared = await window.webContents.executeJavaScript(
     `(() => {
-      const write = document.querySelector(
-        '[data-finder-window="window-applications"] [data-vfs-item="write"]'
+      const source = document.querySelector(${JSON.stringify(finderIconApplicationsSelector)});
+      const artwork = source?.querySelector(
+        '.pixel-icon[data-pixel-icon-variant="artwork"]'
       );
-      const surface = document.querySelector('.desktop-surface');
-      if (!(write instanceof HTMLElement) || !(surface instanceof HTMLElement)) return null;
-      const bounds = write.getBoundingClientRect();
-      const surfaceBounds = surface.getBoundingClientRect();
-      return {
-        x: Math.round(bounds.left + bounds.width / 2 - surfaceBounds.left),
-        y: Math.round(bounds.top + bounds.height / 2 - surfaceBounds.top)
-      };
+      const applicationsWindow = document.querySelector(
+        '[data-finder-window="window-applications"]'
+      );
+      const handle = applicationsWindow?.querySelector('[data-window-drag-handle="true"]');
+      if (
+        !(artwork instanceof SVGElement) ||
+        !(applicationsWindow instanceof HTMLElement) ||
+        !(handle instanceof HTMLElement)
+      ) return false;
+      const artworkBounds = artwork.getBoundingClientRect();
+      const windowBounds = applicationsWindow.getBoundingClientRect();
+      if (windowBounds.right <= artworkBounds.left || windowBounds.left >= artworkBounds.right) {
+        return true;
+      }
+      let captured = false;
+      handle.setPointerCapture = () => { captured = true; };
+      handle.hasPointerCapture = () => captured;
+      handle.releasePointerCapture = () => { captured = false; };
+      const pointerId = 904;
+      const startX = Math.round(windowBounds.left + windowBounds.width / 2);
+      const startY = Math.round(handle.getBoundingClientRect().top + handle.offsetHeight / 2);
+      const deltaX = Math.ceil(artworkBounds.right + 12 - windowBounds.left);
+      const dispatch = (type, x, buttons) =>
+        handle.dispatchEvent(new PointerEvent(type, {
+          bubbles: true,
+          button: 0,
+          buttons,
+          clientX: x,
+          clientY: startY,
+          isPrimary: true,
+          pointerId,
+          pointerType: 'mouse'
+        }));
+      dispatch('pointerdown', startX, 1);
+      dispatch('pointermove', startX + deltaX, 1);
+      dispatch('pointerup', startX + deltaX, 0);
+      return true;
     })()`,
     true,
-  )) as SmokePoint | null;
-  if (!writeApplicationSource) throw new Error('The Write application icon could not be located.');
+  );
+  if (!visibleIconViewClosePrepared) {
+    throw new Error('Applications could not be moved away from its icon-view close source.');
+  }
+  await pause(60);
+  const visibleFinderIconApplicationsCloseSource = await readWindowAnimationArtworkSource(
+    finderIconApplicationsSelector,
+    'The visible Finder icon-view Applications closing source',
+  );
+  const finderIconApplicationsCloseAnimation = await observeWindowAnimation(
+    '[data-finder-window="window-applications"]',
+    'closing',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Close Applications"]')?.click()`,
+        true,
+      ),
+  );
+  assertWindowAnimationOutline(
+    finderIconApplicationsCloseAnimation,
+    'Finder visible icon-view closing animation',
+  );
+  assertWindowAnimationSource(
+    finderIconApplicationsCloseAnimation,
+    visibleFinderIconApplicationsCloseSource,
+    'Finder visible icon-view closing outline',
+  );
+  await waitForWindowAbsence(
+    '[data-finder-window="window-applications"]',
+    'Applications visible icon-view source window',
+    finderIconApplicationsCloseAnimation!.windowId,
+  );
+
+  const finderIconApplicationsFinalOpenAnimation = await observeWindowAnimation(
+    '[data-finder-window="window-applications"]',
+    'opening',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(finderIconApplicationsSelector)})
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
+  );
+  assertWindowAnimationOutline(
+    finderIconApplicationsFinalOpenAnimation,
+    'Finder final icon-view opening animation',
+  );
+  assertWindowAnimationSource(
+    finderIconApplicationsFinalOpenAnimation,
+    restoredFinderIconApplicationsSource,
+    'Finder final icon-view opening outline',
+  );
+  await waitForWindowSettled(
+    '[data-finder-window="window-applications"]',
+    'Final Applications icon-view source window',
+    finderIconApplicationsFinalOpenAnimation!.windowId,
+  );
+
+  const writeApplicationSource = await readWindowAnimationArtworkSource(
+    '[data-finder-window="window-applications"] [data-vfs-item="write"]',
+    'The Write application animation source',
+  );
   const writeApplicationOpenAnimation = await observeWindowAnimation(
     '[data-write-title="Untitled"]',
     'opening',
@@ -4554,7 +5068,21 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
-  await invokeRendererMenuAction('file', 'new-document');
+  const secondWriteOpenAnimation = await observeWindowAnimation(
+    '[data-write-title="Untitled"]',
+    'opening',
+    () => invokeRendererMenuAction('file', 'new-document'),
+  );
+  assertWindowAnimationOutline(secondWriteOpenAnimation, 'Source-less Write opening animation');
+  assertWindowAnimationCenteredFallback(
+    secondWriteOpenAnimation,
+    'Source-less Write opening outline',
+  );
+  await waitForWindowSettled(
+    '[data-write-title="Untitled"]',
+    'Second independent Write window',
+    secondWriteOpenAnimation!.windowId,
+  );
   await waitForWriteLayout('[data-write-title="Untitled"]', 'Second independent Write window');
   const secondWriteFocused = await window.webContents.executeJavaScript(
     `(() => {
@@ -4811,6 +5339,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       ),
   );
   assertWindowAnimationOutline(secondWriteCloseAnimation, 'Write closing animation');
+  assertWindowAnimationCenteredFallback(
+    secondWriteCloseAnimation,
+    'Source-less Write closing outline',
+  );
   const closingWriteShortcuts: {
     keyCode: string;
     modifiers: ('meta' | 'shift')[];

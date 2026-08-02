@@ -25,7 +25,7 @@ import {
 
 export interface ClassicWindowAnimation {
   phase: 'opening' | 'closing';
-  origin: Point;
+  origin: Point | null;
   token: number;
 }
 
