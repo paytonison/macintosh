@@ -3077,6 +3077,7 @@ export default function App() {
             <FinderWindowAnimationShadow
               animation={animation}
               key={`${windowState.id}-animation-shadow`}
+              onAnimationComplete={finishWindowAnimation}
               stackIndex={ordinaryStackIndex(finderOrdinaryWindowId(windowState.id))}
               windowState={windowState}
             />
@@ -3099,7 +3100,6 @@ export default function App() {
               key={windowState.id}
               node={node}
               onActivate={activateWindow}
-              onAnimationComplete={finishWindowAnimation}
               onClose={closeWindow}
               onGeometry={setWindowGeometry}
               onItemDragCancel={cancelVfsItemDrag}
@@ -3123,6 +3123,7 @@ export default function App() {
             <WriteWindowAnimationShadow
               animation={animation}
               key={`${windowState.id}-animation-shadow`}
+              onAnimationComplete={finishWriteWindowAnimation}
               stackIndex={ordinaryStackIndex(writeOrdinaryWindowId(windowState.id))}
               windowState={windowState}
             />
@@ -3142,7 +3143,6 @@ export default function App() {
             key={windowState.id}
             layoutError={writeLayoutErrors[windowState.id] ?? null}
             onActivate={activateWriteWindow}
-            onAnimationComplete={finishWriteWindowAnimation}
             onClose={requestWriteClose}
             onDraftChange={updateWriteDraft}
             onEditorContext={updateWriteContext}

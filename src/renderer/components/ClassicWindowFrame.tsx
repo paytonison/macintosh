@@ -2,7 +2,6 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
-  useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
@@ -14,7 +13,7 @@ import {
   committedWindowGeometry,
   previewWindowMove,
   previewWindowResize,
-  windowAnimationOffset,
+  windowAnimationGeometryFrames,
   type ClassicWindowConstraints,
 } from '../model/classic-window';
 import {
@@ -56,7 +55,6 @@ interface ClassicWindowFrameProps {
   minimumHeight: number;
   minimumWidth: number;
   onActivate: (id: string) => void;
-  onAnimationComplete?: (id: string, phase: ClassicWindowAnimation['phase'], token: number) => void;
   onClose: (id: string) => void;
   onGeometry: (id: string, geometry: WindowGeometry) => void;
   onInteractionChange: (active: boolean) => void;
@@ -71,6 +69,7 @@ interface ClassicWindowFrameProps {
 interface ClassicWindowAnimationShadowProps {
   animation: ClassicWindowAnimation;
   geometry: WindowGeometry;
+  onAnimationComplete: (id: string, phase: ClassicWindowAnimation['phase'], token: number) => void;
   windowId: string;
   zIndex: number;
 }
@@ -80,35 +79,72 @@ export const shouldCancelClassicWindowCapture = (
   lostPointerId: number,
 ): boolean => activePointerId === lostPointerId;
 
-const animationOffsets = (
+const animationGeometry = (
   geometry: WindowGeometry,
   animation: ClassicWindowAnimation,
 ): CSSProperties => {
-  const offset = windowAnimationOffset(geometry, animation.origin);
-  return {
-    '--window-animation-offset-x': `${offset.x}px`,
-    '--window-animation-offset-y': `${offset.y}px`,
-  } as CSSProperties;
+  const frames = windowAnimationGeometryFrames(geometry, animation.origin);
+  const properties: Record<string, string> = {
+    '--window-animation-start-x': `${frames[0].x}px`,
+    '--window-animation-start-y': `${frames[0].y}px`,
+    '--window-animation-start-width': `${frames[0].width}px`,
+    '--window-animation-start-height': `${frames[0].height}px`,
+    '--window-animation-end-x': `${frames[6].x}px`,
+    '--window-animation-end-y': `${frames[6].y}px`,
+    '--window-animation-end-width': `${frames[6].width}px`,
+    '--window-animation-end-height': `${frames[6].height}px`,
+  };
+  frames.forEach((frame, index) => {
+    properties[`--window-animation-frame-${index}-x`] = `${frame.x}px`;
+    properties[`--window-animation-frame-${index}-y`] = `${frame.y}px`;
+    properties[`--window-animation-frame-${index}-width`] = `${frame.width}px`;
+    properties[`--window-animation-frame-${index}-height`] = `${frame.height}px`;
+  });
+  return properties as CSSProperties;
 };
 
 export function ClassicWindowAnimationShadow({
   animation,
   geometry,
+  onAnimationComplete,
   windowId,
   zIndex,
 }: ClassicWindowAnimationShadowProps) {
+  const outline = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const automation = Boolean(outline.current?.closest('.macintosh.is-automation'));
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const timer = window.setTimeout(
+      () => onAnimationComplete(windowId, animation.phase, animation.token),
+      automation ? 300 : reducedMotion ? 40 : 260,
+    );
+    return () => window.clearTimeout(timer);
+  }, [animation, onAnimationComplete, windowId]);
+
   return (
     <div
       aria-hidden="true"
       className={`window-animation-shadow is-${animation.phase}`}
       data-window-animation-shadow={windowId}
+      onAnimationEnd={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const phase =
+          event.animationName === 'finder-window-open'
+            ? 'opening'
+            : event.animationName === 'finder-window-close'
+              ? 'closing'
+              : null;
+        if (phase) onAnimationComplete(windowId, phase, animation.token);
+      }}
+      ref={outline}
       style={{
         left: geometry.x,
         top: geometry.y,
         width: geometry.width,
         height: geometry.height,
         zIndex,
-        ...animationOffsets(geometry, animation),
+        ...animationGeometry(geometry, animation),
       }}
     >
       <span />
@@ -129,7 +165,6 @@ export function ClassicWindowFrame({
   minimumHeight,
   minimumWidth,
   onActivate,
-  onAnimationComplete,
   onClose,
   onGeometry,
   onInteractionChange,
@@ -140,7 +175,6 @@ export function ClassicWindowFrame({
   windowId,
   zIndex,
 }: ClassicWindowFrameProps) {
-  const [resizePreview, setResizePreview] = useState<WindowGeometry | null>(null);
   const frame = useRef<HTMLElement>(null);
   const dragShadow = useRef<HTMLDivElement>(null);
   const session = useRef<GeometrySession | null>(null);
@@ -157,21 +191,17 @@ export function ClassicWindowFrame({
     constraints.current = { minWidth: minimumWidth, minHeight: minimumHeight };
   }, [minimumHeight, minimumWidth, onActivate, onGeometry, onInteractionChange]);
 
-  useEffect(() => {
-    if (!animation || !onAnimationComplete) return;
-    const automation = Boolean(frame.current?.closest('.macintosh.is-automation'));
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const timer = window.setTimeout(
-      () => onAnimationComplete(windowId, animation.phase, animation.token),
-      automation ? 300 : reducedMotion ? 40 : 260,
-    );
-    return () => window.clearTimeout(timer);
-  }, [animation, onAnimationComplete, windowId]);
-
-  const clearMovePreview = (): void => {
-    frame.current?.classList.remove('is-shadow-dragging');
-    if (frame.current) delete frame.current.dataset.windowDragging;
-    if (dragShadow.current) dragShadow.current.style.transform = 'translate3d(0, 0, 0)';
+  const clearGeometryPreview = (): void => {
+    frame.current?.classList.remove('is-shadow-dragging', 'is-shadow-resizing');
+    if (frame.current) {
+      delete frame.current.dataset.windowDragging;
+      delete frame.current.dataset.windowResizing;
+    }
+    if (dragShadow.current) {
+      dragShadow.current.style.transform = 'translate3d(0, 0, 0)';
+      dragShadow.current.style.removeProperty('width');
+      dragShadow.current.style.removeProperty('height');
+    }
   };
 
   const removeReleaseListeners = (): void => {
@@ -187,8 +217,7 @@ export function ClassicWindowFrame({
     if (activeSession.captureTarget.hasPointerCapture(pointerId)) {
       activeSession.captureTarget.releasePointerCapture(pointerId);
     }
-    if (activeSession.kind === 'move') clearMovePreview();
-    else setResizePreview(null);
+    clearGeometryPreview();
     callbacks.current.onInteractionChange(false);
 
     const committed = committedWindowGeometry(
@@ -246,7 +275,7 @@ export function ClassicWindowFrame({
       current: committedGeometry,
       intent: beginPointerDrag({ x: event.clientX, y: event.clientY }),
     };
-    if (kind === 'resize') setResizePreview(null);
+    clearGeometryPreview();
     watchRelease(event.pointerId);
   };
 
@@ -289,7 +318,12 @@ export function ClassicWindowFrame({
         dragShadow.current.style.transform = `translate3d(${activeSession.current.x - activeSession.original.x}px, ${activeSession.current.y - activeSession.original.y}px, 0)`;
       }
     } else {
-      setResizePreview(activeSession.current);
+      frame.current?.classList.add('is-shadow-resizing');
+      if (frame.current) frame.current.dataset.windowResizing = 'true';
+      if (dragShadow.current) {
+        dragShadow.current.style.width = `${activeSession.current.width}px`;
+        dragShadow.current.style.height = `${activeSession.current.height}px`;
+      }
     }
   };
 
@@ -304,7 +338,7 @@ export function ClassicWindowFrame({
   useLayoutEffect(() => {
     const activeSession = session.current;
     if (activeSession) finishGeometryRef.current(activeSession.pointerId, false);
-  }, [interactionCancelToken, windowId]);
+  }, [animation?.token, interactionCancelToken, windowId]);
 
   useEffect(
     () => () => {
@@ -319,14 +353,12 @@ export function ClassicWindowFrame({
     [],
   );
 
-  const renderedGeometry = resizePreview ?? geometry;
   const frameStyle = {
-    left: renderedGeometry.x,
-    top: renderedGeometry.y,
-    width: renderedGeometry.width,
-    height: renderedGeometry.height,
+    left: geometry.x,
+    top: geometry.y,
+    width: geometry.width,
+    height: geometry.height,
     zIndex,
-    ...(animation ? animationOffsets(geometry, animation) : {}),
   } as CSSProperties;
   const frameClassName = [
     'finder-window',
@@ -357,16 +389,6 @@ export function ClassicWindowFrame({
       className={frameClassName}
       data-closing={animation?.phase === 'closing' ? 'true' : undefined}
       data-opening={animation?.phase === 'opening' ? 'true' : undefined}
-      onAnimationEnd={(event) => {
-        if (event.target !== event.currentTarget || !animation || !onAnimationComplete) return;
-        const phase =
-          event.animationName === 'finder-window-open'
-            ? 'opening'
-            : event.animationName === 'finder-window-close'
-              ? 'closing'
-              : null;
-        if (phase) onAnimationComplete(windowId, phase, animation.token);
-      }}
       onPointerDown={() => callbacks.current.onActivate(windowId)}
       ref={frame}
       style={frameStyle}

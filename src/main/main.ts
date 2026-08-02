@@ -374,20 +374,39 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   type SmokeWindowAnimation = {
     phase: 'opening' | 'closing';
-    animationName: string;
-    offsetX: string;
-    offsetY: string;
+    frameAnimationName: string;
+    frameAnimationPresent: boolean;
     windowId: string;
     frameBoxShadow: string;
+    frameBounds: { left: number; top: number; width: number; height: number };
+    framePointerEvents: string;
     frameTransform: string;
+    frameVisibility: string;
+    startX: string;
+    startY: string;
+    startWidth: string;
+    startHeight: string;
+    endX: string;
+    endY: string;
+    endWidth: string;
+    endHeight: string;
     shadowAnimationName: string;
     shadowAriaHidden: string | null;
+    shadowBounds: { left: number; top: number; width: number; height: number };
+    shadowBackgroundColor: string;
+    shadowBorderColor: string;
+    shadowBorderStyle: string;
+    shadowBorderWidth: string;
     shadowBoxShadow: string;
+    shadowCloseBoxBorder: string;
+    shadowInnerBorder: string;
     shadowMounted: boolean;
+    shadowOutlineColor: string;
+    shadowOutlineStyle: string;
+    shadowOutlineWidth: string;
     shadowPointerEvents: string;
+    shadowTitleDivider: string;
     shadowTransform: string;
-    transformsMatch: boolean;
-    framesAligned: boolean;
   };
   const clickAt = async (point: SmokePoint): Promise<void> => {
     await ensureNativeInputFocus('Native click');
@@ -756,9 +775,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     return fingerprint;
   };
   const observeWindowAnimation = async (
-    windowLabel: string,
+    windowSelector: string,
     phase: SmokeWindowAnimation['phase'],
     run: () => void | Promise<void>,
+    hold = false,
   ): Promise<SmokeWindowAnimation | null> => {
     await window.webContents.executeJavaScript(
       `(() => {
@@ -773,66 +793,99 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
             phase === 'opening' ? 'finder-window-open' : 'finder-window-close',
           )};
           const observer = new MutationObserver(() => {
-            const finder = [...document.querySelectorAll('[data-finder-window]')].find(
-              (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
-            );
+            const finder = document.querySelector(${JSON.stringify(windowSelector)});
             if (!(finder instanceof HTMLElement) || finder.getAttribute(animationAttribute) !== 'true') return;
-            const windowId = finder.getAttribute('data-finder-window');
+            const windowId =
+              finder.getAttribute('data-finder-window') ??
+              finder.getAttribute('data-write-window');
             const shadow = [...document.querySelectorAll('[data-window-animation-shadow]')].find(
               (candidate) =>
                 candidate.getAttribute('data-window-animation-shadow') === windowId
             );
             if (!(shadow instanceof HTMLElement) || !windowId) return;
             observer.disconnect();
+            if (${hold ? 'true' : 'false'}) {
+              window.__macintoshSmokeHeldWindow = finder;
+            }
             const frameAnimation = finder.getAnimations().find(
               (animation) => animation.animationName === expectedAnimationName
             );
             const shadowAnimation = shadow.getAnimations().find(
               (animation) => animation.animationName === expectedAnimationName
             );
-            if (frameAnimation && shadowAnimation) {
-              const durationValue = frameAnimation.effect?.getTiming().duration;
+            if (shadowAnimation) {
+              const durationValue = shadowAnimation.effect?.getTiming().duration;
               const duration = typeof durationValue === 'number' ? durationValue : 20;
-              frameAnimation.pause();
               shadowAnimation.pause();
-              frameAnimation.currentTime = duration / 2;
               shadowAnimation.currentTime = duration / 2;
             }
             const style = getComputedStyle(finder);
             const shadowStyle = getComputedStyle(shadow);
+            const surfaceBounds = surface.getBoundingClientRect();
             const frameBounds = finder.getBoundingClientRect();
             const shadowBounds = shadow.getBoundingClientRect();
-            const nearlyEqual = (left, right) => Math.abs(left - right) <= 0.05;
-            const framesAligned =
-              nearlyEqual(frameBounds.left, shadowBounds.left) &&
-              nearlyEqual(frameBounds.top, shadowBounds.top) &&
-              nearlyEqual(frameBounds.right, shadowBounds.right) &&
-              nearlyEqual(frameBounds.bottom, shadowBounds.bottom) &&
-              nearlyEqual(frameBounds.width, shadowBounds.width) &&
-              nearlyEqual(frameBounds.height, shadowBounds.height);
+            const shadowInnerStyle = getComputedStyle(shadow, '::before');
+            const shadowTitle = shadow.querySelector(':scope > span');
+            const shadowTitleStyle = shadowTitle ? getComputedStyle(shadowTitle) : null;
+            const shadowCloseStyle = shadowTitle ? getComputedStyle(shadowTitle, '::before') : null;
             const frameTransform = style.transform;
             const shadowTransform = shadowStyle.transform;
             const snapshot = {
               phase: ${JSON.stringify(phase)},
-              animationName: style.animationName,
-              offsetX: style.getPropertyValue('--window-animation-offset-x').trim(),
-              offsetY: style.getPropertyValue('--window-animation-offset-y').trim(),
+              frameAnimationName: style.animationName,
+              frameAnimationPresent: Boolean(frameAnimation),
               windowId,
               frameBoxShadow: style.boxShadow,
+              frameBounds: {
+                left: frameBounds.left - surfaceBounds.left,
+                top: frameBounds.top - surfaceBounds.top,
+                width: frameBounds.width,
+                height: frameBounds.height
+              },
+              framePointerEvents: style.pointerEvents,
               frameTransform,
+              frameVisibility: style.visibility,
+              startX: shadowStyle.getPropertyValue('--window-animation-start-x').trim(),
+              startY: shadowStyle.getPropertyValue('--window-animation-start-y').trim(),
+              startWidth: shadowStyle.getPropertyValue('--window-animation-start-width').trim(),
+              startHeight: shadowStyle.getPropertyValue('--window-animation-start-height').trim(),
+              endX: shadowStyle.getPropertyValue('--window-animation-end-x').trim(),
+              endY: shadowStyle.getPropertyValue('--window-animation-end-y').trim(),
+              endWidth: shadowStyle.getPropertyValue('--window-animation-end-width').trim(),
+              endHeight: shadowStyle.getPropertyValue('--window-animation-end-height').trim(),
               shadowAnimationName: shadowStyle.animationName,
               shadowAriaHidden: shadow.getAttribute('aria-hidden'),
+              shadowBounds: {
+                left: shadowBounds.left - surfaceBounds.left,
+                top: shadowBounds.top - surfaceBounds.top,
+                width: shadowBounds.width,
+                height: shadowBounds.height
+              },
+              shadowBackgroundColor: shadowStyle.backgroundColor,
+              shadowBorderColor: shadowStyle.borderColor,
+              shadowBorderStyle: shadowStyle.borderStyle,
+              shadowBorderWidth: shadowStyle.borderWidth,
               shadowBoxShadow: shadowStyle.boxShadow,
+              shadowCloseBoxBorder: shadowCloseStyle
+                ? [shadowCloseStyle.borderTopWidth, shadowCloseStyle.borderTopStyle, shadowCloseStyle.borderTopColor].join(' ')
+                : '',
+              shadowInnerBorder: [
+                shadowInnerStyle.borderTopWidth,
+                shadowInnerStyle.borderTopStyle,
+                shadowInnerStyle.borderTopColor
+              ].join(' '),
               shadowMounted: shadow.isConnected,
+              shadowOutlineColor: shadowStyle.outlineColor,
+              shadowOutlineStyle: shadowStyle.outlineStyle,
+              shadowOutlineWidth: shadowStyle.outlineWidth,
               shadowPointerEvents: shadowStyle.pointerEvents,
-              shadowTransform,
-              transformsMatch: frameTransform === shadowTransform,
-              framesAligned
+              shadowTitleDivider: shadowTitleStyle
+                ? [shadowTitleStyle.borderTopWidth, shadowTitleStyle.borderTopStyle, shadowTitleStyle.borderTopColor].join(' ')
+                : '',
+              shadowTransform
             };
-            if (frameAnimation && shadowAnimation) {
-              frameAnimation.currentTime = 0;
+            if (shadowAnimation && !${hold ? 'true' : 'false'}) {
               shadowAnimation.currentTime = 0;
-              frameAnimation.play();
               shadowAnimation.play();
             }
             resolve({
@@ -859,54 +912,127 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       true,
     ) as Promise<SmokeWindowAnimation | null>;
   };
-  const assertWindowAnimationShadow = (
+  const assertWindowAnimationOutline = (
     animation: SmokeWindowAnimation | null,
     label: string,
   ): void => {
     const expectedName =
       animation?.phase === 'opening' ? 'finder-window-open' : 'finder-window-close';
+    const startWidth = Number.parseFloat(animation?.startWidth ?? 'NaN');
+    const startHeight = Number.parseFloat(animation?.startHeight ?? 'NaN');
+    const startX = Number.parseFloat(animation?.startX ?? 'NaN');
+    const startY = Number.parseFloat(animation?.startY ?? 'NaN');
+    const endWidth = Number.parseFloat(animation?.endWidth ?? 'NaN');
+    const endHeight = Number.parseFloat(animation?.endHeight ?? 'NaN');
+    const endX = Number.parseFloat(animation?.endX ?? 'NaN');
+    const endY = Number.parseFloat(animation?.endY ?? 'NaN');
+    const geometryValues = [
+      startX,
+      startY,
+      startWidth,
+      startHeight,
+      endX,
+      endY,
+      endWidth,
+      endHeight,
+    ];
+    const between = (value: number, first: number, second: number): boolean =>
+      value >= Math.min(first, second) - 0.05 && value <= Math.max(first, second) + 0.05;
     if (
       !animation ||
-      animation.animationName !== expectedName ||
+      !geometryValues.every((value) => Number.isFinite(value) && Number.isInteger(value)) ||
+      animation.frameAnimationName !== 'none' ||
+      animation.frameAnimationPresent ||
       animation.shadowAnimationName !== expectedName ||
       animation.frameBoxShadow !== 'none' ||
+      animation.frameVisibility !== 'hidden' ||
+      animation.framePointerEvents !== 'none' ||
+      animation.frameTransform !== 'none' ||
+      animation.shadowTransform !== 'none' ||
+      Math.abs(animation.frameBounds.left - endX) > 0.05 ||
+      Math.abs(animation.frameBounds.top - endY) > 0.05 ||
+      Math.abs(animation.frameBounds.width - endWidth) > 0.05 ||
+      Math.abs(animation.frameBounds.height - endHeight) > 0.05 ||
+      !between(animation.shadowBounds.left, startX, endX) ||
+      !between(animation.shadowBounds.top, startY, endY) ||
+      !(animation.shadowBounds.width > startWidth) ||
+      !(animation.shadowBounds.width < endWidth) ||
+      !(animation.shadowBounds.height > startHeight) ||
+      !(animation.shadowBounds.height < endHeight) ||
+      animation.shadowBackgroundColor !== 'rgba(0, 0, 0, 0)' ||
+      animation.shadowBorderColor !== 'rgb(0, 0, 0)' ||
+      animation.shadowBorderStyle !== 'solid' ||
+      animation.shadowBorderWidth !== '1px' ||
       !animation.shadowBoxShadow.startsWith('rgb(0, 0, 0) ') ||
       !animation.shadowBoxShadow.endsWith(' 3px 3px 0px 0px') ||
+      animation.shadowInnerBorder !== '1px dotted rgb(0, 0, 0)' ||
+      animation.shadowTitleDivider !== '1px solid rgb(0, 0, 0)' ||
+      animation.shadowCloseBoxBorder !== '1px solid rgb(0, 0, 0)' ||
+      animation.shadowOutlineColor !== 'rgb(255, 255, 255)' ||
+      animation.shadowOutlineStyle !== 'solid' ||
+      animation.shadowOutlineWidth !== '1px' ||
       animation.shadowPointerEvents !== 'none' ||
       animation.shadowAriaHidden !== 'true' ||
-      !animation.shadowMounted ||
-      !animation.transformsMatch ||
-      animation.frameTransform !== animation.shadowTransform ||
-      !animation.framesAligned
+      !animation.shadowMounted
     ) {
       throw new Error(
-        `${label} did not render an aligned hard animation shadow: ${JSON.stringify(animation)}.`,
+        `${label} did not render a stationary hidden frame with a stepped outline: ${JSON.stringify(animation)}.`,
       );
     }
   };
-  const waitForFinderWindowSettled = async (
+  const assertWindowAnimationSource = (
+    animation: SmokeWindowAnimation | null,
+    source: SmokePoint,
+    label: string,
+  ): void => {
+    const center = {
+      x:
+        Number.parseFloat(animation?.startX ?? 'NaN') +
+        Number.parseFloat(animation?.startWidth ?? 'NaN') / 2,
+      y:
+        Number.parseFloat(animation?.startY ?? 'NaN') +
+        Number.parseFloat(animation?.startHeight ?? 'NaN') / 2,
+    };
+    if (
+      !Number.isFinite(center.x) ||
+      !Number.isFinite(center.y) ||
+      Math.abs(center.x - source.x) > 1 ||
+      Math.abs(center.y - source.y) > 1
+    ) {
+      throw new Error(
+        `${label} did not begin at its source: ${JSON.stringify({ source, center, animation })}.`,
+      );
+    }
+  };
+  const waitForWindowSettled = async (
+    windowSelector: string,
     windowLabel: string,
     windowId: string,
   ): Promise<void> => {
     type SettledWindowState = {
+      animationName: string;
       boxShadow: string;
       opening: string | null;
       closing: string | null;
       shadowPresent: boolean;
+      transform: string;
+      visibility: string;
     };
     const deadline = Date.now() + 800;
     let state: SettledWindowState | null = null;
     while (Date.now() < deadline) {
       state = (await window.webContents.executeJavaScript(
         `(() => {
-          const finder = [...document.querySelectorAll('[data-finder-window]')].find(
-            (candidate) => candidate.getAttribute('aria-label') === ${JSON.stringify(windowLabel)}
-          );
+          const finder = document.querySelector(${JSON.stringify(windowSelector)});
           if (!(finder instanceof HTMLElement)) return null;
+          const style = getComputedStyle(finder);
           return {
-            boxShadow: getComputedStyle(finder).boxShadow,
+            animationName: style.animationName,
+            boxShadow: style.boxShadow,
             opening: finder.getAttribute('data-opening'),
             closing: finder.getAttribute('data-closing'),
+            transform: style.transform,
+            visibility: style.visibility,
             shadowPresent: document.querySelector(
               '[data-window-animation-shadow=${JSON.stringify(windowId)}]'
             ) !== null
@@ -916,6 +1042,9 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       )) as SettledWindowState | null;
       if (state && state.opening !== 'true' && state.closing !== 'true' && !state.shadowPresent) {
         if (
+          state.animationName !== 'none' ||
+          state.transform !== 'none' ||
+          state.visibility !== 'visible' ||
           !state.boxShadow.startsWith('rgb(0, 0, 0) ') ||
           !state.boxShadow.endsWith(' 3px 3px 0px 0px')
         ) {
@@ -931,7 +1060,8 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `${windowLabel} did not tear down its animation shadow: ${JSON.stringify(state)}.`,
     );
   };
-  const waitForFinderWindowAbsence = async (
+  const waitForWindowAbsence = async (
+    windowSelector: string,
     windowLabel: string,
     windowId?: string,
   ): Promise<void> => {
@@ -939,9 +1069,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     while (Date.now() < deadline) {
       const absent = await window.webContents.executeJavaScript(
         `(() => {
-          const finderAbsent = [...document.querySelectorAll('[data-finder-window]')].every(
-            (candidate) => candidate.getAttribute('aria-label') !== ${JSON.stringify(windowLabel)}
-          );
+          const finderAbsent = document.querySelector(${JSON.stringify(windowSelector)}) === null;
           const shadowAbsent = ${JSON.stringify(windowId ?? null)} === null ||
             document.querySelector(
               '[data-window-animation-shadow=' + JSON.stringify(${JSON.stringify(windowId ?? '')}) + ']'
@@ -954,6 +1082,85 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       await pause(10);
     }
     throw new Error(`${windowLabel} remained after its close animation.`);
+  };
+  const assertHeldCloseReopened = async (
+    windowSelector: string,
+    windowLabel: string,
+    animation: SmokeWindowAnimation,
+    reopen: () => void | Promise<void>,
+  ): Promise<void> => {
+    const expected = {
+      left: Number.parseFloat(animation.endX),
+      top: Number.parseFloat(animation.endY),
+      width: Number.parseFloat(animation.endWidth),
+      height: Number.parseFloat(animation.endHeight),
+    };
+    type ReopenedWindowState = {
+      animationName: string;
+      bounds: { left: number; top: number; width: number; height: number };
+      closing: string | null;
+      count: number;
+      outlinePresent: boolean;
+      sameInstance: boolean;
+      transform: string;
+      visibility: string;
+    };
+    let state: ReopenedWindowState | null = null;
+    try {
+      await reopen();
+      const deadline = Date.now() + 220;
+      while (Date.now() < deadline) {
+        state = (await window.webContents.executeJavaScript(
+          `(() => {
+            const surface = document.querySelector('.desktop-surface');
+            const frame = document.querySelector(${JSON.stringify(windowSelector)});
+            if (!(surface instanceof HTMLElement) || !(frame instanceof HTMLElement)) return null;
+            const surfaceBounds = surface.getBoundingClientRect();
+            const bounds = frame.getBoundingClientRect();
+            const style = getComputedStyle(frame);
+            return {
+              animationName: style.animationName,
+              bounds: {
+                left: bounds.left - surfaceBounds.left,
+                top: bounds.top - surfaceBounds.top,
+                width: bounds.width,
+                height: bounds.height
+              },
+              closing: frame.getAttribute('data-closing'),
+              count: document.querySelectorAll(${JSON.stringify(windowSelector)}).length,
+              outlinePresent: document.querySelector(
+                '[data-window-animation-shadow=${animation.windowId}]'
+              ) !== null,
+              sameInstance: frame === window.__macintoshSmokeHeldWindow,
+              transform: style.transform,
+              visibility: style.visibility
+            };
+          })()`,
+          true,
+        )) as ReopenedWindowState | null;
+        if (
+          state?.sameInstance &&
+          state.count === 1 &&
+          state.closing !== 'true' &&
+          !state.outlinePresent &&
+          state.animationName === 'none' &&
+          state.transform === 'none' &&
+          state.visibility === 'visible' &&
+          Math.abs(state.bounds.left - expected.left) <= 0.05 &&
+          Math.abs(state.bounds.top - expected.top) <= 0.05 &&
+          Math.abs(state.bounds.width - expected.width) <= 0.05 &&
+          Math.abs(state.bounds.height - expected.height) <= 0.05
+        ) {
+          return;
+        }
+        await pause(10);
+      }
+    } finally {
+      await window.webContents.executeJavaScript('delete window.__macintoshSmokeHeldWindow', true);
+    }
+    throw new Error(
+      `${windowLabel} did not cancel its held close by restoring the same full window: ${JSON.stringify({ expected, state })}.`,
+    );
   };
   const assertPixelCursor = (
     label: string,
@@ -1474,14 +1681,55 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error('The Finder zoom control did not restore its original geometry.');
   }
 
-  const resizeWindow = async (from: SmokePoint, to: SmokePoint): Promise<void> => {
-    await ensureNativeInputFocus('Finder resize');
+  const resizeWindow = async (
+    windowSelector: string,
+    growSelector: string,
+    windowLabel: string,
+    from: SmokePoint,
+    to: SmokePoint,
+    stationaryContentSelector?: string,
+    commit = true,
+  ): Promise<void> => {
+    await ensureNativeInputFocus(`${windowLabel} resize`);
+    const startingGeometry = (await window.webContents.executeJavaScript(
+      `(() => {
+        const target = document.querySelector(${JSON.stringify(windowSelector)});
+        if (!(target instanceof HTMLElement)) return null;
+        const bounds = target.getBoundingClientRect();
+        const contentSelector = ${JSON.stringify(stationaryContentSelector ?? null)};
+        const content = typeof contentSelector === 'string'
+          ? target.querySelector(contentSelector)
+          : null;
+        const contentBounds = content?.getBoundingClientRect();
+        return {
+          left: bounds.left,
+          top: bounds.top,
+          width: bounds.width,
+          height: bounds.height,
+          content: contentBounds ? {
+            left: contentBounds.left,
+            top: contentBounds.top,
+            width: contentBounds.width,
+            height: contentBounds.height
+          } : null
+        };
+      })()`,
+      true,
+    )) as {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+      content: { left: number; top: number; width: number; height: number } | null;
+    } | null;
+    if (!startingGeometry) throw new Error(`${windowLabel} resize could not read its window.`);
+    if (stationaryContentSelector && !startingGeometry.content) {
+      throw new Error(`${windowLabel} resize could not read its stationary content.`);
+    }
     await window.webContents.executeJavaScript(
       `(() => {
         delete window.__macintoshSmokeSystemResizePointerId;
-        const grow = document.querySelector(
-          '[data-finder-window="window-system-disk"] [aria-label="Resize System Disk"]'
-        );
+        const grow = document.querySelector(${JSON.stringify(growSelector)});
         if (!(grow instanceof HTMLElement)) return;
         grow.addEventListener(
           'pointerdown',
@@ -1503,9 +1751,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     for (let attempt = 0; attempt < 10; attempt += 1) {
       captureOwned = (await window.webContents.executeJavaScript(
         `(() => {
-          const grow = document.querySelector(
-            '[data-finder-window="window-system-disk"] [aria-label="Resize System Disk"]'
-          );
+          const grow = document.querySelector(${JSON.stringify(growSelector)});
           const pointerId = window.__macintoshSmokeSystemResizePointerId;
           return grow instanceof HTMLElement &&
             typeof pointerId === 'number' &&
@@ -1523,7 +1769,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         clickCount: 1,
         ...from,
       });
-      throw new Error('The Finder grow box did not acquire native pointer capture.');
+      throw new Error(`${windowLabel} grow box did not acquire native pointer capture.`);
     }
     await pause(24);
     window.webContents.sendInputEvent({
@@ -1541,19 +1787,164 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       ...to,
     });
     await pause(40);
-    window.webContents.sendInputEvent({
-      type: 'mouseUp',
-      button: 'left',
-      clickCount: 1,
-      ...to,
-    });
+    const preview = (await window.webContents.executeJavaScript(
+      `(() => {
+        const target = document.querySelector(${JSON.stringify(windowSelector)});
+        const outline = target?.querySelector('.window-drag-shadow');
+        if (!(target instanceof HTMLElement) || !(outline instanceof HTMLElement)) return null;
+        const frameBounds = target.getBoundingClientRect();
+        const outlineBounds = outline.getBoundingClientRect();
+        const outlineStyle = getComputedStyle(outline);
+        const contentSelector = ${JSON.stringify(stationaryContentSelector ?? null)};
+        const content = typeof contentSelector === 'string'
+          ? target.querySelector(contentSelector)
+          : null;
+        const contentBounds = content?.getBoundingClientRect();
+        return {
+          frame: {
+            left: frameBounds.left,
+            top: frameBounds.top,
+            width: frameBounds.width,
+            height: frameBounds.height
+          },
+          outline: {
+            left: outlineBounds.left,
+            top: outlineBounds.top,
+            width: outlineBounds.width,
+            height: outlineBounds.height
+          },
+          content: contentBounds ? {
+            left: contentBounds.left,
+            top: contentBounds.top,
+            width: contentBounds.width,
+            height: contentBounds.height
+          } : null,
+          outlineColor: outlineStyle.outlineColor,
+          outlineStyle: outlineStyle.outlineStyle,
+          outlineWidth: outlineStyle.outlineWidth,
+          outlineVisible: outlineStyle.display !== 'none',
+          resizing: target.dataset.windowResizing === 'true'
+        };
+      })()`,
+      true,
+    )) as {
+      frame: { left: number; top: number; width: number; height: number };
+      outline: { left: number; top: number; width: number; height: number };
+      content: { left: number; top: number; width: number; height: number } | null;
+      outlineColor: string;
+      outlineStyle: string;
+      outlineWidth: string;
+      outlineVisible: boolean;
+      resizing: boolean;
+    } | null;
+    const expectedWidth = startingGeometry.width + to.x - from.x;
+    const expectedHeight = startingGeometry.height + to.y - from.y;
+    const contentMoved =
+      startingGeometry.content !== null &&
+      (preview === null ||
+        preview.content === null ||
+        Math.abs(preview.content.left - startingGeometry.content.left) > 0.05 ||
+        Math.abs(preview.content.top - startingGeometry.content.top) > 0.05 ||
+        Math.abs(preview.content.width - startingGeometry.content.width) > 0.05 ||
+        Math.abs(preview.content.height - startingGeometry.content.height) > 0.05);
+    if (
+      !preview ||
+      contentMoved ||
+      Math.abs(preview.frame.left - startingGeometry.left) > 0.05 ||
+      Math.abs(preview.frame.top - startingGeometry.top) > 0.05 ||
+      Math.abs(preview.frame.width - startingGeometry.width) > 0.05 ||
+      Math.abs(preview.frame.height - startingGeometry.height) > 0.05 ||
+      Math.abs(preview.outline.left - (startingGeometry.left - 1)) > 1 ||
+      Math.abs(preview.outline.top - (startingGeometry.top - 1)) > 1 ||
+      Math.abs(preview.outline.width - expectedWidth) > 1 ||
+      Math.abs(preview.outline.height - expectedHeight) > 1 ||
+      preview.outlineColor !== 'rgb(255, 255, 255)' ||
+      preview.outlineStyle !== 'solid' ||
+      preview.outlineWidth !== '1px' ||
+      !preview.outlineVisible ||
+      !preview.resizing
+    ) {
+      throw new Error(
+        `${windowLabel} did not keep its rendered frame stationary behind the resize outline: ${JSON.stringify({ startingGeometry, preview, expectedWidth, expectedHeight })}.`,
+      );
+    }
+    if (commit) {
+      window.webContents.sendInputEvent({
+        type: 'mouseUp',
+        button: 'left',
+        clickCount: 1,
+        ...to,
+      });
+    } else {
+      const canceled = (await window.webContents.executeJavaScript(
+        `(() => {
+          const target = document.querySelector(${JSON.stringify(windowSelector)});
+          const grow = document.querySelector(${JSON.stringify(growSelector)});
+          const pointerId = window.__macintoshSmokeSystemResizePointerId;
+          const outline = target?.querySelector('.window-drag-shadow');
+          if (
+            !(target instanceof HTMLElement) ||
+            !(grow instanceof HTMLElement) ||
+            !(outline instanceof HTMLElement) ||
+            typeof pointerId !== 'number'
+          ) return null;
+          grow.dispatchEvent(new PointerEvent('pointercancel', {
+            bubbles: true,
+            button: 0,
+            buttons: 0,
+            isPrimary: true,
+            pointerId,
+            pointerType: 'mouse'
+          }));
+          return {
+            captureOwned: grow.hasPointerCapture(pointerId),
+            outlineVisible: getComputedStyle(outline).display !== 'none',
+            resizing: target.dataset.windowResizing === 'true'
+          };
+        })()`,
+        true,
+      )) as { captureOwned: boolean; outlineVisible: boolean; resizing: boolean } | null;
+      if (!canceled || canceled.captureOwned || canceled.outlineVisible || canceled.resizing) {
+        throw new Error(
+          `${windowLabel} resize cancellation did not clear immediately: ${JSON.stringify(canceled)}.`,
+        );
+      }
+      window.webContents.sendInputEvent({
+        type: 'mouseUp',
+        button: 'left',
+        clickCount: 1,
+        ...to,
+      });
+    }
     await pause(60);
+    const previewCleared = await window.webContents.executeJavaScript(
+      `(() => {
+        const target = document.querySelector(${JSON.stringify(windowSelector)});
+        const outline = target?.querySelector('.window-drag-shadow');
+        return target instanceof HTMLElement &&
+          outline instanceof HTMLElement &&
+          target.dataset.windowResizing === undefined &&
+          getComputedStyle(outline).display === 'none';
+      })()`,
+      true,
+    );
+    if (!previewCleared) {
+      throw new Error(
+        `${windowLabel} resize outline did not clear on ${commit ? 'release' : 'cancellation'}.`,
+      );
+    }
   };
   const resizeDelta = { x: 24, y: 16 };
-  await resizeWindow(restoredWindow.grow, {
-    x: restoredWindow.grow.x + resizeDelta.x,
-    y: restoredWindow.grow.y + resizeDelta.y,
-  });
+  await resizeWindow(
+    '[data-finder-window="window-system-disk"]',
+    '[data-finder-window="window-system-disk"] [aria-label="Resize System Disk"]',
+    'Finder',
+    restoredWindow.grow,
+    {
+      x: restoredWindow.grow.x + resizeDelta.x,
+      y: restoredWindow.grow.y + resizeDelta.y,
+    },
+  );
   const resizedWindow = await waitForSystemWindowSize(
     originalWindow.width + resizeDelta.x,
     originalWindow.height + resizeDelta.y,
@@ -1565,10 +1956,16 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   ) {
     throw new Error('The Finder grow box did not resize from the pixel-cursor hotspot.');
   }
-  await resizeWindow(resizedWindow.grow, {
-    x: resizedWindow.grow.x - resizeDelta.x,
-    y: resizedWindow.grow.y - resizeDelta.y,
-  });
+  await resizeWindow(
+    '[data-finder-window="window-system-disk"]',
+    '[data-finder-window="window-system-disk"] [aria-label="Resize System Disk"]',
+    'Finder',
+    resizedWindow.grow,
+    {
+      x: resizedWindow.grow.x - resizeDelta.x,
+      y: resizedWindow.grow.y - resizeDelta.y,
+    },
+  );
   const resizeRestoredWindow = await waitForSystemWindowSize(
     originalWindow.width,
     originalWindow.height,
@@ -1579,6 +1976,26 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     Math.abs(resizeRestoredWindow.height - originalWindow.height) > 1
   ) {
     throw new Error('The Finder grow box did not restore its original geometry.');
+  }
+  await resizeWindow(
+    '[data-finder-window="window-system-disk"]',
+    '[data-finder-window="window-system-disk"] [aria-label="Resize System Disk"]',
+    'Finder canceled',
+    resizeRestoredWindow.grow,
+    {
+      x: resizeRestoredWindow.grow.x + 20,
+      y: resizeRestoredWindow.grow.y + 12,
+    },
+    undefined,
+    false,
+  );
+  const resizeAfterCancellation = await readSystemWindowGeometry();
+  if (
+    !resizeAfterCancellation ||
+    Math.abs(resizeAfterCancellation.width - originalWindow.width) > 1 ||
+    Math.abs(resizeAfterCancellation.height - originalWindow.height) > 1
+  ) {
+    throw new Error('The Finder resize cancellation changed committed window geometry.');
   }
 
   const initialVfsCount = (await window.webContents.executeJavaScript(
@@ -2201,6 +2618,27 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!desktopDocumentSaved) throw new Error('Write did not explicitly save the rich document.');
+  const heldDesktopDocumentClose = await observeWindowAnimation(
+    '[data-write-title="Dropped Note.txt"]',
+    'closing',
+    () => {
+      window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'W', modifiers: ['meta'] });
+      window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'W', modifiers: ['meta'] });
+    },
+    true,
+  );
+  assertWindowAnimationOutline(heldDesktopDocumentClose, 'Held Write closing animation');
+  await assertHeldCloseReopened(
+    '[data-write-title="Dropped Note.txt"]',
+    'Dropped Note Write window',
+    heldDesktopDocumentClose!,
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[data-desktop-vfs-item][aria-label="Dropped Note.txt"]')
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
+  );
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'W', modifiers: ['meta'] });
   window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'W', modifiers: ['meta'] });
   await pause(60);
@@ -2230,8 +2668,27 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
 
+  const desktopFolderAnimationSource = (await window.webContents.executeJavaScript(
+    `(() => {
+      const source = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Drop Folder"]'
+      );
+      const surface = document.querySelector('.desktop-surface');
+      if (!(source instanceof HTMLElement) || !(surface instanceof HTMLElement)) return null;
+      const bounds = source.getBoundingClientRect();
+      const surfaceBounds = surface.getBoundingClientRect();
+      return {
+        x: Math.round(bounds.left + bounds.width / 2 - surfaceBounds.left),
+        y: Math.round(bounds.top + bounds.height / 2 - surfaceBounds.top)
+      };
+    })()`,
+    true,
+  )) as SmokePoint | null;
+  if (!desktopFolderAnimationSource) {
+    throw new Error('The Desktop folder animation source could not be located.');
+  }
   const desktopFolderOpenAnimation = await observeWindowAnimation(
-    'Drop Folder window',
+    '[aria-label="Drop Folder window"]',
     'opening',
     () =>
       window.webContents.executeJavaScript(
@@ -2242,15 +2699,23 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   if (
     desktopFolderOpenAnimation?.phase !== 'opening' ||
-    desktopFolderOpenAnimation.animationName !== 'finder-window-open' ||
-    (desktopFolderOpenAnimation.offsetX === '0px' && desktopFolderOpenAnimation.offsetY === '0px')
+    desktopFolderOpenAnimation.shadowAnimationName !== 'finder-window-open'
   ) {
     throw new Error(
-      `Desktop folder opening did not scale from its icon: ${JSON.stringify(desktopFolderOpenAnimation)}.`,
+      `Desktop folder opening outline did not begin at its icon: ${JSON.stringify(desktopFolderOpenAnimation)}.`,
     );
   }
-  assertWindowAnimationShadow(desktopFolderOpenAnimation, 'Desktop folder opening animation');
-  await waitForFinderWindowSettled('Drop Folder window', desktopFolderOpenAnimation.windowId);
+  assertWindowAnimationOutline(desktopFolderOpenAnimation, 'Desktop folder opening animation');
+  assertWindowAnimationSource(
+    desktopFolderOpenAnimation,
+    desktopFolderAnimationSource,
+    'Desktop folder opening outline',
+  );
+  await waitForWindowSettled(
+    '[aria-label="Drop Folder window"]',
+    'Drop Folder window',
+    desktopFolderOpenAnimation.windowId,
+  );
   const desktopFolderOpened = await window.webContents.executeJavaScript(
     `document.querySelector('[aria-label="Drop Folder window"] [data-vfs-item]')
       ?.textContent?.includes('Nested Note.txt') === true`,
@@ -2258,8 +2723,35 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   if (!desktopFolderOpened)
     throw new Error('The imported Desktop folder did not open its hierarchy.');
-  const desktopFolderCloseAnimation = await observeWindowAnimation(
+  const heldDesktopFolderClose = await observeWindowAnimation(
+    '[aria-label="Drop Folder window"]',
+    'closing',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Close Drop Folder"]')?.click()`,
+        true,
+      ),
+    true,
+  );
+  assertWindowAnimationOutline(heldDesktopFolderClose, 'Held Finder closing animation');
+  assertWindowAnimationSource(
+    heldDesktopFolderClose,
+    desktopFolderAnimationSource,
+    'Held Finder closing outline',
+  );
+  await assertHeldCloseReopened(
+    '[aria-label="Drop Folder window"]',
     'Drop Folder window',
+    heldDesktopFolderClose!,
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector('[data-desktop-vfs-item][aria-label="Drop Folder"]')
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
+  );
+  const desktopFolderCloseAnimation = await observeWindowAnimation(
+    '[aria-label="Drop Folder window"]',
     'closing',
     () =>
       window.webContents.executeJavaScript(
@@ -2269,15 +2761,23 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   if (
     desktopFolderCloseAnimation?.phase !== 'closing' ||
-    desktopFolderCloseAnimation.animationName !== 'finder-window-close' ||
-    (desktopFolderCloseAnimation.offsetX === '0px' && desktopFolderCloseAnimation.offsetY === '0px')
+    desktopFolderCloseAnimation.shadowAnimationName !== 'finder-window-close'
   ) {
     throw new Error(
-      `Desktop folder closing did not scale to its icon: ${JSON.stringify(desktopFolderCloseAnimation)}.`,
+      `Desktop folder closing outline did not finish at its icon: ${JSON.stringify(desktopFolderCloseAnimation)}.`,
     );
   }
-  assertWindowAnimationShadow(desktopFolderCloseAnimation, 'Desktop folder closing animation');
-  await waitForFinderWindowAbsence('Drop Folder window', desktopFolderCloseAnimation.windowId);
+  assertWindowAnimationOutline(desktopFolderCloseAnimation, 'Desktop folder closing animation');
+  assertWindowAnimationSource(
+    desktopFolderCloseAnimation,
+    desktopFolderAnimationSource,
+    'Desktop folder closing outline',
+  );
+  await waitForWindowAbsence(
+    '[aria-label="Drop Folder window"]',
+    'Drop Folder window',
+    desktopFolderCloseAnimation.windowId,
+  );
 
   const systemDiskDropPoint = (await window.webContents.executeJavaScript(
     `(() => {
@@ -3007,19 +3507,45 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   if (!applicationsOpened) throw new Error('Smoke test could not open Applications.');
   await pause(80);
 
-  const writeApplicationOpened = await window.webContents.executeJavaScript(
+  const writeApplicationSource = (await window.webContents.executeJavaScript(
     `(() => {
       const write = document.querySelector(
         '[data-finder-window="window-applications"] [data-vfs-item="write"]'
       );
-      if (!(write instanceof HTMLElement)) return false;
-      write.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
-      return true;
+      const surface = document.querySelector('.desktop-surface');
+      if (!(write instanceof HTMLElement) || !(surface instanceof HTMLElement)) return null;
+      const bounds = write.getBoundingClientRect();
+      const surfaceBounds = surface.getBoundingClientRect();
+      return {
+        x: Math.round(bounds.left + bounds.width / 2 - surfaceBounds.left),
+        y: Math.round(bounds.top + bounds.height / 2 - surfaceBounds.top)
+      };
     })()`,
     true,
+  )) as SmokePoint | null;
+  if (!writeApplicationSource) throw new Error('The Write application icon could not be located.');
+  const writeApplicationOpenAnimation = await observeWindowAnimation(
+    '[data-write-title="Untitled"]',
+    'opening',
+    () =>
+      window.webContents.executeJavaScript(
+        `document.querySelector(
+          '[data-finder-window="window-applications"] [data-vfs-item="write"]'
+        )?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }))`,
+        true,
+      ),
   );
-  if (!writeApplicationOpened) throw new Error('The Write application icon could not be opened.');
-  await pause(100);
+  assertWindowAnimationOutline(writeApplicationOpenAnimation, 'Write opening animation');
+  assertWindowAnimationSource(
+    writeApplicationOpenAnimation,
+    writeApplicationSource,
+    'Write opening outline',
+  );
+  await waitForWindowSettled(
+    '[data-write-title="Untitled"]',
+    'Untitled Write window',
+    writeApplicationOpenAnimation!.windowId,
+  );
   const untitledWrite = (await window.webContents.executeJavaScript(
     `(() => {
       const write = document.querySelector('[data-write-title="Untitled"]');
@@ -3070,6 +3596,76 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   if (automaticPagination.pageCount < 2 || automaticPagination.gaps < 1) {
     throw new Error(
       `Write did not project a long paragraph across automatic pages: ${JSON.stringify(automaticPagination)}.`,
+    );
+  }
+  const readWriteResizeGeometry = async (): Promise<{
+    width: number;
+    height: number;
+    grow: SmokePoint;
+  } | null> =>
+    window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector('[data-write-title="Untitled"]');
+        const grow = write?.querySelector('[aria-label="Resize Untitled"]');
+        if (!(write instanceof HTMLElement) || !(grow instanceof HTMLElement)) return null;
+        const frameBounds = write.getBoundingClientRect();
+        const growBounds = grow.getBoundingClientRect();
+        return {
+          width: frameBounds.width,
+          height: frameBounds.height,
+          grow: {
+            x: Math.round(growBounds.left + growBounds.width / 2),
+            y: Math.round(growBounds.top + growBounds.height / 2)
+          }
+        };
+      })()`,
+      true,
+    ) as Promise<{ width: number; height: number; grow: SmokePoint } | null>;
+  const writeResizeStart = await readWriteResizeGeometry();
+  if (!writeResizeStart) throw new Error('The multi-page Write grow box was unavailable.');
+  const writeResizeDelta = { x: -32, y: -24 };
+  await resizeWindow(
+    '[data-write-title="Untitled"]',
+    '[data-write-title="Untitled"] [aria-label="Resize Untitled"]',
+    'Write',
+    writeResizeStart.grow,
+    {
+      x: writeResizeStart.grow.x + writeResizeDelta.x,
+      y: writeResizeStart.grow.y + writeResizeDelta.y,
+    },
+    '.write-document-viewport',
+  );
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write resize layout');
+  const writeResized = await readWriteResizeGeometry();
+  if (
+    !writeResized ||
+    Math.abs(writeResized.width - (writeResizeStart.width + writeResizeDelta.x)) > 1 ||
+    Math.abs(writeResized.height - (writeResizeStart.height + writeResizeDelta.y)) > 1
+  ) {
+    throw new Error(
+      `Write did not commit its outline resize once on release: ${JSON.stringify({ writeResizeStart, writeResized })}.`,
+    );
+  }
+  await resizeWindow(
+    '[data-write-title="Untitled"]',
+    '[data-write-title="Untitled"] [aria-label="Resize Untitled"]',
+    'Write',
+    writeResized.grow,
+    {
+      x: writeResized.grow.x - writeResizeDelta.x,
+      y: writeResized.grow.y - writeResizeDelta.y,
+    },
+    '.write-document-viewport',
+  );
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write restored resize layout');
+  const writeResizeRestored = await readWriteResizeGeometry();
+  if (
+    !writeResizeRestored ||
+    Math.abs(writeResizeRestored.width - writeResizeStart.width) > 1 ||
+    Math.abs(writeResizeRestored.height - writeResizeStart.height) > 1
+  ) {
+    throw new Error(
+      `Write did not restore its original geometry after the outline resize probe: ${JSON.stringify({ writeResizeStart, writeResizeRestored })}.`,
     );
   }
   await invokeRendererMenuAction('edit', 'select-all');
@@ -4198,20 +4794,23 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!secondWritePrompt) throw new Error('The second dirty Write window did not request review.');
-  const secondWriteDiscarded = await window.webContents.executeJavaScript(
-    `(() => {
-      const dialog = document.querySelector('[aria-label="Save Changes"]');
-      const discard = [...(dialog?.querySelectorAll('button') ?? [])]
-        .find((button) => button.textContent?.trim() === 'Don’t Save');
-      if (!(discard instanceof HTMLButtonElement)) return false;
-      discard.click();
-      return true;
-    })()`,
-    true,
+  const secondWriteCloseAnimation = await observeWindowAnimation(
+    '[data-write-title="Untitled"]',
+    'closing',
+    () =>
+      window.webContents.executeJavaScript(
+        `(() => {
+          const dialog = document.querySelector('[aria-label="Save Changes"]');
+          const discard = [...(dialog?.querySelectorAll('button') ?? [])]
+            .find((button) => button.textContent?.trim() === 'Don’t Save');
+          if (!(discard instanceof HTMLButtonElement)) return false;
+          discard.click();
+          return true;
+        })()`,
+        true,
+      ),
   );
-  if (!secondWriteDiscarded) {
-    throw new Error('The second Write review did not expose Don’t Save.');
-  }
+  assertWindowAnimationOutline(secondWriteCloseAnimation, 'Write closing animation');
   const closingWriteShortcuts: {
     keyCode: string;
     modifiers: ('meta' | 'shift')[];
@@ -6692,6 +7291,56 @@ const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
     throw new Error('Normal-quit probe could not start the dirty discard-close race.');
   }
   await pause(25);
+  await window.webContents.executeJavaScript(
+    `(() => {
+      window.__macintoshSmokeDiscardCloseAnimation = new Promise((resolve) => {
+        const surface = document.querySelector('.desktop-surface');
+        if (!(surface instanceof HTMLElement)) {
+          resolve(null);
+          return;
+        }
+        const observer = new MutationObserver(() => {
+          const write = document.querySelector('[data-write-title="Untitled"]');
+          const windowId = write?.getAttribute('data-write-window');
+          const outline = windowId
+            ? document.querySelector('[data-window-animation-shadow="' + windowId + '"]')
+            : null;
+          if (
+            !(write instanceof HTMLElement) ||
+            !(outline instanceof HTMLElement) ||
+            write.getAttribute('data-closing') !== 'true'
+          ) return;
+          const animation = outline.getAnimations().find(
+            (candidate) => candidate.animationName === 'finder-window-close'
+          );
+          if (!animation) return;
+          observer.disconnect();
+          animation.pause();
+          const frameStyle = getComputedStyle(write);
+          const outlineStyle = getComputedStyle(outline);
+          resolve({
+            frameAnimation: frameStyle.animationName,
+            frameTransform: frameStyle.transform,
+            frameVisibility: frameStyle.visibility,
+            outlineAnimation: outlineStyle.animationName,
+            outlinePointerEvents: outlineStyle.pointerEvents,
+            paused: animation.playState === 'paused'
+          });
+        });
+        observer.observe(surface, {
+          attributes: true,
+          attributeFilter: ['class', 'data-closing'],
+          childList: true,
+          subtree: true
+        });
+        setTimeout(() => {
+          observer.disconnect();
+          resolve(null);
+        }, 300);
+      });
+    })()`,
+    true,
+  );
   const discardConfirmed = await window.webContents.executeJavaScript(
     `(() => {
       const dialog = document.querySelector('[aria-label="Save Changes"]');
@@ -6706,13 +7355,28 @@ const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
   if (!discardConfirmed) {
     throw new Error('Normal-quit probe could not authorize the dirty discard close.');
   }
-  await pause(20);
-  const discardAnimationActive = await window.webContents.executeJavaScript(
-    `document.querySelector('[data-write-title="Untitled"]')?.getAttribute('data-closing') === 'true'`,
+  const discardAnimationActive = (await window.webContents.executeJavaScript(
+    'window.__macintoshSmokeDiscardCloseAnimation',
     true,
-  );
-  if (!discardAnimationActive) {
-    throw new Error('The dirty Write discard-close animation did not begin before native Quit.');
+  )) as {
+    frameAnimation: string;
+    frameTransform: string;
+    frameVisibility: string;
+    outlineAnimation: string;
+    outlinePointerEvents: string;
+    paused: boolean;
+  } | null;
+  if (
+    !discardAnimationActive?.paused ||
+    discardAnimationActive.frameAnimation !== 'none' ||
+    discardAnimationActive.frameTransform !== 'none' ||
+    discardAnimationActive.frameVisibility !== 'hidden' ||
+    discardAnimationActive.outlineAnimation !== 'finder-window-close' ||
+    discardAnimationActive.outlinePointerEvents !== 'none'
+  ) {
+    throw new Error(
+      `The dirty Write outline close did not begin before native Quit: ${JSON.stringify(discardAnimationActive)}.`,
+    );
   }
   window.close();
   await pause(80);
@@ -7329,21 +7993,50 @@ const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
     `(() => {
       const finder = document.querySelector('[data-finder-window="window-applications"]');
       const grow = finder?.querySelector('[aria-label="Resize Applications"]');
+      const outline = finder?.querySelector('.window-drag-shadow');
       const pointerId = window.__macintoshSmokeNormalQuitResizePointerId;
-      if (!(finder instanceof HTMLElement) || !(grow instanceof HTMLElement)) return null;
+      if (
+        !(finder instanceof HTMLElement) ||
+        !(grow instanceof HTMLElement) ||
+        !(outline instanceof HTMLElement)
+      ) return null;
+      const frameBounds = finder.getBoundingClientRect();
+      const outlineBounds = outline.getBoundingClientRect();
       return {
         width: Number.parseFloat(finder.style.width),
         height: Number.parseFloat(finder.style.height),
+        renderedWidth: frameBounds.width,
+        renderedHeight: frameBounds.height,
+        outlineWidth: outlineBounds.width,
+        outlineHeight: outlineBounds.height,
+        outlineVisible: getComputedStyle(outline).display !== 'none',
+        resizing: finder.dataset.windowResizing === 'true',
         captureOwned: typeof pointerId === 'number' && grow.hasPointerCapture(pointerId)
       };
     })()`,
     true,
-  )) as { width: number; height: number; captureOwned: boolean } | null;
+  )) as {
+    width: number;
+    height: number;
+    renderedWidth: number;
+    renderedHeight: number;
+    outlineWidth: number;
+    outlineHeight: number;
+    outlineVisible: boolean;
+    resizing: boolean;
+    captureOwned: boolean;
+  } | null;
   const quitDelay = Date.now() - mutationCommittedAt;
   if (
     !provisionalResizeState?.captureOwned ||
-    provisionalResizeState.width <= provisionalResize.expectedCommitted.width ||
-    provisionalResizeState.height <= provisionalResize.expectedCommitted.height ||
+    !provisionalResizeState.resizing ||
+    !provisionalResizeState.outlineVisible ||
+    provisionalResizeState.width !== provisionalResize.expectedCommitted.width ||
+    provisionalResizeState.height !== provisionalResize.expectedCommitted.height ||
+    provisionalResizeState.renderedWidth !== provisionalResize.expectedCommitted.width ||
+    provisionalResizeState.renderedHeight !== provisionalResize.expectedCommitted.height ||
+    provisionalResizeState.outlineWidth <= provisionalResize.expectedCommitted.width ||
+    provisionalResizeState.outlineHeight <= provisionalResize.expectedCommitted.height ||
     quitDelay >= 200
   ) {
     throw new Error(

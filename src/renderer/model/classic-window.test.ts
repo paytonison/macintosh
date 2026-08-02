@@ -5,7 +5,8 @@ import {
   committedWindowGeometry,
   previewWindowMove,
   previewWindowResize,
-  windowAnimationOffset,
+  windowAnimationGeometryFrames,
+  windowAnimationStartGeometry,
 } from './classic-window';
 
 const original: WindowGeometry = { x: 80, y: 64, width: 420, height: 300 };
@@ -79,6 +80,17 @@ describe('classic window geometry', () => {
         minHeight: 360,
       }),
     ).toEqual({ ...writeWindow, width: 580, height: 460 });
+
+    const partiallyOffscreen = { x: 760, y: 580, width: 300, height: 220 };
+    expect(
+      previewWindowResize(
+        partiallyOffscreen,
+        { x: 1_060, y: 800 },
+        { x: 0, y: 0 },
+        surface,
+        constraints,
+      ),
+    ).toEqual(partiallyOffscreen);
   });
 
   it('keeps preview geometry out of committed state until a changed drag is released', () => {
@@ -90,7 +102,22 @@ describe('classic window geometry', () => {
     expect(committedWindowGeometry(original, preview, true, true)).toEqual(preview);
   });
 
-  it('computes a centered stepped-animation translation from desktop coordinates', () => {
-    expect(windowAnimationOffset(original, { x: 92, y: 78 })).toEqual({ x: -198, y: -136 });
+  it('computes a small integer animation frame centered on the source point', () => {
+    expect(windowAnimationStartGeometry(original, { x: 92, y: 78 })).toEqual({
+      x: 67,
+      y: 60,
+      width: 50,
+      height: 36,
+    });
+
+    const frames = windowAnimationGeometryFrames(original, { x: 92, y: 78 });
+    expect(frames).toHaveLength(7);
+    expect(frames[0]).toEqual({ x: 67, y: 60, width: 50, height: 36 });
+    expect(frames.at(-1)).toEqual(original);
+    expect(
+      frames.every((frame) =>
+        Object.values(frame).every((coordinate) => Number.isInteger(coordinate)),
+      ),
+    ).toBe(true);
   });
 });
