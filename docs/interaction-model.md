@@ -165,11 +165,11 @@ Write is the built-in page-oriented WYSIWYG word processor. Its original code-dr
   owns Write menus, while its active document editor owns Write keyboard input unless Calculator is
   the active target.
 - Write window geometry, zoom, selection, undo history, page projection, and open-window state are session-local. They are not restored after relaunch.
-- Write uses the same stationary-outline move session, bounded local resize preview, zoom-box and
+- Write uses the same stationary-outline move and resize sessions, zoom-box and
   title-bar-double-click action, inactive-control activation rule, and stepped opening or closing
-  frame treatment as Finder. Reopening a saved document during its closing animation cancels the
-  close and raises the existing window. With no visible source icon, an animation originates from
-  the final frame center.
+  outline treatment as Finder, including the artwork-centered nearest-corner origin, mirrored close
+  toward the currently visible source, and centered fallback when no source is visible. Reopening a
+  saved document during its closing animation cancels the close and raises the existing window.
 
 ### Page model
 
@@ -231,13 +231,18 @@ There is at most one Finder window for a given virtual filesystem node. The wind
 
 Disk, folder, and Trash windows list their children. Documents and applications never create Finder windows.
 
-Creating a Finder window uses a short stepped scale from the opening icon to the final
-window frame. The same transparent outline and hard pixel shadow used for Finder window-move
-previews follow the scaling frame. Commands without a visible source scale from the final frame's
+Creating a Finder window uses a short stepped black-and-white frame outline from the opening icon
+to the final window bounds. Its source is the center of the actual pixel-art artwork SVG, excluding
+the surrounding icon tile, label, whitespace, or name-view row. The final window corner nearest
+that center begins there, and the outline expands toward its committed rectangle. The rendered
+window remains hidden until the outline, including its minimal title-bar detail and hard pixel
+shadow, reaches those bounds. Commands without a visible source begin from the final frame's
 center. Bringing an existing window to the front does not replay the effect, and opening animation
-state is transient. Closing reverses that scale toward the node's currently visible icon, or toward
-the window center when no source icon is rendered. The window leaves the Finder stack only after
-the close animation finishes; reopening it during that transition cancels the pending close.
+state is transient. Closing hides the rendered window and mirrors the outline back through the same
+nearest corner toward the node's currently visible artwork center, or toward the window center when
+no fully visible, unobscured source artwork is available. The window leaves the Finder stack only
+after the close animation finishes; reopening it during that transition removes the outline,
+reveals the existing window, and cancels the pending close.
 
 ### Moving
 
@@ -255,7 +260,13 @@ A press and release without movement activates the window but does not create a 
 
 ### Resizing
 
-Resize begins from the grow box. Width and height update from the original geometry, respect minimum dimensions, and remain bounded by the desktop. Releasing or cancelling the pointer ends the resize session cleanly.
+Resize begins from the grow box. The rendered window remains at its committed geometry while the
+same black-and-white frame outline previews width and height from the original rectangle, respects
+minimum dimensions, and remains bounded by the desktop whenever the committed upper-left corner
+leaves enough room. The component minimum takes priority for a window already positioned partly
+offscreen, matching the recoverable move policy. Releasing the pointer commits the final previewed
+geometry once. Cancelling the pointer discards the preview, and either conclusion removes the
+outline and ends the resize session cleanly.
 
 ### Zooming
 

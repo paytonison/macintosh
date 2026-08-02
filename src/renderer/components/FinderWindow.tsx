@@ -44,7 +44,6 @@ interface FinderWindowProps {
   stackIndex: number;
   animation?: FinderWindowAnimation;
   onActivate: (id: string) => void;
-  onAnimationComplete: (id: string, phase: FinderWindowAnimation['phase'], token: number) => void;
   onClose: (id: string) => void;
   onGeometry: (id: string, geometry: WindowGeometry) => void;
   onZoom: (id: string) => void;
@@ -59,6 +58,7 @@ interface FinderWindowProps {
 
 interface FinderWindowAnimationShadowProps {
   animation: FinderWindowAnimation;
+  onAnimationComplete: (id: string, phase: FinderWindowAnimation['phase'], token: number) => void;
   stackIndex: number;
   windowState: FinderWindowState;
 }
@@ -75,6 +75,7 @@ interface ItemDragSession {
 
 export function FinderWindowAnimationShadow({
   animation,
+  onAnimationComplete,
   stackIndex,
   windowState,
 }: FinderWindowAnimationShadowProps) {
@@ -82,6 +83,7 @@ export function FinderWindowAnimationShadow({
     <ClassicWindowAnimationShadow
       animation={animation}
       geometry={windowState}
+      onAnimationComplete={onAnimationComplete}
       windowId={windowState.id}
       zIndex={300 + stackIndex}
     />
@@ -99,7 +101,6 @@ export function FinderWindow({
   stackIndex,
   animation,
   onActivate,
-  onAnimationComplete,
   onClose,
   onGeometry,
   onZoom,
@@ -326,7 +327,6 @@ export function FinderWindow({
       minimumHeight={220}
       minimumWidth={300}
       onActivate={onActivate}
-      onAnimationComplete={onAnimationComplete}
       onClose={onClose}
       onGeometry={onGeometry}
       onInteractionChange={onInteractionChange}

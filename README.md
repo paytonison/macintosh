@@ -20,7 +20,9 @@ compact-computer icon.
 - An original monochrome startup sequence and an application-owned Finder-style menu bar.
 - A persistent System Disk, Trash, hidden Desktop root, and ordinary desktop files and folders.
 - Finder windows with active and inactive states, title-bar movement, resizing, zooming, custom
-  scrollbars, and stepped opening and closing animations.
+  scrollbars, and stepped outline opening and closing transitions. Finder and Write outlines emerge
+  from the actual pixel-art glyph center through the nearest final window corner and close back to
+  the currently visible glyph; transitions without a visible source retain the centered fallback.
 - Icon and name views. Icon view supports free, per-pixel placement inside Finder windows; name view
   remains sorted and restores saved icon positions when icon view returns.
 - Click, Shift-click, marquee, and multi-item selection across the desktop and the active Finder
@@ -110,7 +112,8 @@ milestones in [ROADMAP.md](ROADMAP.md).
 - Drag selected files and folders onto folders, open Finder windows, the desktop, System Disk, or
   Trash. A bare drop within the same icon view changes only the saved icon layout.
 - Drag Finder or Write title bars to move them with an outline preview, use the lower-right grow box
-  to resize them, and use the zoom box or title-bar double-click to toggle window zoom.
+  to preview a resize with the same stationary-window outline, and use the zoom box or title-bar
+  double-click to toggle window zoom.
 - Use the System, File, Edit, View, and Special menus for Finder commands. An active Write window
   replaces them with System, File, Edit, Format, Font, Size, and View.
 - Open Calculator from the System menu. It receives ordinary keyboard input while preserving the

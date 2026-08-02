@@ -335,27 +335,22 @@ html.is-normal-quit-pending .macintosh,
 .finder-window.is-closing {
   box-shadow: none;
   pointer-events: none;
-  will-change: transform;
+  visibility: hidden;
 }
 
 .window-animation-shadow {
   position: absolute;
   pointer-events: none;
-  will-change: transform;
 }
 
-.finder-window.is-opening,
 .window-animation-shadow.is-opening {
-  animation: finder-window-open 180ms steps(6, end) both;
+  animation: finder-window-open 180ms step-end both;
 }
 
-.finder-window.is-closing,
 .window-animation-shadow.is-closing {
-  animation: finder-window-close 180ms steps(6, end) both;
+  animation: finder-window-close 180ms step-end both;
 }
 
-.macintosh.is-automation .finder-window.is-opening,
-.macintosh.is-automation .finder-window.is-closing,
 .macintosh.is-automation .window-animation-shadow {
   animation-duration: 20ms;
 }
@@ -363,12 +358,10 @@ html.is-normal-quit-pending .macintosh,
 .window-animation-shadow,
 .window-drag-shadow {
   border: 1px solid #000;
-  outline: 1px dotted #000;
-  outline-offset: 1px;
+  outline: 1px solid #fff;
   background: transparent;
   box-shadow: 3px 3px 0 #000;
   pointer-events: none;
-  will-change: transform;
 }
 
 .window-drag-shadow {
@@ -376,6 +369,7 @@ html.is-normal-quit-pending .macintosh,
   z-index: 100;
   inset: -1px;
   display: none;
+  will-change: transform;
 }
 
 .window-animation-shadow::before,
@@ -407,7 +401,8 @@ html.is-normal-quit-pending .macintosh,
   content: '';
 }
 
-.finder-window.is-shadow-dragging .window-drag-shadow {
+.finder-window.is-shadow-dragging .window-drag-shadow,
+.finder-window.is-shadow-resizing .window-drag-shadow {
   display: block;
 }
 
@@ -1619,30 +1614,92 @@ html.is-item-dragging *,
 }
 
 @keyframes finder-window-open {
-  from {
-    transform: translate3d(
-        var(--window-animation-offset-x, 0),
-        var(--window-animation-offset-y, 0),
-        0
-      )
-      scale(0.12);
+  0% {
+    top: var(--window-animation-frame-0-y);
+    left: var(--window-animation-frame-0-x);
+    width: var(--window-animation-frame-0-width);
+    height: var(--window-animation-frame-0-height);
   }
-  to {
-    transform: translate3d(0, 0, 0) scale(1);
+  16.6667% {
+    top: var(--window-animation-frame-1-y);
+    left: var(--window-animation-frame-1-x);
+    width: var(--window-animation-frame-1-width);
+    height: var(--window-animation-frame-1-height);
+  }
+  33.3333% {
+    top: var(--window-animation-frame-2-y);
+    left: var(--window-animation-frame-2-x);
+    width: var(--window-animation-frame-2-width);
+    height: var(--window-animation-frame-2-height);
+  }
+  50% {
+    top: var(--window-animation-frame-3-y);
+    left: var(--window-animation-frame-3-x);
+    width: var(--window-animation-frame-3-width);
+    height: var(--window-animation-frame-3-height);
+  }
+  66.6667% {
+    top: var(--window-animation-frame-4-y);
+    left: var(--window-animation-frame-4-x);
+    width: var(--window-animation-frame-4-width);
+    height: var(--window-animation-frame-4-height);
+  }
+  83.3333% {
+    top: var(--window-animation-frame-5-y);
+    left: var(--window-animation-frame-5-x);
+    width: var(--window-animation-frame-5-width);
+    height: var(--window-animation-frame-5-height);
+  }
+  100% {
+    top: var(--window-animation-frame-6-y);
+    left: var(--window-animation-frame-6-x);
+    width: var(--window-animation-frame-6-width);
+    height: var(--window-animation-frame-6-height);
   }
 }
 
 @keyframes finder-window-close {
-  from {
-    transform: translate3d(0, 0, 0) scale(1);
+  0% {
+    top: var(--window-animation-frame-6-y);
+    left: var(--window-animation-frame-6-x);
+    width: var(--window-animation-frame-6-width);
+    height: var(--window-animation-frame-6-height);
   }
-  to {
-    transform: translate3d(
-        var(--window-animation-offset-x, 0),
-        var(--window-animation-offset-y, 0),
-        0
-      )
-      scale(0.12);
+  16.6667% {
+    top: var(--window-animation-frame-5-y);
+    left: var(--window-animation-frame-5-x);
+    width: var(--window-animation-frame-5-width);
+    height: var(--window-animation-frame-5-height);
+  }
+  33.3333% {
+    top: var(--window-animation-frame-4-y);
+    left: var(--window-animation-frame-4-x);
+    width: var(--window-animation-frame-4-width);
+    height: var(--window-animation-frame-4-height);
+  }
+  50% {
+    top: var(--window-animation-frame-3-y);
+    left: var(--window-animation-frame-3-x);
+    width: var(--window-animation-frame-3-width);
+    height: var(--window-animation-frame-3-height);
+  }
+  66.6667% {
+    top: var(--window-animation-frame-2-y);
+    left: var(--window-animation-frame-2-x);
+    width: var(--window-animation-frame-2-width);
+    height: var(--window-animation-frame-2-height);
+  }
+  83.3333% {
+    top: var(--window-animation-frame-1-y);
+    left: var(--window-animation-frame-1-x);
+    width: var(--window-animation-frame-1-width);
+    height: var(--window-animation-frame-1-height);
+  }
+  100% {
+    top: var(--window-animation-frame-0-y);
+    left: var(--window-animation-frame-0-x);
+    width: var(--window-animation-frame-0-width);
+    height: var(--window-animation-frame-0-height);
   }
 }
 
@@ -1703,8 +1760,6 @@ html.is-item-dragging *,
 
   .startup-progress-fill,
   .startup-scanline,
-  .finder-window.is-opening,
-  .finder-window.is-closing,
   .window-animation-shadow,
   .selection-marquee,
   .desktop-icon.is-drop-target .desktop-icon-glyph,

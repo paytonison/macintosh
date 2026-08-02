@@ -32,6 +32,7 @@ export type WriteWindowAnimation = ClassicWindowAnimation;
 
 interface WriteWindowAnimationShadowProps {
   animation: WriteWindowAnimation;
+  onAnimationComplete: (id: string, phase: WriteWindowAnimation['phase'], token: number) => void;
   stackIndex: number;
   windowState: WriteWindowState;
 }
@@ -46,7 +47,6 @@ interface WriteWindowProps {
   layoutError: string | null;
   interactionCancelToken: number;
   onActivate: (id: string) => void;
-  onAnimationComplete?: (id: string, phase: WriteWindowAnimation['phase'], token: number) => void;
   onClose: (id: string) => void;
   onDraftChange: (id: string, payload: DocumentPayload) => void;
   onEditorContext: (id: string, context: WriteEditorContext) => void;
@@ -60,6 +60,7 @@ interface WriteWindowProps {
 
 export function WriteWindowAnimationShadow({
   animation,
+  onAnimationComplete,
   stackIndex,
   windowState,
 }: WriteWindowAnimationShadowProps) {
@@ -67,6 +68,7 @@ export function WriteWindowAnimationShadow({
     <ClassicWindowAnimationShadow
       animation={animation}
       geometry={windowState}
+      onAnimationComplete={onAnimationComplete}
       windowId={windowState.id}
       zIndex={300 + stackIndex}
     />
@@ -83,7 +85,6 @@ export function WriteWindow({
   layoutError,
   interactionCancelToken,
   onActivate,
-  onAnimationComplete,
   onClose,
   onDraftChange,
   onEditorContext,
@@ -129,7 +130,6 @@ export function WriteWindow({
       minimumHeight={360}
       minimumWidth={520}
       onActivate={onActivate}
-      onAnimationComplete={onAnimationComplete}
       onClose={onClose}
       onGeometry={onGeometry}
       onInteractionChange={onInteractionChange}
