@@ -193,10 +193,14 @@ export function DesktopIcon({
       style={style}
       type="button"
     >
-      <span className="desktop-icon-glyph">
+      <span className="desktop-icon-glyph" data-icon-hit-region="artwork">
         <PixelIcon name={icon} size={32} />
       </span>
-      <span className="desktop-icon-label" data-desktop-icon-label={id}>
+      <span
+        className="desktop-icon-label"
+        data-desktop-icon-label={id}
+        data-icon-hit-region="label"
+      >
         {label}
       </span>
     </button>

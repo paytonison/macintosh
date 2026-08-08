@@ -141,9 +141,30 @@ describe('Icon surface backgrounds', () => {
   it('keeps free-placement icon tiles transparent and backs only their labels', () => {
     expect(backgroundFor('.desktop-icon')).toBe('transparent');
     expect(backgroundFor('.finder-item')).toBe('transparent');
-    expect(backgroundFor('.finder-item span')).toBe('#fff');
+    expect(backgroundFor('.finder-item-label')).toBe('#fff');
     expect(backgroundFor('.finder-list-row')).toBe('#fff');
     expect(declarationsFor('.pixel-icon')).not.toMatch(/background(?:-color)?\s*:/);
+  });
+
+  it('limits pointer input to artwork and labels without shrinking layout footprints', () => {
+    expect(declarationsFor('.desktop-icon')).toContain('width: 82px');
+    expect(declarationsFor('.desktop-icon')).toContain('min-height: 78px');
+    expect(declarationsFor('.desktop-icon')).toContain('pointer-events: none');
+    expect(declarationsFor('.desktop-icon-glyph')).toContain(
+      'pointer-events: var(--icon-hit-pointer-events)',
+    );
+    expect(declarationsFor('.desktop-icon-label')).toContain(
+      'pointer-events: var(--icon-hit-pointer-events)',
+    );
+    expect(declarationsFor('.finder-item')).toContain('width: 112px');
+    expect(declarationsFor('.finder-item')).toContain('height: 84px');
+    expect(declarationsFor('.finder-item')).toContain('pointer-events: none');
+    expect(declarationsFor('.finder-item-glyph')).toContain(
+      'pointer-events: var(--icon-hit-pointer-events)',
+    );
+    expect(declarationsFor('.finder-item-label')).toContain(
+      'pointer-events: var(--icon-hit-pointer-events)',
+    );
   });
 
   it('retains bounded selected and drop-target feedback', () => {

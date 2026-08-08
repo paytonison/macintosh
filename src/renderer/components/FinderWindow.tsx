@@ -381,8 +381,12 @@ export function FinderWindow({
                       style={{ left: position.x, top: position.y }}
                       type="button"
                     >
-                      <VfsNodeIcon node={item} size={32} />
-                      <span>{item.name}</span>
+                      <span className="finder-item-glyph" data-icon-hit-region="artwork">
+                        <VfsNodeIcon node={item} size={32} />
+                      </span>
+                      <span className="finder-item-label" data-icon-hit-region="label">
+                        {item.name}
+                      </span>
                     </button>
                   ))}
                 </div>

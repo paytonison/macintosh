@@ -218,16 +218,21 @@ export function DesktopSurface({
     ].flatMap((element) => {
       const id = element.dataset.desktopIcon;
       if (!id) return [];
-      const bounds = element.getBoundingClientRect();
-      return [
-        {
-          id,
-          bounds: {
+      const hitRegions = [...element.querySelectorAll<HTMLElement>('[data-icon-hit-region]')].map(
+        (region) => {
+          const bounds = region.getBoundingClientRect();
+          return {
             left: bounds.left,
             top: bounds.top,
             right: bounds.right,
             bottom: bounds.bottom,
-          },
+          };
+        },
+      );
+      return [
+        {
+          id,
+          hitRegions,
         },
       ];
     });

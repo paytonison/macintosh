@@ -68,11 +68,13 @@ button:focus-visible {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  --icon-hit-pointer-events: auto;
 }
 
 html.is-normal-quit-pending .macintosh,
 .macintosh.is-normal-quit-pending {
   pointer-events: none;
+  --icon-hit-pointer-events: none;
 }
 
 .menu-bar {
@@ -223,6 +225,7 @@ html.is-normal-quit-pending .macintosh,
   border: 0;
   background: transparent;
   cursor: var(--pointing-hand-cursor), default;
+  pointer-events: none;
   touch-action: none;
 }
 
@@ -251,6 +254,7 @@ html.is-normal-quit-pending .macintosh,
   width: 44px;
   height: 42px;
   place-items: center;
+  pointer-events: var(--icon-hit-pointer-events);
 }
 
 .pixel-icon-drag-artwork {
@@ -265,6 +269,7 @@ html.is-normal-quit-pending .macintosh,
   font-size: 11px;
   font-weight: 700;
   line-height: 15px;
+  pointer-events: var(--icon-hit-pointer-events);
   text-align: center;
   white-space: nowrap;
 }
@@ -302,6 +307,7 @@ html.is-normal-quit-pending .macintosh,
 .desktop-icon.is-ejecting {
   z-index: 5000;
   pointer-events: none;
+  --icon-hit-pointer-events: none;
 }
 
 .desktop-icon.is-ejecting .desktop-icon-glyph {
@@ -579,6 +585,7 @@ html.is-normal-quit-pending .macintosh,
   padding: 2px;
   border: 0;
   background: transparent;
+  pointer-events: none;
 }
 
 .finder-item,
@@ -626,7 +633,14 @@ html.is-item-dragging *,
   fill: #000;
 }
 
-.finder-item span {
+.finder-item-glyph {
+  display: block;
+  width: 32px;
+  height: 32px;
+  pointer-events: var(--icon-hit-pointer-events);
+}
+
+.finder-item-label {
   max-width: 120px;
   margin-top: 5px;
   padding: 1px 3px;
@@ -634,6 +648,7 @@ html.is-item-dragging *,
   font-size: 11px;
   font-weight: 600;
   line-height: 14px;
+  pointer-events: var(--icon-hit-pointer-events);
   text-align: center;
 }
 
@@ -646,19 +661,23 @@ html.is-item-dragging *,
   z-index: 1;
 }
 
-.finder-item.is-selected span,
+.finder-item.is-selected .finder-item-label,
 .finder-list-row.is-selected {
   color: #fff;
   background: #000;
 }
 
-.finder-item.is-file-drop-target,
 .finder-list-row.is-file-drop-target {
   outline: 3px double #000;
   outline-offset: 1px;
 }
 
-.finder-item.is-file-drop-target span,
+.finder-item.is-file-drop-target .finder-item-glyph {
+  outline: 3px double #000;
+  outline-offset: 1px;
+}
+
+.finder-item.is-file-drop-target .finder-item-label,
 .finder-list-row.is-file-drop-target {
   color: #fff;
   background: #000;

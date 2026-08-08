@@ -1416,6 +1416,156 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   assertPixelCursor('Window control arrow', cursorBindings.windowControl, 11, 16, { x: 1, y: 1 });
   assertPixelCursor('Window resize', cursorBindings.growBox, 15, 15, { x: 7, y: 7 });
 
+  type SmokeIconHitRegionProbe = {
+    itemPointerEvents: string;
+    margin: {
+      hitItemId: string | null;
+      ownsLayout: boolean;
+      point: SmokePoint;
+    } | null;
+    regions: {
+      hitItemId: string | null;
+      name: string | null;
+      point: SmokePoint;
+      pointerEvents: string;
+    }[];
+  };
+  const inspectIconHitRegions = async (
+    itemSelector: string,
+    itemIdAttribute: string,
+    layoutSelector: string,
+  ): Promise<SmokeIconHitRegionProbe | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const item = document.querySelector(${JSON.stringify(itemSelector)});
+        if (!(item instanceof HTMLElement)) return null;
+        const itemBounds = item.getBoundingClientRect();
+        const regions = [...item.querySelectorAll('[data-icon-hit-region]')].flatMap((region) => {
+          if (!(region instanceof HTMLElement)) return [];
+          const bounds = region.getBoundingClientRect();
+          const point = {
+            x: Math.round(bounds.left + bounds.width / 2),
+            y: Math.round(bounds.top + bounds.height / 2)
+          };
+          const hit = document.elementFromPoint(point.x, point.y);
+          return [{
+            bounds,
+            hitItemId: hit instanceof Element
+              ? hit.closest(${JSON.stringify(
+                `[${itemIdAttribute}]`,
+              )})?.getAttribute(${JSON.stringify(itemIdAttribute)}) ?? null
+              : null,
+            name: region.getAttribute('data-icon-hit-region'),
+            point,
+            pointerEvents: getComputedStyle(region).pointerEvents
+          }];
+        });
+        let margin = null;
+        for (let y = Math.ceil(itemBounds.top) + 1; y < Math.floor(itemBounds.bottom) - 1 && !margin; y += 1) {
+          for (let x = Math.ceil(itemBounds.left) + 1; x < Math.floor(itemBounds.right) - 1; x += 1) {
+            if (regions.some(({ bounds }) =>
+              x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom
+            )) continue;
+            const hit = document.elementFromPoint(x, y);
+            if (!(hit instanceof Element) || item.contains(hit)) continue;
+            margin = {
+              hitItemId:
+                hit.closest(${JSON.stringify(
+                  `[${itemIdAttribute}]`,
+                )})?.getAttribute(${JSON.stringify(itemIdAttribute)}) ?? null,
+              ownsLayout: hit.closest(${JSON.stringify(layoutSelector)}) !== null,
+              point: { x, y }
+            };
+            break;
+          }
+        }
+        return {
+          itemPointerEvents: getComputedStyle(item).pointerEvents,
+          margin,
+          regions: regions.map(({ bounds: _bounds, ...region }) => region)
+        };
+      })()`,
+      true,
+    )) as SmokeIconHitRegionProbe | null;
+  function assertIconHitRegionProbe(
+    probe: SmokeIconHitRegionProbe | null,
+    itemId: string,
+    label: string,
+  ): asserts probe is SmokeIconHitRegionProbe {
+    const regionNames = probe?.regions
+      .map(({ name }) => name)
+      .sort()
+      .join(',');
+    if (
+      probe?.itemPointerEvents !== 'none' ||
+      regionNames !== 'artwork,label' ||
+      probe.regions.some(
+        (region) => region.pointerEvents !== 'auto' || region.hitItemId !== itemId,
+      ) ||
+      !probe.margin?.ownsLayout ||
+      probe.margin.hitItemId !== null
+    ) {
+      throw new Error(
+        `${label} retained an oversized layout-tile hit box: ${JSON.stringify(probe)}.`,
+      );
+    }
+  }
+
+  const desktopIconHitRegions = await inspectIconHitRegions(
+    '[data-desktop-icon="system-disk"]',
+    'data-desktop-icon',
+    '.desktop-surface',
+  );
+  assertIconHitRegionProbe(desktopIconHitRegions, 'system-disk', 'Desktop icon');
+  const desktopArtworkPoint = desktopIconHitRegions.regions.find(
+    ({ name }) => name === 'artwork',
+  )?.point;
+  if (!desktopArtworkPoint || !desktopIconHitRegions.margin) {
+    throw new Error('Desktop icon hit-region coordinates were unavailable.');
+  }
+  await clickAt(desktopArtworkPoint);
+  const desktopArtworkSelected = (await window.webContents.executeJavaScript(
+    `document.querySelector('[data-desktop-icon="system-disk"]')?.classList.contains('is-selected') === true`,
+    true,
+  )) as boolean;
+  await clickAt(desktopIconHitRegions.margin.point);
+  const desktopMarginClearedSelection = (await window.webContents.executeJavaScript(
+    `document.querySelector('[data-desktop-icon="system-disk"]')?.classList.contains('is-selected') === false`,
+    true,
+  )) as boolean;
+  if (!desktopArtworkSelected || !desktopMarginClearedSelection) {
+    throw new Error('Desktop native pointer input did not distinguish artwork from tile margin.');
+  }
+
+  const finderIconHitRegions = await inspectIconHitRegions(
+    '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]',
+    'data-vfs-item',
+    '.finder-icon-grid',
+  );
+  assertIconHitRegionProbe(finderIconHitRegions, 'applications', 'Finder icon');
+  const finderControlHitRegions = await inspectIconHitRegions(
+    '[data-finder-window="window-system-disk"] [data-vfs-item="system-folder"]',
+    'data-vfs-item',
+    '.finder-icon-grid',
+  );
+  assertIconHitRegionProbe(finderControlHitRegions, 'system-folder', 'Finder control icon');
+  const finderControlArtworkPoint = finderControlHitRegions.regions.find(
+    ({ name }) => name === 'artwork',
+  )?.point;
+  if (!finderControlArtworkPoint || !finderIconHitRegions.margin) {
+    throw new Error('Finder icon hit-region coordinates were unavailable.');
+  }
+  await clickAt(finderControlArtworkPoint);
+  await clickAt(finderIconHitRegions.margin.point);
+  const finderMarginPreservedSelection = (await window.webContents.executeJavaScript(
+    `document.querySelector('[data-vfs-item="system-folder"]')?.classList.contains('is-selected') === true &&
+      document.querySelector('[data-vfs-item="applications"]')?.classList.contains('is-selected') === false`,
+    true,
+  )) as boolean;
+  if (!finderMarginPreservedSelection) {
+    throw new Error('Finder tile-margin input selected the icon outside its artwork and label.');
+  }
+
   const focusLossDragPoints = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector(
@@ -3262,12 +3412,17 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   const freeIconCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector('[data-vfs-item="applications"]');
+      const artwork = source?.querySelector('[data-icon-hit-region="artwork"]');
       const canvas = document.querySelector('[data-icon-layout-parent="system-disk"]');
       const root = document.querySelector('[data-vfs-count]');
-      if (!(source instanceof HTMLElement) || !(canvas instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      if (!(source instanceof HTMLElement) || !(artwork instanceof HTMLElement) || !(canvas instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
       const sourceRect = source.getBoundingClientRect();
+      const artworkRect = artwork.getBoundingClientRect();
       const canvasRect = canvas.getBoundingClientRect();
-      const hotspot = { x: 31, y: 19 };
+      const hotspot = {
+        x: Math.round(artworkRect.left + artworkRect.width / 2 - sourceRect.left),
+        y: Math.round(artworkRect.top + artworkRect.height / 2 - sourceRect.top)
+      };
       const destination = { x: 441, y: 239 };
       const client = {
         x: Math.round(canvasRect.left + destination.x + hotspot.x),
@@ -3466,12 +3621,17 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       const source = document.querySelector(
         '[data-finder-window="window-system-disk"] [data-vfs-item="utilities"]'
       );
+      const artwork = source?.querySelector('[data-icon-hit-region="artwork"]');
       const surface = document.querySelector('.desktop-surface');
       const root = document.querySelector('[data-vfs-count]');
-      if (!(source instanceof HTMLElement) || !(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      if (!(source instanceof HTMLElement) || !(artwork instanceof HTMLElement) || !(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
       const sourceBounds = source.getBoundingClientRect();
+      const artworkBounds = artwork.getBoundingClientRect();
       const surfaceBounds = surface.getBoundingClientRect();
-      const hotspot = { x: 29, y: 17 };
+      const hotspot = {
+        x: Math.round(artworkBounds.left + artworkBounds.width / 2 - sourceBounds.left),
+        y: Math.round(artworkBounds.top + artworkBounds.height / 2 - sourceBounds.top)
+      };
       const destination = {
         x: Math.round(surfaceBounds.left + ${desktopInternalInitial.x} + hotspot.x),
         y: Math.round(surfaceBounds.top + ${desktopInternalInitial.y} + hotspot.y)
@@ -7549,7 +7709,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   await window.webContents.executeJavaScript(
     `document.querySelectorAll('[data-finder-window]').forEach((finder) => {
-      if (finder instanceof HTMLElement) finder.style.pointerEvents = 'none';
+      if (finder instanceof HTMLElement) {
+        finder.style.pointerEvents = 'none';
+        finder.style.setProperty('--icon-hit-pointer-events', 'none');
+      }
     })`,
     true,
   );
@@ -7678,7 +7841,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   const scaledVfsTrashCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const finder = document.querySelector('[data-finder-window="window-system-disk"]');
-      if (finder instanceof HTMLElement) finder.style.removeProperty('pointer-events');
+      if (finder instanceof HTMLElement) {
+        finder.style.removeProperty('pointer-events');
+        finder.style.removeProperty('--icon-hit-pointer-events');
+      }
       const source = finder?.querySelector('[data-vfs-item="documents"]');
       const trash = document.querySelector('[data-desktop-icon="trash"]');
       const glyph = trash?.querySelector('[data-trash-drop-bounds="true"]');
@@ -7728,8 +7894,12 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     await pause(24);
   }
   await window.webContents.executeJavaScript(
-    `document.querySelector('[data-finder-window="window-system-disk"]')
-      ?.style.setProperty('pointer-events', 'none')`,
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-system-disk"]');
+      if (!(finder instanceof HTMLElement)) return;
+      finder.style.setProperty('pointer-events', 'none');
+      finder.style.setProperty('--icon-hit-pointer-events', 'none');
+    })()`,
     true,
   );
   await moveHeldPointer(
@@ -7905,16 +8075,24 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   const repositionTarget = { x: 137, y: 343 };
   await window.webContents.executeJavaScript(
-    `document.querySelector('[data-desktop-icon="trash"]')
-      ?.style.setProperty('pointer-events', 'none')`,
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return;
+      trash.style.setProperty('pointer-events', 'none');
+      trash.style.setProperty('--icon-hit-pointer-events', 'none');
+    })()`,
     true,
   );
   await sendDrag(desktopGeometry.disk, repositionTarget, true);
   await pause(260);
   await assertRejectedDiskRelease(repositionTarget, 'The free desktop release');
   await window.webContents.executeJavaScript(
-    `document.querySelector('[data-desktop-icon="trash"]')
-      ?.style.removeProperty('pointer-events')`,
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return;
+      trash.style.removeProperty('pointer-events');
+      trash.style.removeProperty('--icon-hit-pointer-events');
+    })()`,
     true,
   );
 
@@ -8691,6 +8869,7 @@ const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
         finder.dataset.finderWindow !== 'window-applications'
       ) {
         finder.style.pointerEvents = 'none';
+        finder.style.setProperty('--icon-hit-pointer-events', 'none');
       }
     })`,
     true,

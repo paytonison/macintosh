@@ -13,7 +13,7 @@ export interface DesktopSurfaceSize {
 
 export interface DesktopIconRectangle {
   id: string;
-  bounds: Rectangle;
+  hitRegions: readonly Rectangle[];
 }
 
 export const defaultDesktopIconPosition = (nodeId: string): Point =>
@@ -53,4 +53,6 @@ export const desktopIconIdsInRectangle = (
   selection: Rectangle,
   icons: readonly DesktopIconRectangle[],
 ): string[] =>
-  icons.flatMap((icon) => (rectanglesOverlap(selection, icon.bounds) ? [icon.id] : []));
+  icons.flatMap((icon) =>
+    icon.hitRegions.some((region) => rectanglesOverlap(selection, region)) ? [icon.id] : [],
+  );
