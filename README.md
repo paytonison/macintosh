@@ -56,6 +56,9 @@ virtual document directly from the desktop or Finder.
   spacing; and left, first-line, and right indents.
 - A working ruler with draggable indents, default half-inch tabs, and custom tab stops that can be
   added, moved, or removed with cancellable pointer sessions.
+- Finder-matched 15-pixel horizontal and vertical scroll bars with authored arrows, patterned
+  tracks, and black-and-white thumbs. Wheel and trackpad scrolling remain native to each document
+  viewport, while the ruler follows horizontal page scrolling at narrow window sizes.
 - Undo, Redo, Cut, Copy, Paste, Clear, Plain Text, Select All, and exact supported Command-key
   shortcuts, including Shift-Command-S for Save As and Shift-Command-Z for Redo.
 - 50%, 75%, and 100% page zoom without changing document semantics.

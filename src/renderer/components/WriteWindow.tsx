@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 
-import type { DocumentPayload } from '../../shared/write';
+import { WRITE_PAGE_MARGIN, WRITE_PAGE_WIDTH, type DocumentPayload } from '../../shared/write';
 import type { WindowGeometry } from '../../shared/state';
 import {
   ClassicWindowAnimationShadow,
   ClassicWindowFrame,
   type ClassicWindowAnimation,
 } from './ClassicWindowFrame';
+import { ClassicScrollBars } from './ClassicScrollBars';
 import {
   WriteEditor,
   type WriteEditorCommand,
@@ -95,7 +96,24 @@ export function WriteWindow({
   onPaginationChange,
   onZoom,
 }: WriteWindowProps) {
+  const scale = windowState.zoom / 100;
   const editorHandle = useRef<WriteEditorHandle | null>(null);
+  const documentViewport = useRef<HTMLDivElement>(null);
+  const rulerViewport = useRef<HTMLDivElement>(null);
+  const syncRulerScroll = useCallback((): void => {
+    if (!documentViewport.current || !rulerViewport.current) return;
+    const page = documentViewport.current.querySelector<HTMLElement>('.write-page-stack');
+    const rulerPage = rulerViewport.current.querySelector<HTMLElement>('.write-ruler-page');
+    if (page && rulerPage) {
+      const pageOffset = Math.round(
+        page.getBoundingClientRect().left -
+          documentViewport.current.getBoundingClientRect().left +
+          documentViewport.current.scrollLeft,
+      );
+      rulerPage.style.marginLeft = `${String(pageOffset)}px`;
+    }
+    rulerViewport.current.scrollLeft = documentViewport.current.scrollLeft;
+  }, []);
   const editorRegistration = useCallback(
     (editor: WriteEditorHandle | null) => {
       editorHandle.current = editor;
@@ -111,6 +129,10 @@ export function WriteWindow({
     [onEditorRegistration, windowState.id],
   );
 
+  useLayoutEffect(() => {
+    syncRulerScroll();
+  }, [syncRulerScroll, windowState.height, windowState.width, windowState.zoom]);
+
   return (
     <ClassicWindowFrame
       active={active}
@@ -125,7 +147,6 @@ export function WriteWindow({
         'data-write-window': windowState.id,
       }}
       geometry={windowState}
-      growBoxClassName="write-grow-box"
       interactionCancelToken={interactionCancelToken}
       minimumHeight={360}
       minimumWidth={520}
@@ -147,28 +168,50 @@ export function WriteWindow({
       {({ growBox }) => (
         <>
           <div className="write-ruler-bar" onPointerDownCapture={() => onActivate(windowState.id)}>
-            <WriteRuler
-              disabled={!context.canFormat}
-              interactionCancelToken={interactionCancelToken}
-              onCommand={(command: WriteEditorCommand) => editorHandle.current?.execute(command)}
-              onInteractionChange={onInteractionChange}
-              style={context.style}
-              zoom={windowState.zoom}
-            />
+            <div className="write-ruler-scroll-viewport" ref={rulerViewport}>
+              <div
+                className="write-ruler-page"
+                style={{
+                  paddingLeft: WRITE_PAGE_MARGIN * scale,
+                  width: WRITE_PAGE_WIDTH * scale,
+                }}
+              >
+                <WriteRuler
+                  disabled={!context.canFormat}
+                  interactionCancelToken={interactionCancelToken}
+                  onCommand={(command: WriteEditorCommand) =>
+                    editorHandle.current?.execute(command)
+                  }
+                  onInteractionChange={onInteractionChange}
+                  style={context.style}
+                  zoom={windowState.zoom}
+                />
+              </div>
+            </div>
+            <div aria-hidden="true" className="write-ruler-scroll-gutter" />
           </div>
-          <div className="write-document-viewport" onPointerDown={() => onActivate(windowState.id)}>
-            <WriteEditor
-              active={editorEnabled}
-              editorRef={editorRegistration}
-              onChange={(payload) => onDraftChange(windowState.id, payload)}
-              onContextChange={(next) => onEditorContext(windowState.id, next)}
-              onLayoutError={(message) => onLayoutError(windowState.id, message)}
-              onPaginationChange={(pageNumber, pageCount) =>
-                onPaginationChange(windowState.id, pageNumber, pageCount)
-              }
-              payload={windowState.draft}
-              zoom={windowState.zoom}
-            />
+          <div className="window-scroll-frame write-scroll-frame">
+            <div
+              className="write-document-viewport"
+              onScroll={syncRulerScroll}
+              onPointerDown={() => onActivate(windowState.id)}
+              ref={documentViewport}
+            >
+              <WriteEditor
+                active={editorEnabled}
+                editorRef={editorRegistration}
+                onChange={(payload) => onDraftChange(windowState.id, payload)}
+                onContextChange={(next) => onEditorContext(windowState.id, next)}
+                onLayoutError={(message) => onLayoutError(windowState.id, message)}
+                onPaginationChange={(pageNumber, pageCount) =>
+                  onPaginationChange(windowState.id, pageNumber, pageCount)
+                }
+                payload={windowState.draft}
+                zoom={windowState.zoom}
+              />
+            </div>
+            <ClassicScrollBars viewportRef={documentViewport} />
+            {growBox}
           </div>
           <footer className="write-status-bar">
             <span role={layoutError ? 'alert' : undefined}>
@@ -176,7 +219,6 @@ export function WriteWindow({
             </span>
             <span>{windowState.zoom}%</span>
           </footer>
-          {growBox}
         </>
       )}
     </ClassicWindowFrame>

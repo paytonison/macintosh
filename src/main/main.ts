@@ -4112,6 +4112,315 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `Write did not project a long paragraph across automatic pages: ${JSON.stringify(automaticPagination)}.`,
     );
   }
+
+  type ClassicScrollFrameSnapshot = {
+    directions: string[];
+    grow: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+    horizontal: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+    nativeScrollbarWidth: string;
+    page: { left: number; width: number } | null;
+    ruler: { left: number; width: number } | null;
+    rulerScrollLeft: number | null;
+    rulerViewport: { right: number } | null;
+    rulerGutter: { left: number; width: number } | null;
+    status: { top: number } | null;
+    thumbs: number;
+    tracks: number;
+    vertical: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+    viewport: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+      clientWidth: number;
+      clientHeight: number;
+      scrollWidth: number;
+      scrollHeight: number;
+      scrollLeft: number;
+      scrollTop: number;
+    };
+  };
+  const readClassicScrollFrame = async (
+    ownerSelector: string,
+    viewportSelector: string,
+  ): Promise<ClassicScrollFrameSnapshot | null> =>
+    window.webContents.executeJavaScript(
+      `(() => {
+        const owner = document.querySelector(${JSON.stringify(ownerSelector)});
+        const viewport = owner?.querySelector(${JSON.stringify(viewportSelector)});
+        const vertical = owner?.querySelector('.scrollbar-vertical');
+        const horizontal = owner?.querySelector('.scrollbar-horizontal');
+        const grow = owner?.querySelector('.window-grow-box');
+        if (
+          !(owner instanceof HTMLElement) ||
+          !(viewport instanceof HTMLElement) ||
+          !(vertical instanceof HTMLElement) ||
+          !(horizontal instanceof HTMLElement) ||
+          !(grow instanceof HTMLElement)
+        ) return null;
+        const bounds = (element) => {
+          const box = element.getBoundingClientRect();
+          return {
+            left: box.left,
+            top: box.top,
+            right: box.right,
+            bottom: box.bottom,
+            width: box.width,
+            height: box.height
+          };
+        };
+        const page = owner.querySelector('.write-page-stack');
+        const ruler = owner.querySelector('.write-ruler-viewport');
+        const rulerViewport = owner.querySelector('.write-ruler-scroll-viewport');
+        const rulerGutter = owner.querySelector('.write-ruler-scroll-gutter');
+        const status = owner.querySelector('.write-status-bar');
+        return {
+          directions: [...owner.querySelectorAll('[data-scroll-direction]')]
+            .map((control) => control.getAttribute('data-scroll-direction') ?? '')
+            .sort(),
+          grow: bounds(grow),
+          horizontal: bounds(horizontal),
+          nativeScrollbarWidth: getComputedStyle(viewport).scrollbarWidth,
+          page: page instanceof HTMLElement
+            ? { left: page.getBoundingClientRect().left, width: page.getBoundingClientRect().width }
+            : null,
+          ruler: ruler instanceof HTMLElement
+            ? { left: ruler.getBoundingClientRect().left, width: ruler.getBoundingClientRect().width }
+            : null,
+          rulerScrollLeft: rulerViewport instanceof HTMLElement ? rulerViewport.scrollLeft : null,
+          rulerViewport: rulerViewport instanceof HTMLElement
+            ? { right: rulerViewport.getBoundingClientRect().right }
+            : null,
+          rulerGutter: rulerGutter instanceof HTMLElement
+            ? { left: rulerGutter.getBoundingClientRect().left, width: rulerGutter.getBoundingClientRect().width }
+            : null,
+          status: status instanceof HTMLElement ? { top: status.getBoundingClientRect().top } : null,
+          thumbs: owner.querySelectorAll('.scroll-thumb').length,
+          tracks: owner.querySelectorAll('.scroll-track').length,
+          vertical: bounds(vertical),
+          viewport: {
+            ...bounds(viewport),
+            clientWidth: viewport.clientWidth,
+            clientHeight: viewport.clientHeight,
+            scrollWidth: viewport.scrollWidth,
+            scrollHeight: viewport.scrollHeight,
+            scrollLeft: viewport.scrollLeft,
+            scrollTop: viewport.scrollTop
+          }
+        };
+      })()`,
+      true,
+    ) as Promise<ClassicScrollFrameSnapshot | null>;
+  const assertClassicScrollFrame: (
+    snapshot: ClassicScrollFrameSnapshot | null,
+    label: string,
+  ) => asserts snapshot is ClassicScrollFrameSnapshot = (snapshot, label) => {
+    if (
+      !snapshot ||
+      snapshot.nativeScrollbarWidth !== 'none' ||
+      snapshot.directions.join(',') !== 'down,left,right,up' ||
+      snapshot.tracks !== 2 ||
+      snapshot.thumbs !== 2 ||
+      Math.abs(snapshot.vertical.width - 15) > 0.1 ||
+      Math.abs(snapshot.horizontal.height - 15) > 0.1 ||
+      Math.abs(snapshot.grow.width - 15) > 0.1 ||
+      Math.abs(snapshot.grow.height - 15) > 0.1 ||
+      Math.abs(snapshot.viewport.right - snapshot.vertical.left) > 0.1 ||
+      Math.abs(snapshot.viewport.bottom - snapshot.horizontal.top) > 0.1 ||
+      Math.abs(snapshot.horizontal.right - snapshot.grow.left) > 0.1 ||
+      Math.abs(snapshot.vertical.bottom - snapshot.grow.top) > 0.1
+    ) {
+      throw new Error(
+        `${label} did not retain the shared classic scroll frame: ${JSON.stringify(snapshot)}.`,
+      );
+    }
+  };
+  const assertWriteRulerAlignment = (
+    snapshot: ClassicScrollFrameSnapshot,
+    zoom: 50 | 75 | 100,
+    label: string,
+  ): void => {
+    const expectedRulerOffset = 72 * (zoom / 100);
+    const expectedRulerWidth = 468 * (zoom / 100);
+    if (
+      !snapshot.page ||
+      !snapshot.ruler ||
+      !snapshot.rulerViewport ||
+      !snapshot.rulerGutter ||
+      !snapshot.status ||
+      snapshot.rulerScrollLeft === null ||
+      Math.abs(snapshot.ruler.left - snapshot.page.left - expectedRulerOffset) > 1 ||
+      Math.abs(snapshot.ruler.width - expectedRulerWidth) > 1 ||
+      Math.abs(snapshot.rulerScrollLeft - snapshot.viewport.scrollLeft) > 0.1 ||
+      Math.abs(snapshot.rulerViewport.right - snapshot.viewport.right) > 0.1 ||
+      Math.abs(snapshot.rulerGutter.left - snapshot.vertical.left) > 0.1 ||
+      Math.abs(snapshot.rulerGutter.width - 15) > 0.1 ||
+      Math.abs(snapshot.horizontal.bottom - snapshot.status.top) > 0.1
+    ) {
+      throw new Error(
+        `${label} lost page, ruler, status, or grow-box alignment: ${JSON.stringify(snapshot)}.`,
+      );
+    }
+  };
+
+  const finderScrollFrame = await readClassicScrollFrame(
+    '[data-finder-window="window-system-disk"]',
+    '.window-content',
+  );
+  assertClassicScrollFrame(finderScrollFrame, 'Finder');
+  const standardWriteScrollFrame = await readClassicScrollFrame(
+    '[data-write-title="Untitled"]',
+    '.write-document-viewport',
+  );
+  assertClassicScrollFrame(standardWriteScrollFrame, 'Write at its standard size');
+  assertWriteRulerAlignment(standardWriteScrollFrame, 75, 'Write at its standard size');
+  if (
+    standardWriteScrollFrame.viewport.scrollHeight <= standardWriteScrollFrame.viewport.clientHeight
+  ) {
+    throw new Error('The standard Write scroll probe did not contain vertical overflow.');
+  }
+
+  type WriteScrollInvariant = {
+    format: string | null;
+    html: string;
+    layoutGeneration: string | null;
+    pageCount: string | null;
+    selection: string;
+    title: string;
+  };
+  const readWriteScrollInvariant = async (): Promise<WriteScrollInvariant> =>
+    window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector('[data-write-title="Untitled"]');
+        const editor = write?.querySelector('[data-write-editor="true"]');
+        const pages = write?.querySelector('.write-page-stack');
+        if (!(write instanceof HTMLElement) || !(editor instanceof HTMLElement)) return null;
+        return {
+          format: write.getAttribute('data-document-format'),
+          html: editor.innerHTML,
+          layoutGeneration: pages?.getAttribute('data-write-layout-generation') ?? null,
+          pageCount: pages?.getAttribute('data-page-count') ?? null,
+          selection: window.getSelection()?.toString() ?? '',
+          title: write.querySelector('.window-titlebar h2')?.textContent ?? ''
+        };
+      })()`,
+      true,
+    ) as Promise<WriteScrollInvariant>;
+  const writeScrollControl = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      const viewport = write?.querySelector('.write-document-viewport');
+      const editor = write?.querySelector('[data-write-editor="true"]');
+      const down = write?.querySelector('[data-scroll-direction="down"]');
+      if (
+        !(viewport instanceof HTMLElement) ||
+        !(editor instanceof HTMLElement) ||
+        !(down instanceof HTMLElement)
+      ) return null;
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      const firstText = walker.nextNode();
+      if (!firstText || (firstText.textContent?.length ?? 0) < 9) return null;
+      const range = document.createRange();
+      range.setStart(firstText, 0);
+      range.setEnd(firstText, 9);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+      viewport.scrollTo({ left: 0, top: 0 });
+      const downBounds = down.getBoundingClientRect();
+      const viewportBounds = viewport.getBoundingClientRect();
+      return {
+        down: {
+          x: Math.round(downBounds.left + downBounds.width / 2),
+          y: Math.round(downBounds.top + downBounds.height / 2)
+        },
+        viewport: {
+          x: Math.round(viewportBounds.left + viewportBounds.width / 2),
+          y: Math.round(viewportBounds.top + viewportBounds.height / 2)
+        }
+      };
+    })()`,
+    true,
+  )) as { down: SmokePoint; viewport: SmokePoint } | null;
+  if (!writeScrollControl) throw new Error('Write could not prepare its classic scroll probe.');
+  await pause(40);
+  const writeScrollBaseline = await readWriteScrollInvariant();
+  await clickAt(writeScrollControl.down);
+  const afterWriteArrow = await readClassicScrollFrame(
+    '[data-write-title="Untitled"]',
+    '.write-document-viewport',
+  );
+  const afterWriteArrowInvariant = await readWriteScrollInvariant();
+  if (
+    !afterWriteArrow ||
+    afterWriteArrow.viewport.scrollTop < 63 ||
+    JSON.stringify(afterWriteArrowInvariant) !== JSON.stringify(writeScrollBaseline)
+  ) {
+    throw new Error(
+      `Write's classic arrow changed editor state or failed to scroll its own viewport: ${JSON.stringify({ afterWriteArrow, writeScrollBaseline, afterWriteArrowInvariant })}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTo({ left: 0, top: 0 })`,
+    true,
+  );
+  await ensureNativeInputFocus('Write wheel scrolling');
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...writeScrollControl.viewport });
+  let wheelScrollTop = 0;
+  for (const deltaY of [-120, 120]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseWheel',
+      deltaX: 0,
+      deltaY,
+      hasPreciseScrollingDeltas: true,
+      canScroll: true,
+      ...writeScrollControl.viewport,
+    });
+    await pause(80);
+    wheelScrollTop = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTop ?? 0`,
+      true,
+    )) as number;
+    if (wheelScrollTop > 0) break;
+  }
+  const afterWriteWheelInvariant = await readWriteScrollInvariant();
+  if (
+    wheelScrollTop <= 0 ||
+    JSON.stringify(afterWriteWheelInvariant) !== JSON.stringify(writeScrollBaseline)
+  ) {
+    throw new Error(
+      `Native wheel scrolling changed Write editor state or failed to move its viewport: ${JSON.stringify({ wheelScrollTop, writeScrollBaseline, afterWriteWheelInvariant })}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTo({ left: 0, top: 0 })`,
+    true,
+  );
+
   const readWriteResizeGeometry = async (): Promise<{
     width: number;
     height: number;
@@ -4137,7 +4446,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     ) as Promise<{ width: number; height: number; grow: SmokePoint } | null>;
   const writeResizeStart = await readWriteResizeGeometry();
   if (!writeResizeStart) throw new Error('The multi-page Write grow box was unavailable.');
-  const writeResizeDelta = { x: -32, y: -24 };
+  const writeResizeDelta = {
+    x: 520 - writeResizeStart.width,
+    y: 360 - writeResizeStart.height,
+  };
   await resizeWindow(
     '[data-write-title="Untitled"]',
     '[data-write-title="Untitled"] [aria-label="Resize Untitled"]',
@@ -4153,13 +4465,75 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   const writeResized = await readWriteResizeGeometry();
   if (
     !writeResized ||
-    Math.abs(writeResized.width - (writeResizeStart.width + writeResizeDelta.x)) > 1 ||
-    Math.abs(writeResized.height - (writeResizeStart.height + writeResizeDelta.y)) > 1
+    Math.abs(writeResized.width - 520) > 1 ||
+    Math.abs(writeResized.height - 360) > 1
   ) {
     throw new Error(
       `Write did not commit its outline resize once on release: ${JSON.stringify({ writeResizeStart, writeResized })}.`,
     );
   }
+  for (const zoom of [50, 75, 100] as const) {
+    await invokeRendererMenuAction('view', `zoom-${String(zoom)}`);
+    await waitForWriteLayout(
+      '[data-write-title="Untitled"]',
+      `Minimum-size Write ${String(zoom)}% scroll layout`,
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTo({ left: 0, top: 0 })`,
+      true,
+    );
+    await pause(30);
+    const minimumScrollFrame = await readClassicScrollFrame(
+      '[data-write-title="Untitled"]',
+      '.write-document-viewport',
+    );
+    assertClassicScrollFrame(minimumScrollFrame, `Minimum-size Write at ${String(zoom)}%`);
+    assertWriteRulerAlignment(minimumScrollFrame, zoom, `Minimum-size Write at ${String(zoom)}%`);
+    const horizontalOverflow =
+      minimumScrollFrame.viewport.scrollWidth - minimumScrollFrame.viewport.clientWidth;
+    if (
+      minimumScrollFrame.viewport.scrollHeight <= minimumScrollFrame.viewport.clientHeight ||
+      (zoom === 100 ? horizontalOverflow <= 0 : horizontalOverflow > 1)
+    ) {
+      throw new Error(
+        `Minimum-size Write handled ${String(zoom)}% overflow incorrectly: ${JSON.stringify(minimumScrollFrame)}.`,
+      );
+    }
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Untitled"] [data-scroll-direction="down"]')?.click()`,
+      true,
+    );
+    await pause(30);
+    const verticalScrollTop = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTop ?? 0`,
+      true,
+    )) as number;
+    if (verticalScrollTop < 63) {
+      throw new Error(`Minimum-size Write ${String(zoom)}% vertical arrow did not scroll.`);
+    }
+    if (zoom === 100) {
+      await window.webContents.executeJavaScript(
+        `document.querySelector('[data-write-title="Untitled"] [data-scroll-direction="right"]')?.click()`,
+        true,
+      );
+      await pause(30);
+      const horizontallyScrolled = await readClassicScrollFrame(
+        '[data-write-title="Untitled"]',
+        '.write-document-viewport',
+      );
+      assertClassicScrollFrame(horizontallyScrolled, 'Horizontally scrolled minimum-size Write');
+      assertWriteRulerAlignment(
+        horizontallyScrolled,
+        100,
+        'Horizontally scrolled minimum-size Write',
+      );
+      if (horizontallyScrolled.viewport.scrollLeft < 63) {
+        throw new Error('Minimum-size Write 100% horizontal arrow did not scroll.');
+      }
+    }
+  }
+  await invokeRendererMenuAction('view', 'zoom-75');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write scroll zoom restoration');
   await resizeWindow(
     '[data-write-title="Untitled"]',
     '[data-write-title="Untitled"] [aria-label="Resize Untitled"]',
@@ -5095,6 +5469,25 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!secondWriteFocused) throw new Error('The second Write window did not become active.');
+  const inactiveWriteScrollFrame = await readClassicScrollFrame(
+    '[data-write-title="Smoke Write"]',
+    '.write-document-viewport',
+  );
+  const activeWriteScrollFrame = await readClassicScrollFrame(
+    '[data-write-title="Untitled"]',
+    '.write-document-viewport',
+  );
+  assertClassicScrollFrame(inactiveWriteScrollFrame, 'Inactive Write');
+  assertClassicScrollFrame(activeWriteScrollFrame, 'Active Write');
+  const firstWriteInactive = await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Smoke Write"]')?.classList.contains('is-inactive') === true`,
+    true,
+  );
+  if (!firstWriteInactive) {
+    throw new Error(
+      'The inactive Write window lost its inactive treatment behind the active window.',
+    );
+  }
   window.webContents.insertText('Independent second window');
   await waitForWriteLayout('[data-write-title="Untitled"]', 'Second Write edit');
   await invokeRendererMenuAction('edit', 'undo');

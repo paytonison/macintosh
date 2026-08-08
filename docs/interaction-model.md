@@ -177,6 +177,13 @@ Write displays US Letter pages at 612 by 792 logical points with 72-point margin
 
 Automatic overflow and backflow are editor projection. Manual page breaks are explicit semantic blocks, but automatic page boundaries, page count, caret page, page gaps, and measured layout never enter persistent state. Editing before an automatic boundary may move later text between pages. Each semantic editor generation removes prior projection paint, measures on a later animation frame, and requires two consecutive matching layout signatures within four passes. A superseded generation cannot publish stale pagination. Failure remains visible and recoverable, and Save refuses to mutate the VFS until the newest generation has a stable projection. The status line reports the caret page, total pages, current zoom, or the current layout failure.
 
+The Write document viewport hides Chromium and host-platform scroll-bar chrome and uses the same
+15-pixel authored arrow buttons, patterned tracks, and black-and-white thumbs as Finder. Wheel,
+trackpad, and arrow-button scrolling affect only that Write window's viewport. Scroll position is
+transient and does not alter document semantics, page projection, selection, undo history, or
+durable state. When a page overflows horizontally, the ruler follows the viewport's horizontal
+position so its text measurements remain aligned with the page at 50%, 75%, and 100% zoom.
+
 ### Editing and formatting
 
 Write uses a custom ProseMirror schema and authored controls rather than a packaged editor UI. The implicit character default is 12-point Helvetica through the logical sans family. The default paragraph is left aligned, single spaced, with no indents and default tabs every 36 points.

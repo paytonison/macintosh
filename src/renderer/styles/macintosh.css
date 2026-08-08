@@ -520,10 +520,15 @@ html.is-normal-quit-pending .macintosh,
   min-height: 0;
   overflow: auto;
   background: #fff;
+}
+
+.window-content,
+.write-document-viewport {
   scrollbar-width: none;
 }
 
-.window-content::-webkit-scrollbar {
+.window-content::-webkit-scrollbar,
+.write-document-viewport::-webkit-scrollbar {
   display: none;
 }
 
@@ -1108,13 +1113,26 @@ html.is-item-dragging *,
 }
 
 .write-ruler-bar {
-  display: flex;
+  display: grid;
   min-width: 0;
-  align-items: center;
-  justify-content: center;
+  grid-template-columns: minmax(0, 1fr) 15px;
   overflow: hidden;
   border-bottom: 1px solid #000;
   background: #fff;
+}
+
+.write-ruler-scroll-viewport {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  overflow: hidden;
+}
+
+.write-ruler-page {
+  position: relative;
+  height: 28px;
+  flex: 0 0 auto;
+  margin: 0;
 }
 
 .write-ruler-viewport {
@@ -1228,8 +1246,6 @@ html.is-item-dragging *,
   overflow: auto;
   background-color: #fff;
   background-image: var(--quarter-tone-pattern);
-  scrollbar-color: #000 #fff;
-  scrollbar-width: thin;
   touch-action: auto;
 }
 
@@ -1387,18 +1403,11 @@ html.is-item-dragging *,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 22px 0 10px;
+  padding: 0 10px;
   border-top: 1px solid #000;
   background: #fff;
   font-size: 10px;
   line-height: 18px;
-}
-
-.write-grow-box {
-  position: absolute;
-  z-index: 5;
-  right: 0;
-  bottom: 0;
 }
 
 .write-save-message {

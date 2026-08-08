@@ -29,6 +29,7 @@ import {
   ClassicWindowFrame,
   type ClassicWindowAnimation,
 } from './ClassicWindowFrame';
+import { ClassicScrollBars } from './ClassicScrollBars';
 import { VfsNodeIcon } from './VfsNodeIcon';
 
 export type FinderWindowAnimation = ClassicWindowAnimation;
@@ -411,44 +412,7 @@ export function FinderWindow({
                 </div>
               )}
             </div>
-            <div className="scrollbar scrollbar-vertical" aria-hidden="true">
-              <button
-                onClick={() => content.current?.scrollBy({ top: -64 })}
-                tabIndex={-1}
-                type="button"
-              >
-                <span className="scroll-arrow up" />
-              </button>
-              <div className="scroll-track vertical-track">
-                <div className="scroll-thumb vertical-thumb" />
-              </div>
-              <button
-                onClick={() => content.current?.scrollBy({ top: 64 })}
-                tabIndex={-1}
-                type="button"
-              >
-                <span className="scroll-arrow down" />
-              </button>
-            </div>
-            <div className="scrollbar scrollbar-horizontal" aria-hidden="true">
-              <button
-                onClick={() => content.current?.scrollBy({ left: -64 })}
-                tabIndex={-1}
-                type="button"
-              >
-                <span className="scroll-arrow left" />
-              </button>
-              <div className="scroll-track horizontal-track">
-                <div className="scroll-thumb horizontal-thumb" />
-              </div>
-              <button
-                onClick={() => content.current?.scrollBy({ left: 64 })}
-                tabIndex={-1}
-                type="button"
-              >
-                <span className="scroll-arrow right" />
-              </button>
-            </div>
+            <ClassicScrollBars viewportRef={content} />
             {growBox}
           </div>
         </>
