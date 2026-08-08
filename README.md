@@ -38,8 +38,9 @@ compact-computer icon.
 - Synthesized menu and ejection sounds.
 
 System Disk and Trash can be repositioned independently. Dragging System Disk onto the visible
-Trash artwork begins the Macintosh shutdown gesture: dirty Write documents are reviewed, the latest
-desktop and virtual-disk state is saved, and the application quits only after persistence succeeds.
+Trash artwork begins the Macintosh shutdown gesture: dirty Write documents are reviewed, the disk
+artwork remains at its durable position and flashes twice, the latest desktop and virtual-disk state
+is saved, and the application quits only after persistence succeeds.
 
 ### Write
 

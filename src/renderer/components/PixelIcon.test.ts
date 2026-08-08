@@ -157,6 +157,49 @@ describe('Icon surface backgrounds', () => {
   });
 });
 
+describe('System Disk ejection feedback', () => {
+  it('exposes an inverted flash phase without assigning motion to the desktop icon', () => {
+    const markup = renderToStaticMarkup(
+      createElement(DesktopIcon, {
+        ejecting: true,
+        ejectionFlashPhase: { appearance: 'inverted', flashNumber: 1 },
+        icon: 'disk',
+        id: 'system-disk',
+        interactionCancelToken: 0,
+        label: 'System Disk',
+        onDrag: () => undefined,
+        onDragCancel: () => undefined,
+        onDragEnd: () => undefined,
+        onDragStart: () => undefined,
+        onInteractionChange: () => undefined,
+        onOpen: () => undefined,
+        onSelect: () => undefined,
+        position: { x: 12, y: 34 },
+        selected: true,
+      }),
+    );
+
+    expect(markup).toContain('class="desktop-icon is-selected is-ejecting is-ejection-inverted"');
+    expect(markup).toContain('data-ejection-flash-appearance="inverted"');
+    expect(markup).toContain('data-ejection-flash-number="1"');
+    expect(declarationsFor('.desktop-icon.is-ejecting')).not.toMatch(
+      /animation|transform|visibility/,
+    );
+    expect(backgroundFor('.desktop-icon.is-ejecting .desktop-icon-glyph')).toBe('transparent');
+    expect(declarationsFor('.desktop-icon.is-ejecting .desktop-icon-glyph .pixel-icon')).toContain(
+      'filter: none',
+    );
+    expect(
+      backgroundFor('.desktop-icon.is-ejecting.is-ejection-inverted .desktop-icon-glyph'),
+    ).toBe('#000');
+    expect(
+      declarationsFor(
+        '.desktop-icon.is-ejecting.is-ejection-inverted .desktop-icon-glyph .pixel-icon',
+      ),
+    ).toContain('filter: invert(1)');
+  });
+});
+
 describe('Trash pixel icons', () => {
   const empty = renderBitmap('trash');
   const full = renderBitmap('trash-full');

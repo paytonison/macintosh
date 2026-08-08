@@ -6,6 +6,7 @@ import {
 } from 'react';
 
 import type { Point } from '../../shared/state';
+import type { EjectionFlashPhase } from '../model/ejection-feedback';
 import {
   beginPointerDrag,
   releasePointerDrag,
@@ -24,6 +25,7 @@ interface DesktopIconProps {
   dragging?: boolean;
   snapping?: boolean;
   ejecting?: boolean;
+  ejectionFlashPhase?: EjectionFlashPhase | null;
   validDropTarget?: boolean;
   onSelect: (id: 'system-disk' | 'trash', additive: boolean) => void;
   onOpen: (id: 'system-disk' | 'trash', source: HTMLElement) => void;
@@ -51,6 +53,7 @@ export function DesktopIcon({
   dragging = false,
   snapping = false,
   ejecting = false,
+  ejectionFlashPhase = null,
   validDropTarget = false,
   onSelect,
   onOpen,
@@ -168,6 +171,7 @@ export function DesktopIcon({
         dragging ? 'is-dragging' : '',
         snapping ? 'is-snapping' : '',
         ejecting ? 'is-ejecting' : '',
+        ejecting && ejectionFlashPhase?.appearance === 'inverted' ? 'is-ejection-inverted' : '',
         validDropTarget ? 'is-drop-target' : '',
       ]
         .filter(Boolean)
@@ -175,6 +179,10 @@ export function DesktopIcon({
       data-desktop-icon={id}
       data-drop-destination={id}
       data-drop-mode={id === 'trash' ? 'internal' : undefined}
+      data-ejection-flash-appearance={
+        ejecting ? (ejectionFlashPhase?.appearance ?? 'normal') : undefined
+      }
+      data-ejection-flash-number={ejecting ? ejectionFlashPhase?.flashNumber : undefined}
       data-vfs-node-id={id}
       onDoubleClick={(event) => onOpen(id, event.currentTarget)}
       onLostPointerCapture={lostPointerCapture}

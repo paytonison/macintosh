@@ -302,7 +302,27 @@ html.is-normal-quit-pending .macintosh,
 .desktop-icon.is-ejecting {
   z-index: 5000;
   pointer-events: none;
-  animation: eject-disk 900ms step-end forwards;
+}
+
+.desktop-icon.is-ejecting .desktop-icon-glyph {
+  background: transparent;
+}
+
+.desktop-icon.is-ejecting .desktop-icon-glyph .pixel-icon {
+  filter: none;
+}
+
+.desktop-icon.is-ejecting .desktop-icon-label {
+  color: #000;
+  background: #fff;
+}
+
+.desktop-icon.is-ejecting.is-ejection-inverted .desktop-icon-glyph {
+  background: #000;
+}
+
+.desktop-icon.is-ejecting.is-ejection-inverted .desktop-icon-glyph .pixel-icon {
+  filter: invert(1);
 }
 
 .selection-marquee {
@@ -1723,25 +1743,6 @@ html.is-item-dragging *,
   }
 }
 
-@keyframes eject-disk {
-  0% {
-    transform: translate3d(var(--icon-x), var(--icon-y), 0);
-  }
-  18% {
-    transform: translate3d(calc(var(--icon-x) - 5px), calc(var(--icon-y) - 12px), 0);
-  }
-  36% {
-    transform: translate3d(calc(var(--icon-x) + 5px), calc(var(--icon-y) - 18px), 0);
-  }
-  58% {
-    transform: translate3d(var(--icon-x), calc(var(--icon-y) + 10px), 0);
-  }
-  100% {
-    visibility: hidden;
-    transform: translate3d(var(--icon-x), calc(var(--icon-y) + 42px), 0);
-  }
-}
-
 @keyframes marching-ants {
   from {
     border-color: #000;
@@ -1764,10 +1765,6 @@ html.is-item-dragging *,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .desktop-icon.is-ejecting {
-    animation-duration: 280ms;
-  }
-
   .startup-progress-fill,
   .startup-scanline,
   .window-animation-shadow,

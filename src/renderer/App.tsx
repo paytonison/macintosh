@@ -73,6 +73,12 @@ import {
 } from './model/command-context';
 import { resolveDesktopIconPosition, translateDesktopIconDrag } from './model/desktop-icon-layout';
 import { isTrashDropPoint } from './model/desktop-drop-target';
+import {
+  AUTOMATION_EJECTION_FLASH_PHASE_DURATION_MS,
+  EJECTION_FLASH_PHASE_DURATION_MS,
+  runEjectionFlashSequence,
+  type EjectionFlashPhase,
+} from './model/ejection-feedback';
 import { translateFinderIconDrag } from './model/finder-icon-layout';
 import {
   createIconDragPreviewItems,
@@ -319,6 +325,7 @@ export default function App() {
   const [snappingIcon, setSnappingIcon] = useState<SpecialDesktopIconId | null>(null);
   const [trashHover, setTrashHover] = useState(false);
   const [ejecting, setEjecting] = useState(false);
+  const [ejectionFlashPhase, setEjectionFlashPhase] = useState<EjectionFlashPhase | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [calculatorOpen, setCalculatorOpen] = useState(false);
   const [writeWindows, setWriteWindows] = useState<WriteWindowState[]>([]);
@@ -1159,11 +1166,18 @@ export default function App() {
       writeExitIntent.current = null;
       setOpenMenu(null);
       setEjecting(true);
+      setEjectionFlashPhase(null);
       setDraggingIcon(null);
       clearSystemDiskDragPreview();
       setTrashHover(true);
       playEjectSound();
-      await pause(automation ? 280 : 920);
+      await runEjectionFlashSequence({
+        onPhase: setEjectionFlashPhase,
+        pause,
+        phaseDurationMs: automation
+          ? AUTOMATION_EJECTION_FLASH_PHASE_DURATION_MS
+          : EJECTION_FLASH_PHASE_DURATION_MS,
+      });
 
       const latest = stateRef.current ?? current;
       const nextState = {
@@ -1182,6 +1196,7 @@ export default function App() {
           'The disk could not be safely ejected or The Macintosh could not shut down.',
         );
         setEjecting(false);
+        setEjectionFlashPhase(null);
         restoreIcon('system-disk');
       }
     },
@@ -3213,6 +3228,7 @@ export default function App() {
           />
         ))}
         <DesktopIcon
+          ejectionFlashPhase={ejectionFlashPhase}
           ejecting={ejecting}
           icon="disk"
           id="system-disk"

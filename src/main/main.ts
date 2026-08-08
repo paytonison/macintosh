@@ -68,6 +68,7 @@ let mainWindow: BrowserWindow | null = null;
 let applicationIcon: NativeImage | null = null;
 let quitRequested = false;
 let smokeSaveFailureTarget: 'eject' | 'import' | 'presentation' | 'vfs' | null = null;
+let smokeEjectFinalizationRequestCount = 0;
 
 const getApplicationIcon = (): NativeImage => {
   if (applicationIcon) return applicationIcon;
@@ -283,6 +284,7 @@ const registerIpc = (): void => {
 
   ipcMain.handle(IPC_CHANNELS.saveAndQuitAfterEject, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    if (smokeMode) smokeEjectFinalizationRequestCount += 1;
     injectSmokeSaveFailure('eject');
     await stateController.finalize(value, (state) => ({
       state: {
@@ -6996,6 +6998,129 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     },
   });
 
+  type EjectionFeedbackSnapshot = {
+    appearance: string;
+    artworkFilter: string;
+    disk: SmokePoint;
+    ejecting: boolean;
+    flashNumber: number;
+    glyph: SmokePoint;
+    glyphBackground: string;
+    inputBlocked: boolean;
+    inverted: boolean;
+    label: SmokePoint;
+    labelBackground: string;
+    labelColor: string;
+  };
+  const readEjectionFeedback = async (): Promise<EjectionFeedbackSnapshot | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+        const glyph = disk?.querySelector('.desktop-icon-glyph');
+        const artwork = glyph?.querySelector('[data-pixel-icon="disk"]');
+        const label = disk?.querySelector('[data-desktop-icon-label="system-disk"]');
+        if (!(disk instanceof HTMLElement) || !(glyph instanceof HTMLElement) ||
+            !(artwork instanceof SVGElement) || !(label instanceof HTMLElement)) return null;
+        const center = (element) => {
+          const bounds = element.getBoundingClientRect();
+          return {
+            x: Math.round(bounds.left + bounds.width / 2),
+            y: Math.round(bounds.top + bounds.height / 2)
+          };
+        };
+        const glyphStyle = getComputedStyle(glyph);
+        const artworkStyle = getComputedStyle(artwork);
+        const labelStyle = getComputedStyle(label);
+        return {
+          appearance: disk.dataset.ejectionFlashAppearance ?? '',
+          artworkFilter: artworkStyle.filter,
+          disk: center(disk),
+          ejecting: disk.classList.contains('is-ejecting'),
+          flashNumber: Number(disk.dataset.ejectionFlashNumber ?? 0),
+          glyph: center(glyph),
+          glyphBackground: glyphStyle.backgroundColor,
+          inputBlocked: document.querySelector('.ejection-input-layer') !== null,
+          inverted: disk.classList.contains('is-ejection-inverted'),
+          label: center(label),
+          labelBackground: labelStyle.backgroundColor,
+          labelColor: labelStyle.color
+        };
+      })()`,
+      true,
+    )) as EjectionFeedbackSnapshot | null;
+
+  const waitForEjectionFlashPhase = async (
+    origin: EjectionFeedbackSnapshot,
+    flashNumber: 1 | 2,
+    appearance: 'inverted' | 'normal',
+    expectedFinalizationRequests: number,
+  ): Promise<EjectionFeedbackSnapshot> => {
+    let latest: EjectionFeedbackSnapshot | null = null;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      latest = await readEjectionFeedback();
+      if (latest?.flashNumber === flashNumber && latest.appearance === appearance) break;
+      await pause(8);
+    }
+    if (!latest || latest.flashNumber !== flashNumber || latest.appearance !== appearance) {
+      throw new Error(
+        `Ejection did not reach flash ${flashNumber} ${appearance}: ${JSON.stringify(latest)}.`,
+      );
+    }
+
+    const moved = (point: SmokePoint, expected: SmokePoint): boolean =>
+      Math.hypot(point.x - expected.x, point.y - expected.y) > 1;
+    const expectedInverted = appearance === 'inverted';
+    const paintMatches = expectedInverted
+      ? latest.glyphBackground === 'rgb(0, 0, 0)' && latest.artworkFilter === 'invert(1)'
+      : latest.glyphBackground === 'rgba(0, 0, 0, 0)' && latest.artworkFilter === 'none';
+    if (
+      !latest.ejecting ||
+      latest.inverted !== expectedInverted ||
+      !paintMatches ||
+      latest.labelBackground !== 'rgb(255, 255, 255)' ||
+      latest.labelColor !== 'rgb(0, 0, 0)' ||
+      !latest.inputBlocked ||
+      moved(latest.disk, origin.disk) ||
+      moved(latest.glyph, origin.glyph) ||
+      moved(latest.label, origin.label) ||
+      quitRequested ||
+      smokeEjectFinalizationRequestCount !== expectedFinalizationRequests
+    ) {
+      throw new Error(
+        `Ejection flash ${flashNumber} ${appearance} violated stationary feedback or transaction ordering: ${JSON.stringify(
+          {
+            expectedFinalizationRequests,
+            finalizationRequests: smokeEjectFinalizationRequestCount,
+            latest,
+            origin,
+            quitRequested,
+          },
+        )}.`,
+      );
+    }
+
+    return latest;
+  };
+
+  const assertTwoFlashEjectionSequence = async (
+    origin: EjectionFeedbackSnapshot,
+    expectedFinalizationRequests: number,
+  ): Promise<void> => {
+    for (const phase of [
+      { appearance: 'inverted', flashNumber: 1 },
+      { appearance: 'normal', flashNumber: 1 },
+      { appearance: 'inverted', flashNumber: 2 },
+      { appearance: 'normal', flashNumber: 2 },
+    ] as const) {
+      await waitForEjectionFlashPhase(
+        origin,
+        phase.flashNumber,
+        phase.appearance,
+        expectedFinalizationRequests,
+      );
+    }
+  };
+
   const assertRejectedDiskRelease = async (
     expectedCenter: { x: number; y: number },
     description: string,
@@ -7940,43 +8065,101 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
-  desktopGeometry = await readDesktopGeometry();
-  if (!desktopGeometry) throw new Error('Desktop geometry disappeared after cancelled ejection.');
-  ejectPoint = trashProbePoints(desktopGeometry).insideEdge;
-  await beginDrag(desktopGeometry.disk, ejectPoint, true);
-  await waitForTrashHighlight(true);
-  releaseDrag(ejectPoint);
-
-  await pause(60);
-  for (let position = 1; position <= 2; position += 1) {
-    const reviewReady = await window.webContents.executeJavaScript(
-      `document.querySelector('[aria-label="Save Changes"]')?.textContent?.includes('Document ${position} of 2') === true`,
-      true,
-    );
-    if (!reviewReady) {
-      throw new Error(`Final ejection did not review dirty document ${position} of 2.`);
+  const beginReviewedEjection = async (description: string): Promise<EjectionFeedbackSnapshot> => {
+    desktopGeometry = await readDesktopGeometry();
+    const origin = await readEjectionFeedback();
+    if (!desktopGeometry || !origin) {
+      throw new Error(`${description} could not measure System Disk before ejection.`);
     }
-    await window.webContents.executeJavaScript(
-      `(() => {
-        const dialog = document.querySelector('[aria-label="Save Changes"]');
-        [...(dialog?.querySelectorAll('button') ?? [])]
-          .find((button) => button.textContent?.trim() === 'Don’t Save')
-          ?.click();
-      })()`,
-      true,
-    );
-    await pause(position === 1 ? 60 : 55);
-  }
+    ejectPoint = trashProbePoints(desktopGeometry).insideEdge;
+    await beginDrag(desktopGeometry.disk, ejectPoint, true);
+    await waitForTrashHighlight(true);
+    releaseDrag(ejectPoint);
 
-  const ejectAnimationStarted = await window.webContents.executeJavaScript(
-    "document.querySelector('[data-desktop-icon=\"system-disk\"]')?.classList.contains('is-ejecting') === true",
+    await pause(60);
+    for (let position = 1; position <= 2; position += 1) {
+      const reviewReady = await window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Save Changes"]')?.textContent?.includes('Document ${position} of 2') === true`,
+        true,
+      );
+      if (!reviewReady) {
+        throw new Error(`${description} did not review dirty document ${position} of 2.`);
+      }
+      await window.webContents.executeJavaScript(
+        `(() => {
+          const dialog = document.querySelector('[aria-label="Save Changes"]');
+          [...(dialog?.querySelectorAll('button') ?? [])]
+            .find((button) => button.textContent?.trim() === 'Don’t Save')
+            ?.click();
+        })()`,
+        true,
+      );
+      await pause(position === 1 ? 60 : 20);
+    }
+    return origin;
+  };
+
+  const lastEjectBeforeFailure = (await loadState()).desktop.lastEjectAt;
+  smokeSaveFailureTarget = 'eject';
+  const failedEjectionOrigin = await beginReviewedEjection('Failed ejection');
+  await assertTwoFlashEjectionSequence(failedEjectionOrigin, 0);
+
+  let failedEjectionRecovered = false;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    failedEjectionRecovered = (await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Persistence error"]') !== null &&
+        document.querySelector('[data-desktop-icon="system-disk"]')
+          ?.classList.contains('is-ejecting') === false`,
+      true,
+    )) as boolean;
+    if (failedEjectionRecovered) break;
+    await pause(15);
+  }
+  const recoveredEjection = await readEjectionFeedback();
+  const stateAfterFailedEjection = await loadState();
+  if (
+    !failedEjectionRecovered ||
+    !recoveredEjection ||
+    recoveredEjection.appearance !== '' ||
+    recoveredEjection.flashNumber !== 0 ||
+    recoveredEjection.inputBlocked ||
+    Math.hypot(
+      recoveredEjection.disk.x - failedEjectionOrigin.disk.x,
+      recoveredEjection.disk.y - failedEjectionOrigin.disk.y,
+    ) > 1 ||
+    quitRequested ||
+    smokeEjectFinalizationRequestCount !== 1 ||
+    stateAfterFailedEjection.desktop.lastEjectAt !== lastEjectBeforeFailure
+  ) {
+    throw new Error(
+      `Failed ejection did not restore a recoverable disk and unchanged eject timestamp: ${JSON.stringify(
+        {
+          failedEjectionRecovered,
+          finalizationRequests: smokeEjectFinalizationRequestCount,
+          lastEjectAfterFailure: stateAfterFailedEjection.desktop.lastEjectAt,
+          lastEjectBeforeFailure,
+          quitRequested,
+          recoveredEjection,
+        },
+      )}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[aria-label="Persistence error"] button\')?.click()',
     true,
   );
-  if (!ejectAnimationStarted) throw new Error('Disk eject animation did not start.');
+  await pause(260);
+
+  const successfulEjectionOrigin = await beginReviewedEjection('Successful ejection');
+  await assertTwoFlashEjectionSequence(successfulEjectionOrigin, 1);
 
   setTimeout(() => {
-    if (!quitRequested) {
-      console.error('Disk-to-Trash gesture did not request application quit.');
+    if (!quitRequested || smokeEjectFinalizationRequestCount !== 2) {
+      console.error(
+        `Disk-to-Trash gesture did not request one successful application quit after its failed retry: ${JSON.stringify(
+          { quitRequested, smokeEjectFinalizationRequestCount },
+        )}.`,
+      );
       app.exit(1);
     }
   }, 8_000);

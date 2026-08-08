@@ -346,10 +346,16 @@ Ejection is a transaction:
 
 1. if Write has dirty documents, restore the disk icon and complete the per-document exit review;
 2. mark the interface as ejecting;
-3. provide sound and stepped visual feedback;
+3. play the synthesized ejection sound once, keep the disk and its label at the durable pre-drag
+   position, and complete exactly two stepped normal-to-inverted-to-normal artwork flashes;
 4. ask the main process to record the last-eject timestamp;
 5. atomically commit the latest presentation against canonical state;
 6. quit from that same main-process transaction only after the save succeeds.
+
+The label remains in its normal treatment throughout both flashes. System Disk does not translate,
+bob, fall into Trash, become hidden, or begin finalization before the second normal state has been
+held. Automation may shorten each phase without removing or reordering any phase, and reduced-motion
+preferences retain two legible discrete flashes rather than collapsing the feedback.
 
 If saving fails, Macintosh Workbench must not quit. It must report the failure, leave durable state recoverable, and return System Disk to its origin.
 
