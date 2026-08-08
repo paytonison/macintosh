@@ -429,6 +429,7 @@ Visual feedback must communicate state, not decorate latency.
 - Active and inactive windows must be distinguishable without color.
 - Write pages remain white paper with hard black boundaries and shadows over an aligned dithered pasteboard at every supported zoom and window size.
 - Selected items must remain legible under inverse or patterned treatment.
+- Unused pixels outside authored icon glyphs remain transparent in free-placement Desktop and Finder icon views; labels and transient selection or drop-target treatments may paint only their own bounded feedback surfaces.
 - Drag outlines must be crisp and aligned to integer pixels.
 - Hover treatment appears only for a meaningful target.
 - Cursor artwork and hotspots must remain crisp, integer-aligned 1-bit bitmaps so changing pointer states does not create an apparent positional jump.
