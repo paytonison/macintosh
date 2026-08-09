@@ -68,6 +68,7 @@ let mainWindow: BrowserWindow | null = null;
 let applicationIcon: NativeImage | null = null;
 let quitRequested = false;
 let smokeSaveFailureTarget: 'eject' | 'import' | 'presentation' | 'vfs' | null = null;
+let smokeEjectFinalizationRequestCount = 0;
 
 const getApplicationIcon = (): NativeImage => {
   if (applicationIcon) return applicationIcon;
@@ -283,6 +284,7 @@ const registerIpc = (): void => {
 
   ipcMain.handle(IPC_CHANNELS.saveAndQuitAfterEject, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    if (smokeMode) smokeEjectFinalizationRequestCount += 1;
     injectSmokeSaveFailure('eject');
     await stateController.finalize(value, (state) => ({
       state: {
@@ -1413,6 +1415,156 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   assertPixelCursor('Window title-bar grab', cursorBindings.titlebar, 16, 16, { x: 7, y: 8 });
   assertPixelCursor('Window control arrow', cursorBindings.windowControl, 11, 16, { x: 1, y: 1 });
   assertPixelCursor('Window resize', cursorBindings.growBox, 15, 15, { x: 7, y: 7 });
+
+  type SmokeIconHitRegionProbe = {
+    itemPointerEvents: string;
+    margin: {
+      hitItemId: string | null;
+      ownsLayout: boolean;
+      point: SmokePoint;
+    } | null;
+    regions: {
+      hitItemId: string | null;
+      name: string | null;
+      point: SmokePoint;
+      pointerEvents: string;
+    }[];
+  };
+  const inspectIconHitRegions = async (
+    itemSelector: string,
+    itemIdAttribute: string,
+    layoutSelector: string,
+  ): Promise<SmokeIconHitRegionProbe | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const item = document.querySelector(${JSON.stringify(itemSelector)});
+        if (!(item instanceof HTMLElement)) return null;
+        const itemBounds = item.getBoundingClientRect();
+        const regions = [...item.querySelectorAll('[data-icon-hit-region]')].flatMap((region) => {
+          if (!(region instanceof HTMLElement)) return [];
+          const bounds = region.getBoundingClientRect();
+          const point = {
+            x: Math.round(bounds.left + bounds.width / 2),
+            y: Math.round(bounds.top + bounds.height / 2)
+          };
+          const hit = document.elementFromPoint(point.x, point.y);
+          return [{
+            bounds,
+            hitItemId: hit instanceof Element
+              ? hit.closest(${JSON.stringify(
+                `[${itemIdAttribute}]`,
+              )})?.getAttribute(${JSON.stringify(itemIdAttribute)}) ?? null
+              : null,
+            name: region.getAttribute('data-icon-hit-region'),
+            point,
+            pointerEvents: getComputedStyle(region).pointerEvents
+          }];
+        });
+        let margin = null;
+        for (let y = Math.ceil(itemBounds.top) + 1; y < Math.floor(itemBounds.bottom) - 1 && !margin; y += 1) {
+          for (let x = Math.ceil(itemBounds.left) + 1; x < Math.floor(itemBounds.right) - 1; x += 1) {
+            if (regions.some(({ bounds }) =>
+              x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom
+            )) continue;
+            const hit = document.elementFromPoint(x, y);
+            if (!(hit instanceof Element) || item.contains(hit)) continue;
+            margin = {
+              hitItemId:
+                hit.closest(${JSON.stringify(
+                  `[${itemIdAttribute}]`,
+                )})?.getAttribute(${JSON.stringify(itemIdAttribute)}) ?? null,
+              ownsLayout: hit.closest(${JSON.stringify(layoutSelector)}) !== null,
+              point: { x, y }
+            };
+            break;
+          }
+        }
+        return {
+          itemPointerEvents: getComputedStyle(item).pointerEvents,
+          margin,
+          regions: regions.map(({ bounds: _bounds, ...region }) => region)
+        };
+      })()`,
+      true,
+    )) as SmokeIconHitRegionProbe | null;
+  function assertIconHitRegionProbe(
+    probe: SmokeIconHitRegionProbe | null,
+    itemId: string,
+    label: string,
+  ): asserts probe is SmokeIconHitRegionProbe {
+    const regionNames = probe?.regions
+      .map(({ name }) => name)
+      .sort()
+      .join(',');
+    if (
+      probe?.itemPointerEvents !== 'none' ||
+      regionNames !== 'artwork,label' ||
+      probe.regions.some(
+        (region) => region.pointerEvents !== 'auto' || region.hitItemId !== itemId,
+      ) ||
+      !probe.margin?.ownsLayout ||
+      probe.margin.hitItemId !== null
+    ) {
+      throw new Error(
+        `${label} retained an oversized layout-tile hit box: ${JSON.stringify(probe)}.`,
+      );
+    }
+  }
+
+  const desktopIconHitRegions = await inspectIconHitRegions(
+    '[data-desktop-icon="system-disk"]',
+    'data-desktop-icon',
+    '.desktop-surface',
+  );
+  assertIconHitRegionProbe(desktopIconHitRegions, 'system-disk', 'Desktop icon');
+  const desktopArtworkPoint = desktopIconHitRegions.regions.find(
+    ({ name }) => name === 'artwork',
+  )?.point;
+  if (!desktopArtworkPoint || !desktopIconHitRegions.margin) {
+    throw new Error('Desktop icon hit-region coordinates were unavailable.');
+  }
+  await clickAt(desktopArtworkPoint);
+  const desktopArtworkSelected = (await window.webContents.executeJavaScript(
+    `document.querySelector('[data-desktop-icon="system-disk"]')?.classList.contains('is-selected') === true`,
+    true,
+  )) as boolean;
+  await clickAt(desktopIconHitRegions.margin.point);
+  const desktopMarginClearedSelection = (await window.webContents.executeJavaScript(
+    `document.querySelector('[data-desktop-icon="system-disk"]')?.classList.contains('is-selected') === false`,
+    true,
+  )) as boolean;
+  if (!desktopArtworkSelected || !desktopMarginClearedSelection) {
+    throw new Error('Desktop native pointer input did not distinguish artwork from tile margin.');
+  }
+
+  const finderIconHitRegions = await inspectIconHitRegions(
+    '[data-finder-window="window-system-disk"] [data-vfs-item="applications"]',
+    'data-vfs-item',
+    '.finder-icon-grid',
+  );
+  assertIconHitRegionProbe(finderIconHitRegions, 'applications', 'Finder icon');
+  const finderControlHitRegions = await inspectIconHitRegions(
+    '[data-finder-window="window-system-disk"] [data-vfs-item="system-folder"]',
+    'data-vfs-item',
+    '.finder-icon-grid',
+  );
+  assertIconHitRegionProbe(finderControlHitRegions, 'system-folder', 'Finder control icon');
+  const finderControlArtworkPoint = finderControlHitRegions.regions.find(
+    ({ name }) => name === 'artwork',
+  )?.point;
+  if (!finderControlArtworkPoint || !finderIconHitRegions.margin) {
+    throw new Error('Finder icon hit-region coordinates were unavailable.');
+  }
+  await clickAt(finderControlArtworkPoint);
+  await clickAt(finderIconHitRegions.margin.point);
+  const finderMarginPreservedSelection = (await window.webContents.executeJavaScript(
+    `document.querySelector('[data-vfs-item="system-folder"]')?.classList.contains('is-selected') === true &&
+      document.querySelector('[data-vfs-item="applications"]')?.classList.contains('is-selected') === false`,
+    true,
+  )) as boolean;
+  if (!finderMarginPreservedSelection) {
+    throw new Error('Finder tile-margin input selected the icon outside its artwork and label.');
+  }
 
   const focusLossDragPoints = (await window.webContents.executeJavaScript(
     `(() => {
@@ -3260,12 +3412,17 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   const freeIconCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const source = document.querySelector('[data-vfs-item="applications"]');
+      const artwork = source?.querySelector('[data-icon-hit-region="artwork"]');
       const canvas = document.querySelector('[data-icon-layout-parent="system-disk"]');
       const root = document.querySelector('[data-vfs-count]');
-      if (!(source instanceof HTMLElement) || !(canvas instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      if (!(source instanceof HTMLElement) || !(artwork instanceof HTMLElement) || !(canvas instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
       const sourceRect = source.getBoundingClientRect();
+      const artworkRect = artwork.getBoundingClientRect();
       const canvasRect = canvas.getBoundingClientRect();
-      const hotspot = { x: 31, y: 19 };
+      const hotspot = {
+        x: Math.round(artworkRect.left + artworkRect.width / 2 - sourceRect.left),
+        y: Math.round(artworkRect.top + artworkRect.height / 2 - sourceRect.top)
+      };
       const destination = { x: 441, y: 239 };
       const client = {
         x: Math.round(canvasRect.left + destination.x + hotspot.x),
@@ -3464,12 +3621,17 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       const source = document.querySelector(
         '[data-finder-window="window-system-disk"] [data-vfs-item="utilities"]'
       );
+      const artwork = source?.querySelector('[data-icon-hit-region="artwork"]');
       const surface = document.querySelector('.desktop-surface');
       const root = document.querySelector('[data-vfs-count]');
-      if (!(source instanceof HTMLElement) || !(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+      if (!(source instanceof HTMLElement) || !(artwork instanceof HTMLElement) || !(surface instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
       const sourceBounds = source.getBoundingClientRect();
+      const artworkBounds = artwork.getBoundingClientRect();
       const surfaceBounds = surface.getBoundingClientRect();
-      const hotspot = { x: 29, y: 17 };
+      const hotspot = {
+        x: Math.round(artworkBounds.left + artworkBounds.width / 2 - sourceBounds.left),
+        y: Math.round(artworkBounds.top + artworkBounds.height / 2 - sourceBounds.top)
+      };
       const destination = {
         x: Math.round(surfaceBounds.left + ${desktopInternalInitial.x} + hotspot.x),
         y: Math.round(surfaceBounds.top + ${desktopInternalInitial.y} + hotspot.y)
@@ -4112,6 +4274,315 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       `Write did not project a long paragraph across automatic pages: ${JSON.stringify(automaticPagination)}.`,
     );
   }
+
+  type ClassicScrollFrameSnapshot = {
+    directions: string[];
+    grow: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+    horizontal: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+    nativeScrollbarWidth: string;
+    page: { left: number; width: number } | null;
+    ruler: { left: number; width: number } | null;
+    rulerScrollLeft: number | null;
+    rulerViewport: { right: number } | null;
+    rulerGutter: { left: number; width: number } | null;
+    status: { top: number } | null;
+    thumbs: number;
+    tracks: number;
+    vertical: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+    viewport: {
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+      clientWidth: number;
+      clientHeight: number;
+      scrollWidth: number;
+      scrollHeight: number;
+      scrollLeft: number;
+      scrollTop: number;
+    };
+  };
+  const readClassicScrollFrame = async (
+    ownerSelector: string,
+    viewportSelector: string,
+  ): Promise<ClassicScrollFrameSnapshot | null> =>
+    window.webContents.executeJavaScript(
+      `(() => {
+        const owner = document.querySelector(${JSON.stringify(ownerSelector)});
+        const viewport = owner?.querySelector(${JSON.stringify(viewportSelector)});
+        const vertical = owner?.querySelector('.scrollbar-vertical');
+        const horizontal = owner?.querySelector('.scrollbar-horizontal');
+        const grow = owner?.querySelector('.window-grow-box');
+        if (
+          !(owner instanceof HTMLElement) ||
+          !(viewport instanceof HTMLElement) ||
+          !(vertical instanceof HTMLElement) ||
+          !(horizontal instanceof HTMLElement) ||
+          !(grow instanceof HTMLElement)
+        ) return null;
+        const bounds = (element) => {
+          const box = element.getBoundingClientRect();
+          return {
+            left: box.left,
+            top: box.top,
+            right: box.right,
+            bottom: box.bottom,
+            width: box.width,
+            height: box.height
+          };
+        };
+        const page = owner.querySelector('.write-page-stack');
+        const ruler = owner.querySelector('.write-ruler-viewport');
+        const rulerViewport = owner.querySelector('.write-ruler-scroll-viewport');
+        const rulerGutter = owner.querySelector('.write-ruler-scroll-gutter');
+        const status = owner.querySelector('.write-status-bar');
+        return {
+          directions: [...owner.querySelectorAll('[data-scroll-direction]')]
+            .map((control) => control.getAttribute('data-scroll-direction') ?? '')
+            .sort(),
+          grow: bounds(grow),
+          horizontal: bounds(horizontal),
+          nativeScrollbarWidth: getComputedStyle(viewport).scrollbarWidth,
+          page: page instanceof HTMLElement
+            ? { left: page.getBoundingClientRect().left, width: page.getBoundingClientRect().width }
+            : null,
+          ruler: ruler instanceof HTMLElement
+            ? { left: ruler.getBoundingClientRect().left, width: ruler.getBoundingClientRect().width }
+            : null,
+          rulerScrollLeft: rulerViewport instanceof HTMLElement ? rulerViewport.scrollLeft : null,
+          rulerViewport: rulerViewport instanceof HTMLElement
+            ? { right: rulerViewport.getBoundingClientRect().right }
+            : null,
+          rulerGutter: rulerGutter instanceof HTMLElement
+            ? { left: rulerGutter.getBoundingClientRect().left, width: rulerGutter.getBoundingClientRect().width }
+            : null,
+          status: status instanceof HTMLElement ? { top: status.getBoundingClientRect().top } : null,
+          thumbs: owner.querySelectorAll('.scroll-thumb').length,
+          tracks: owner.querySelectorAll('.scroll-track').length,
+          vertical: bounds(vertical),
+          viewport: {
+            ...bounds(viewport),
+            clientWidth: viewport.clientWidth,
+            clientHeight: viewport.clientHeight,
+            scrollWidth: viewport.scrollWidth,
+            scrollHeight: viewport.scrollHeight,
+            scrollLeft: viewport.scrollLeft,
+            scrollTop: viewport.scrollTop
+          }
+        };
+      })()`,
+      true,
+    ) as Promise<ClassicScrollFrameSnapshot | null>;
+  const assertClassicScrollFrame: (
+    snapshot: ClassicScrollFrameSnapshot | null,
+    label: string,
+  ) => asserts snapshot is ClassicScrollFrameSnapshot = (snapshot, label) => {
+    if (
+      !snapshot ||
+      snapshot.nativeScrollbarWidth !== 'none' ||
+      snapshot.directions.join(',') !== 'down,left,right,up' ||
+      snapshot.tracks !== 2 ||
+      snapshot.thumbs !== 2 ||
+      Math.abs(snapshot.vertical.width - 15) > 0.1 ||
+      Math.abs(snapshot.horizontal.height - 15) > 0.1 ||
+      Math.abs(snapshot.grow.width - 15) > 0.1 ||
+      Math.abs(snapshot.grow.height - 15) > 0.1 ||
+      Math.abs(snapshot.viewport.right - snapshot.vertical.left) > 0.1 ||
+      Math.abs(snapshot.viewport.bottom - snapshot.horizontal.top) > 0.1 ||
+      Math.abs(snapshot.horizontal.right - snapshot.grow.left) > 0.1 ||
+      Math.abs(snapshot.vertical.bottom - snapshot.grow.top) > 0.1
+    ) {
+      throw new Error(
+        `${label} did not retain the shared classic scroll frame: ${JSON.stringify(snapshot)}.`,
+      );
+    }
+  };
+  const assertWriteRulerAlignment = (
+    snapshot: ClassicScrollFrameSnapshot,
+    zoom: 50 | 75 | 100,
+    label: string,
+  ): void => {
+    const expectedRulerOffset = 72 * (zoom / 100);
+    const expectedRulerWidth = 468 * (zoom / 100);
+    if (
+      !snapshot.page ||
+      !snapshot.ruler ||
+      !snapshot.rulerViewport ||
+      !snapshot.rulerGutter ||
+      !snapshot.status ||
+      snapshot.rulerScrollLeft === null ||
+      Math.abs(snapshot.ruler.left - snapshot.page.left - expectedRulerOffset) > 1 ||
+      Math.abs(snapshot.ruler.width - expectedRulerWidth) > 1 ||
+      Math.abs(snapshot.rulerScrollLeft - snapshot.viewport.scrollLeft) > 0.1 ||
+      Math.abs(snapshot.rulerViewport.right - snapshot.viewport.right) > 0.1 ||
+      Math.abs(snapshot.rulerGutter.left - snapshot.vertical.left) > 0.1 ||
+      Math.abs(snapshot.rulerGutter.width - 15) > 0.1 ||
+      Math.abs(snapshot.horizontal.bottom - snapshot.status.top) > 0.1
+    ) {
+      throw new Error(
+        `${label} lost page, ruler, status, or grow-box alignment: ${JSON.stringify(snapshot)}.`,
+      );
+    }
+  };
+
+  const finderScrollFrame = await readClassicScrollFrame(
+    '[data-finder-window="window-system-disk"]',
+    '.window-content',
+  );
+  assertClassicScrollFrame(finderScrollFrame, 'Finder');
+  const standardWriteScrollFrame = await readClassicScrollFrame(
+    '[data-write-title="Untitled"]',
+    '.write-document-viewport',
+  );
+  assertClassicScrollFrame(standardWriteScrollFrame, 'Write at its standard size');
+  assertWriteRulerAlignment(standardWriteScrollFrame, 75, 'Write at its standard size');
+  if (
+    standardWriteScrollFrame.viewport.scrollHeight <= standardWriteScrollFrame.viewport.clientHeight
+  ) {
+    throw new Error('The standard Write scroll probe did not contain vertical overflow.');
+  }
+
+  type WriteScrollInvariant = {
+    format: string | null;
+    html: string;
+    layoutGeneration: string | null;
+    pageCount: string | null;
+    selection: string;
+    title: string;
+  };
+  const readWriteScrollInvariant = async (): Promise<WriteScrollInvariant> =>
+    window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector('[data-write-title="Untitled"]');
+        const editor = write?.querySelector('[data-write-editor="true"]');
+        const pages = write?.querySelector('.write-page-stack');
+        if (!(write instanceof HTMLElement) || !(editor instanceof HTMLElement)) return null;
+        return {
+          format: write.getAttribute('data-document-format'),
+          html: editor.innerHTML,
+          layoutGeneration: pages?.getAttribute('data-write-layout-generation') ?? null,
+          pageCount: pages?.getAttribute('data-page-count') ?? null,
+          selection: window.getSelection()?.toString() ?? '',
+          title: write.querySelector('.window-titlebar h2')?.textContent ?? ''
+        };
+      })()`,
+      true,
+    ) as Promise<WriteScrollInvariant>;
+  const writeScrollControl = (await window.webContents.executeJavaScript(
+    `(() => {
+      const write = document.querySelector('[data-write-title="Untitled"]');
+      const viewport = write?.querySelector('.write-document-viewport');
+      const editor = write?.querySelector('[data-write-editor="true"]');
+      const down = write?.querySelector('[data-scroll-direction="down"]');
+      if (
+        !(viewport instanceof HTMLElement) ||
+        !(editor instanceof HTMLElement) ||
+        !(down instanceof HTMLElement)
+      ) return null;
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      const firstText = walker.nextNode();
+      if (!firstText || (firstText.textContent?.length ?? 0) < 9) return null;
+      const range = document.createRange();
+      range.setStart(firstText, 0);
+      range.setEnd(firstText, 9);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+      viewport.scrollTo({ left: 0, top: 0 });
+      const downBounds = down.getBoundingClientRect();
+      const viewportBounds = viewport.getBoundingClientRect();
+      return {
+        down: {
+          x: Math.round(downBounds.left + downBounds.width / 2),
+          y: Math.round(downBounds.top + downBounds.height / 2)
+        },
+        viewport: {
+          x: Math.round(viewportBounds.left + viewportBounds.width / 2),
+          y: Math.round(viewportBounds.top + viewportBounds.height / 2)
+        }
+      };
+    })()`,
+    true,
+  )) as { down: SmokePoint; viewport: SmokePoint } | null;
+  if (!writeScrollControl) throw new Error('Write could not prepare its classic scroll probe.');
+  await pause(40);
+  const writeScrollBaseline = await readWriteScrollInvariant();
+  await clickAt(writeScrollControl.down);
+  const afterWriteArrow = await readClassicScrollFrame(
+    '[data-write-title="Untitled"]',
+    '.write-document-viewport',
+  );
+  const afterWriteArrowInvariant = await readWriteScrollInvariant();
+  if (
+    !afterWriteArrow ||
+    afterWriteArrow.viewport.scrollTop < 63 ||
+    JSON.stringify(afterWriteArrowInvariant) !== JSON.stringify(writeScrollBaseline)
+  ) {
+    throw new Error(
+      `Write's classic arrow changed editor state or failed to scroll its own viewport: ${JSON.stringify({ afterWriteArrow, writeScrollBaseline, afterWriteArrowInvariant })}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTo({ left: 0, top: 0 })`,
+    true,
+  );
+  await ensureNativeInputFocus('Write wheel scrolling');
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...writeScrollControl.viewport });
+  let wheelScrollTop = 0;
+  for (const deltaY of [-120, 120]) {
+    window.webContents.sendInputEvent({
+      type: 'mouseWheel',
+      deltaX: 0,
+      deltaY,
+      hasPreciseScrollingDeltas: true,
+      canScroll: true,
+      ...writeScrollControl.viewport,
+    });
+    await pause(80);
+    wheelScrollTop = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTop ?? 0`,
+      true,
+    )) as number;
+    if (wheelScrollTop > 0) break;
+  }
+  const afterWriteWheelInvariant = await readWriteScrollInvariant();
+  if (
+    wheelScrollTop <= 0 ||
+    JSON.stringify(afterWriteWheelInvariant) !== JSON.stringify(writeScrollBaseline)
+  ) {
+    throw new Error(
+      `Native wheel scrolling changed Write editor state or failed to move its viewport: ${JSON.stringify({ wheelScrollTop, writeScrollBaseline, afterWriteWheelInvariant })}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTo({ left: 0, top: 0 })`,
+    true,
+  );
+
   const readWriteResizeGeometry = async (): Promise<{
     width: number;
     height: number;
@@ -4137,7 +4608,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     ) as Promise<{ width: number; height: number; grow: SmokePoint } | null>;
   const writeResizeStart = await readWriteResizeGeometry();
   if (!writeResizeStart) throw new Error('The multi-page Write grow box was unavailable.');
-  const writeResizeDelta = { x: -32, y: -24 };
+  const writeResizeDelta = {
+    x: 520 - writeResizeStart.width,
+    y: 360 - writeResizeStart.height,
+  };
   await resizeWindow(
     '[data-write-title="Untitled"]',
     '[data-write-title="Untitled"] [aria-label="Resize Untitled"]',
@@ -4153,13 +4627,75 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   const writeResized = await readWriteResizeGeometry();
   if (
     !writeResized ||
-    Math.abs(writeResized.width - (writeResizeStart.width + writeResizeDelta.x)) > 1 ||
-    Math.abs(writeResized.height - (writeResizeStart.height + writeResizeDelta.y)) > 1
+    Math.abs(writeResized.width - 520) > 1 ||
+    Math.abs(writeResized.height - 360) > 1
   ) {
     throw new Error(
       `Write did not commit its outline resize once on release: ${JSON.stringify({ writeResizeStart, writeResized })}.`,
     );
   }
+  for (const zoom of [50, 75, 100] as const) {
+    await invokeRendererMenuAction('view', `zoom-${String(zoom)}`);
+    await waitForWriteLayout(
+      '[data-write-title="Untitled"]',
+      `Minimum-size Write ${String(zoom)}% scroll layout`,
+    );
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTo({ left: 0, top: 0 })`,
+      true,
+    );
+    await pause(30);
+    const minimumScrollFrame = await readClassicScrollFrame(
+      '[data-write-title="Untitled"]',
+      '.write-document-viewport',
+    );
+    assertClassicScrollFrame(minimumScrollFrame, `Minimum-size Write at ${String(zoom)}%`);
+    assertWriteRulerAlignment(minimumScrollFrame, zoom, `Minimum-size Write at ${String(zoom)}%`);
+    const horizontalOverflow =
+      minimumScrollFrame.viewport.scrollWidth - minimumScrollFrame.viewport.clientWidth;
+    if (
+      minimumScrollFrame.viewport.scrollHeight <= minimumScrollFrame.viewport.clientHeight ||
+      (zoom === 100 ? horizontalOverflow <= 0 : horizontalOverflow > 1)
+    ) {
+      throw new Error(
+        `Minimum-size Write handled ${String(zoom)}% overflow incorrectly: ${JSON.stringify(minimumScrollFrame)}.`,
+      );
+    }
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Untitled"] [data-scroll-direction="down"]')?.click()`,
+      true,
+    );
+    await pause(30);
+    const verticalScrollTop = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-write-title="Untitled"] .write-document-viewport')?.scrollTop ?? 0`,
+      true,
+    )) as number;
+    if (verticalScrollTop < 63) {
+      throw new Error(`Minimum-size Write ${String(zoom)}% vertical arrow did not scroll.`);
+    }
+    if (zoom === 100) {
+      await window.webContents.executeJavaScript(
+        `document.querySelector('[data-write-title="Untitled"] [data-scroll-direction="right"]')?.click()`,
+        true,
+      );
+      await pause(30);
+      const horizontallyScrolled = await readClassicScrollFrame(
+        '[data-write-title="Untitled"]',
+        '.write-document-viewport',
+      );
+      assertClassicScrollFrame(horizontallyScrolled, 'Horizontally scrolled minimum-size Write');
+      assertWriteRulerAlignment(
+        horizontallyScrolled,
+        100,
+        'Horizontally scrolled minimum-size Write',
+      );
+      if (horizontallyScrolled.viewport.scrollLeft < 63) {
+        throw new Error('Minimum-size Write 100% horizontal arrow did not scroll.');
+      }
+    }
+  }
+  await invokeRendererMenuAction('view', 'zoom-75');
+  await waitForWriteLayout('[data-write-title="Untitled"]', 'Write scroll zoom restoration');
   await resizeWindow(
     '[data-write-title="Untitled"]',
     '[data-write-title="Untitled"] [aria-label="Resize Untitled"]',
@@ -5095,6 +5631,25 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   if (!secondWriteFocused) throw new Error('The second Write window did not become active.');
+  const inactiveWriteScrollFrame = await readClassicScrollFrame(
+    '[data-write-title="Smoke Write"]',
+    '.write-document-viewport',
+  );
+  const activeWriteScrollFrame = await readClassicScrollFrame(
+    '[data-write-title="Untitled"]',
+    '.write-document-viewport',
+  );
+  assertClassicScrollFrame(inactiveWriteScrollFrame, 'Inactive Write');
+  assertClassicScrollFrame(activeWriteScrollFrame, 'Active Write');
+  const firstWriteInactive = await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Smoke Write"]')?.classList.contains('is-inactive') === true`,
+    true,
+  );
+  if (!firstWriteInactive) {
+    throw new Error(
+      'The inactive Write window lost its inactive treatment behind the active window.',
+    );
+  }
   window.webContents.insertText('Independent second window');
   await waitForWriteLayout('[data-write-title="Untitled"]', 'Second Write edit');
   await invokeRendererMenuAction('edit', 'undo');
@@ -6603,6 +7158,129 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     },
   });
 
+  type EjectionFeedbackSnapshot = {
+    appearance: string;
+    artworkFilter: string;
+    disk: SmokePoint;
+    ejecting: boolean;
+    flashNumber: number;
+    glyph: SmokePoint;
+    glyphBackground: string;
+    inputBlocked: boolean;
+    inverted: boolean;
+    label: SmokePoint;
+    labelBackground: string;
+    labelColor: string;
+  };
+  const readEjectionFeedback = async (): Promise<EjectionFeedbackSnapshot | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+        const glyph = disk?.querySelector('.desktop-icon-glyph');
+        const artwork = glyph?.querySelector('[data-pixel-icon="disk"]');
+        const label = disk?.querySelector('[data-desktop-icon-label="system-disk"]');
+        if (!(disk instanceof HTMLElement) || !(glyph instanceof HTMLElement) ||
+            !(artwork instanceof SVGElement) || !(label instanceof HTMLElement)) return null;
+        const center = (element) => {
+          const bounds = element.getBoundingClientRect();
+          return {
+            x: Math.round(bounds.left + bounds.width / 2),
+            y: Math.round(bounds.top + bounds.height / 2)
+          };
+        };
+        const glyphStyle = getComputedStyle(glyph);
+        const artworkStyle = getComputedStyle(artwork);
+        const labelStyle = getComputedStyle(label);
+        return {
+          appearance: disk.dataset.ejectionFlashAppearance ?? '',
+          artworkFilter: artworkStyle.filter,
+          disk: center(disk),
+          ejecting: disk.classList.contains('is-ejecting'),
+          flashNumber: Number(disk.dataset.ejectionFlashNumber ?? 0),
+          glyph: center(glyph),
+          glyphBackground: glyphStyle.backgroundColor,
+          inputBlocked: document.querySelector('.ejection-input-layer') !== null,
+          inverted: disk.classList.contains('is-ejection-inverted'),
+          label: center(label),
+          labelBackground: labelStyle.backgroundColor,
+          labelColor: labelStyle.color
+        };
+      })()`,
+      true,
+    )) as EjectionFeedbackSnapshot | null;
+
+  const waitForEjectionFlashPhase = async (
+    origin: EjectionFeedbackSnapshot,
+    flashNumber: 1 | 2,
+    appearance: 'inverted' | 'normal',
+    expectedFinalizationRequests: number,
+  ): Promise<EjectionFeedbackSnapshot> => {
+    let latest: EjectionFeedbackSnapshot | null = null;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      latest = await readEjectionFeedback();
+      if (latest?.flashNumber === flashNumber && latest.appearance === appearance) break;
+      await pause(8);
+    }
+    if (!latest || latest.flashNumber !== flashNumber || latest.appearance !== appearance) {
+      throw new Error(
+        `Ejection did not reach flash ${flashNumber} ${appearance}: ${JSON.stringify(latest)}.`,
+      );
+    }
+
+    const moved = (point: SmokePoint, expected: SmokePoint): boolean =>
+      Math.hypot(point.x - expected.x, point.y - expected.y) > 1;
+    const expectedInverted = appearance === 'inverted';
+    const paintMatches = expectedInverted
+      ? latest.glyphBackground === 'rgb(0, 0, 0)' && latest.artworkFilter === 'invert(1)'
+      : latest.glyphBackground === 'rgba(0, 0, 0, 0)' && latest.artworkFilter === 'none';
+    if (
+      !latest.ejecting ||
+      latest.inverted !== expectedInverted ||
+      !paintMatches ||
+      latest.labelBackground !== 'rgb(255, 255, 255)' ||
+      latest.labelColor !== 'rgb(0, 0, 0)' ||
+      !latest.inputBlocked ||
+      moved(latest.disk, origin.disk) ||
+      moved(latest.glyph, origin.glyph) ||
+      moved(latest.label, origin.label) ||
+      quitRequested ||
+      smokeEjectFinalizationRequestCount !== expectedFinalizationRequests
+    ) {
+      throw new Error(
+        `Ejection flash ${flashNumber} ${appearance} violated stationary feedback or transaction ordering: ${JSON.stringify(
+          {
+            expectedFinalizationRequests,
+            finalizationRequests: smokeEjectFinalizationRequestCount,
+            latest,
+            origin,
+            quitRequested,
+          },
+        )}.`,
+      );
+    }
+
+    return latest;
+  };
+
+  const assertTwoFlashEjectionSequence = async (
+    origin: EjectionFeedbackSnapshot,
+    expectedFinalizationRequests: number,
+  ): Promise<void> => {
+    for (const phase of [
+      { appearance: 'inverted', flashNumber: 1 },
+      { appearance: 'normal', flashNumber: 1 },
+      { appearance: 'inverted', flashNumber: 2 },
+      { appearance: 'normal', flashNumber: 2 },
+    ] as const) {
+      await waitForEjectionFlashPhase(
+        origin,
+        phase.flashNumber,
+        phase.appearance,
+        expectedFinalizationRequests,
+      );
+    }
+  };
+
   const assertRejectedDiskRelease = async (
     expectedCenter: { x: number; y: number },
     description: string,
@@ -7031,7 +7709,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   await window.webContents.executeJavaScript(
     `document.querySelectorAll('[data-finder-window]').forEach((finder) => {
-      if (finder instanceof HTMLElement) finder.style.pointerEvents = 'none';
+      if (finder instanceof HTMLElement) {
+        finder.style.pointerEvents = 'none';
+        finder.style.setProperty('--icon-hit-pointer-events', 'none');
+      }
     })`,
     true,
   );
@@ -7160,7 +7841,10 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   const scaledVfsTrashCoordinates = (await window.webContents.executeJavaScript(
     `(() => {
       const finder = document.querySelector('[data-finder-window="window-system-disk"]');
-      if (finder instanceof HTMLElement) finder.style.removeProperty('pointer-events');
+      if (finder instanceof HTMLElement) {
+        finder.style.removeProperty('pointer-events');
+        finder.style.removeProperty('--icon-hit-pointer-events');
+      }
       const source = finder?.querySelector('[data-vfs-item="documents"]');
       const trash = document.querySelector('[data-desktop-icon="trash"]');
       const glyph = trash?.querySelector('[data-trash-drop-bounds="true"]');
@@ -7210,8 +7894,12 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     await pause(24);
   }
   await window.webContents.executeJavaScript(
-    `document.querySelector('[data-finder-window="window-system-disk"]')
-      ?.style.setProperty('pointer-events', 'none')`,
+    `(() => {
+      const finder = document.querySelector('[data-finder-window="window-system-disk"]');
+      if (!(finder instanceof HTMLElement)) return;
+      finder.style.setProperty('pointer-events', 'none');
+      finder.style.setProperty('--icon-hit-pointer-events', 'none');
+    })()`,
     true,
   );
   await moveHeldPointer(
@@ -7387,16 +8075,24 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   const repositionTarget = { x: 137, y: 343 };
   await window.webContents.executeJavaScript(
-    `document.querySelector('[data-desktop-icon="trash"]')
-      ?.style.setProperty('pointer-events', 'none')`,
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return;
+      trash.style.setProperty('pointer-events', 'none');
+      trash.style.setProperty('--icon-hit-pointer-events', 'none');
+    })()`,
     true,
   );
   await sendDrag(desktopGeometry.disk, repositionTarget, true);
   await pause(260);
   await assertRejectedDiskRelease(repositionTarget, 'The free desktop release');
   await window.webContents.executeJavaScript(
-    `document.querySelector('[data-desktop-icon="trash"]')
-      ?.style.removeProperty('pointer-events')`,
+    `(() => {
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      if (!(trash instanceof HTMLElement)) return;
+      trash.style.removeProperty('pointer-events');
+      trash.style.removeProperty('--icon-hit-pointer-events');
+    })()`,
     true,
   );
 
@@ -7547,43 +8243,101 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     );
   }
 
-  desktopGeometry = await readDesktopGeometry();
-  if (!desktopGeometry) throw new Error('Desktop geometry disappeared after cancelled ejection.');
-  ejectPoint = trashProbePoints(desktopGeometry).insideEdge;
-  await beginDrag(desktopGeometry.disk, ejectPoint, true);
-  await waitForTrashHighlight(true);
-  releaseDrag(ejectPoint);
-
-  await pause(60);
-  for (let position = 1; position <= 2; position += 1) {
-    const reviewReady = await window.webContents.executeJavaScript(
-      `document.querySelector('[aria-label="Save Changes"]')?.textContent?.includes('Document ${position} of 2') === true`,
-      true,
-    );
-    if (!reviewReady) {
-      throw new Error(`Final ejection did not review dirty document ${position} of 2.`);
+  const beginReviewedEjection = async (description: string): Promise<EjectionFeedbackSnapshot> => {
+    desktopGeometry = await readDesktopGeometry();
+    const origin = await readEjectionFeedback();
+    if (!desktopGeometry || !origin) {
+      throw new Error(`${description} could not measure System Disk before ejection.`);
     }
-    await window.webContents.executeJavaScript(
-      `(() => {
-        const dialog = document.querySelector('[aria-label="Save Changes"]');
-        [...(dialog?.querySelectorAll('button') ?? [])]
-          .find((button) => button.textContent?.trim() === 'Don’t Save')
-          ?.click();
-      })()`,
-      true,
-    );
-    await pause(position === 1 ? 60 : 55);
-  }
+    ejectPoint = trashProbePoints(desktopGeometry).insideEdge;
+    await beginDrag(desktopGeometry.disk, ejectPoint, true);
+    await waitForTrashHighlight(true);
+    releaseDrag(ejectPoint);
 
-  const ejectAnimationStarted = await window.webContents.executeJavaScript(
-    "document.querySelector('[data-desktop-icon=\"system-disk\"]')?.classList.contains('is-ejecting') === true",
+    await pause(60);
+    for (let position = 1; position <= 2; position += 1) {
+      const reviewReady = await window.webContents.executeJavaScript(
+        `document.querySelector('[aria-label="Save Changes"]')?.textContent?.includes('Document ${position} of 2') === true`,
+        true,
+      );
+      if (!reviewReady) {
+        throw new Error(`${description} did not review dirty document ${position} of 2.`);
+      }
+      await window.webContents.executeJavaScript(
+        `(() => {
+          const dialog = document.querySelector('[aria-label="Save Changes"]');
+          [...(dialog?.querySelectorAll('button') ?? [])]
+            .find((button) => button.textContent?.trim() === 'Don’t Save')
+            ?.click();
+        })()`,
+        true,
+      );
+      await pause(position === 1 ? 60 : 20);
+    }
+    return origin;
+  };
+
+  const lastEjectBeforeFailure = (await loadState()).desktop.lastEjectAt;
+  smokeSaveFailureTarget = 'eject';
+  const failedEjectionOrigin = await beginReviewedEjection('Failed ejection');
+  await assertTwoFlashEjectionSequence(failedEjectionOrigin, 0);
+
+  let failedEjectionRecovered = false;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    failedEjectionRecovered = (await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Persistence error"]') !== null &&
+        document.querySelector('[data-desktop-icon="system-disk"]')
+          ?.classList.contains('is-ejecting') === false`,
+      true,
+    )) as boolean;
+    if (failedEjectionRecovered) break;
+    await pause(15);
+  }
+  const recoveredEjection = await readEjectionFeedback();
+  const stateAfterFailedEjection = await loadState();
+  if (
+    !failedEjectionRecovered ||
+    !recoveredEjection ||
+    recoveredEjection.appearance !== '' ||
+    recoveredEjection.flashNumber !== 0 ||
+    recoveredEjection.inputBlocked ||
+    Math.hypot(
+      recoveredEjection.disk.x - failedEjectionOrigin.disk.x,
+      recoveredEjection.disk.y - failedEjectionOrigin.disk.y,
+    ) > 1 ||
+    quitRequested ||
+    smokeEjectFinalizationRequestCount !== 1 ||
+    stateAfterFailedEjection.desktop.lastEjectAt !== lastEjectBeforeFailure
+  ) {
+    throw new Error(
+      `Failed ejection did not restore a recoverable disk and unchanged eject timestamp: ${JSON.stringify(
+        {
+          failedEjectionRecovered,
+          finalizationRequests: smokeEjectFinalizationRequestCount,
+          lastEjectAfterFailure: stateAfterFailedEjection.desktop.lastEjectAt,
+          lastEjectBeforeFailure,
+          quitRequested,
+          recoveredEjection,
+        },
+      )}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    'document.querySelector(\'[aria-label="Persistence error"] button\')?.click()',
     true,
   );
-  if (!ejectAnimationStarted) throw new Error('Disk eject animation did not start.');
+  await pause(260);
+
+  const successfulEjectionOrigin = await beginReviewedEjection('Successful ejection');
+  await assertTwoFlashEjectionSequence(successfulEjectionOrigin, 1);
 
   setTimeout(() => {
-    if (!quitRequested) {
-      console.error('Disk-to-Trash gesture did not request application quit.');
+    if (!quitRequested || smokeEjectFinalizationRequestCount !== 2) {
+      console.error(
+        `Disk-to-Trash gesture did not request one successful application quit after its failed retry: ${JSON.stringify(
+          { quitRequested, smokeEjectFinalizationRequestCount },
+        )}.`,
+      );
       app.exit(1);
     }
   }, 8_000);
@@ -8115,6 +8869,7 @@ const runNormalQuitProbe = async (window: BrowserWindow): Promise<void> => {
         finder.dataset.finderWindow !== 'window-applications'
       ) {
         finder.style.pointerEvents = 'none';
+        finder.style.setProperty('--icon-hit-pointer-events', 'none');
       }
     })`,
     true,

@@ -183,10 +183,14 @@ export function DesktopVfsIcon({
       style={style}
       type="button"
     >
-      <span className="desktop-icon-glyph">
+      <span className="desktop-icon-glyph" data-icon-hit-region="artwork">
         <VfsNodeIcon node={node} size={32} />
       </span>
-      <span className="desktop-icon-label" data-desktop-icon-label={node.id}>
+      <span
+        className="desktop-icon-label"
+        data-desktop-icon-label={node.id}
+        data-icon-hit-region="label"
+      >
         {node.name}
       </span>
     </button>

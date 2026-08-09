@@ -63,6 +63,12 @@ Authored pointer-session drags remain a press until movement reaches the shared 
 
 Cursor feedback mirrors that ownership without changing gesture semantics. Every authored cursor uses a white interior with a crisp black outline. The normal cursor is a 1-bit System 1-style arrow. Finder and desktop files and folders, together with System Disk and Trash, show a 1-bit pointing finger while any part of their icon-and-label region is hovered. A primary-button press changes immediately to an open hand and keeps it until the shared drag threshold is crossed. An active item drag uses a closed fist latched for the entire pointer-captured drag, including after the pointer leaves its source. Pointer-up, pointer cancellation, lost pointer capture, or application-focus cancellation clears the pressed or dragging state immediately and restores the pointing finger when the pointer remains over an eligible item or the arrow otherwise. Native drag-and-drop remains reserved for explicit host-file imports; internal virtual-filesystem item movement uses the authored pointer session so platform drag feedback cannot replace the closed-fist cursor.
 
+Free-placement Desktop and Finder icon tiles retain stable layout footprints for spacing, dragging,
+and recovery bounds, but those transparent tile margins do not own pointer input. Hover, press,
+click, double-click, drag initiation, and direct drop targeting belong only to the rendered artwork
+surface and label, apart from Trash's separately documented four-pixel drop tolerance. Desktop
+marquee selection uses those same two visible regions rather than the surrounding layout tile.
+
 An active internal virtual-filesystem item drag keeps each grabbed bitmap visible at its exact pointer-relative offset. A three-pixel aligned silhouette follows behind each bitmap as its shadow. The silhouette is solid black over the patterned Desktop and switches to 50% black-and-white dithering over white window surfaces so it remains distinct from either backdrop. This transient layer contains icon artwork only, has no rectangular boundary outline, does not participate in hit testing, and disappears immediately on release or cancellation. The source icons remain at their committed locations until the drop succeeds. System Disk uses the same icon-only preview and contextual shadow; Trash continues to use its existing provisional moving icon and hard shadow.
 
 Opening a menu temporarily owns pointer interaction inside the menu bar. Clicking outside closes the menu; the underlying click may proceed only when doing so is intentional and tested.
@@ -176,6 +182,13 @@ Write is the built-in page-oriented WYSIWYG word processor. Its original code-dr
 Write displays US Letter pages at 612 by 792 logical points with 72-point margins, a 468-point text width, and 648-point usable page height. The initial view is 75%; View provides 50%, 75%, and 100% without changing document semantics.
 
 Automatic overflow and backflow are editor projection. Manual page breaks are explicit semantic blocks, but automatic page boundaries, page count, caret page, page gaps, and measured layout never enter persistent state. Editing before an automatic boundary may move later text between pages. Each semantic editor generation removes prior projection paint, measures on a later animation frame, and requires two consecutive matching layout signatures within four passes. A superseded generation cannot publish stale pagination. Failure remains visible and recoverable, and Save refuses to mutate the VFS until the newest generation has a stable projection. The status line reports the caret page, total pages, current zoom, or the current layout failure.
+
+The Write document viewport hides Chromium and host-platform scroll-bar chrome and uses the same
+15-pixel authored arrow buttons, patterned tracks, and black-and-white thumbs as Finder. Wheel,
+trackpad, and arrow-button scrolling affect only that Write window's viewport. Scroll position is
+transient and does not alter document semantics, page projection, selection, undo history, or
+durable state. When a page overflows horizontally, the ruler follows the viewport's horizontal
+position so its text measurements remain aligned with the page at 50%, 75%, and 100% zoom.
 
 ### Editing and formatting
 
@@ -339,10 +352,16 @@ Ejection is a transaction:
 
 1. if Write has dirty documents, restore the disk icon and complete the per-document exit review;
 2. mark the interface as ejecting;
-3. provide sound and stepped visual feedback;
+3. play the synthesized ejection sound once, keep the disk and its label at the durable pre-drag
+   position, and complete exactly two stepped normal-to-inverted-to-normal artwork flashes;
 4. ask the main process to record the last-eject timestamp;
 5. atomically commit the latest presentation against canonical state;
 6. quit from that same main-process transaction only after the save succeeds.
+
+The label remains in its normal treatment throughout both flashes. System Disk does not translate,
+bob, fall into Trash, become hidden, or begin finalization before the second normal state has been
+held. Automation may shorten each phase without removing or reordering any phase, and reduced-motion
+preferences retain two legible discrete flashes rather than collapsing the feedback.
 
 If saving fails, Macintosh Workbench must not quit. It must report the failure, leave durable state recoverable, and return System Disk to its origin.
 
@@ -429,6 +448,7 @@ Visual feedback must communicate state, not decorate latency.
 - Active and inactive windows must be distinguishable without color.
 - Write pages remain white paper with hard black boundaries and shadows over an aligned dithered pasteboard at every supported zoom and window size.
 - Selected items must remain legible under inverse or patterned treatment.
+- Unused pixels outside authored icon glyphs remain transparent in free-placement Desktop and Finder icon views; labels and transient selection or drop-target treatments may paint only their own bounded feedback surfaces.
 - Drag outlines must be crisp and aligned to integer pixels.
 - Hover treatment appears only for a meaningful target.
 - Cursor artwork and hotspots must remain crisp, integer-aligned 1-bit bitmaps so changing pointer states does not create an apparent positional jump.

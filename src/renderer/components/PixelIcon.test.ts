@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
+import importedMacintoshCss from '../styles/macintosh.css?raw';
 import { DesktopIcon } from './DesktopIcon';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
 
@@ -14,9 +16,38 @@ interface RenderedBitmap {
   bounds: string | undefined;
   fills: string[];
   markup: string;
+  paintedBounds: { bottom: number; left: number; right: number; top: number };
   signature: string;
   silhouette: string;
 }
+
+const macintoshCss =
+  importedMacintoshCss ||
+  readFileSync(new URL('../styles/macintosh.css', import.meta.url), { encoding: 'utf8' });
+
+const cssRules = [...macintoshCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(
+  ([, selectorList, declarations]) => ({
+    selectors: selectorList.split(',').map((selector) => selector.trim()),
+    declarations,
+  }),
+);
+
+const declarationsFor = (selector: string): string => {
+  const rule = cssRules.find((candidate) => candidate.selectors.includes(selector));
+  expect(rule, `Missing stylesheet rule for ${selector}`).toBeDefined();
+  return rule?.declarations ?? '';
+};
+
+const backgroundFor = (selector: string): string => {
+  const rule = cssRules.find(
+    (candidate) =>
+      candidate.selectors.includes(selector) && /background\s*:/.test(candidate.declarations),
+  );
+  expect(rule, `Missing background rule for ${selector}`).toBeDefined();
+  const declaration = rule?.declarations.match(/background:\s*([^;]+);/)?.[1]?.trim();
+  expect(declaration, `Missing background declaration for ${selector}`).toBeDefined();
+  return declaration ?? '';
+};
 
 const renderBitmap = (name: PixelIconName): RenderedBitmap => {
   const markup = renderToStaticMarkup(createElement(PixelIcon, { name, size: 32 }));
@@ -64,15 +95,131 @@ const renderBitmap = (name: PixelIconName): RenderedBitmap => {
   }
 
   const bitmap = pixels.map((row) => row.join('')).join('\n');
+  const paintedPixels = pixels.flatMap((row, y) =>
+    row.flatMap((pixel, x) => (pixel === ' ' ? [] : [{ x, y }])),
+  );
   return {
     bitmap,
     bounds,
     fills: [...fills].sort(),
     markup,
+    paintedBounds: {
+      bottom: Math.max(...paintedPixels.map(({ y }) => y)),
+      left: Math.min(...paintedPixels.map(({ x }) => x)),
+      right: Math.max(...paintedPixels.map(({ x }) => x)),
+      top: Math.min(...paintedPixels.map(({ y }) => y)),
+    },
     signature: createHash('sha256').update(bitmap).digest('hex'),
     silhouette: bitmap.replace(/[.#]/g, '#'),
   };
 };
+
+describe('Folder pixel icons', () => {
+  const folder = renderBitmap('folder');
+  const systemFolder = renderBitmap('system-folder');
+
+  it('keeps deterministic ordinary and System Folder artwork', () => {
+    expect(folder.signature).toBe(
+      '3e6f7e5a1cf216a83d03302be25bdb08bfcf38e860513e98ac5a32757493ac82',
+    );
+    expect(systemFolder.signature).toBe(
+      'be49392a36dc0a76bc927d94dc551c85300f0c541b1b8171a3c1e93ce9e510aa',
+    );
+    expect(systemFolder.bitmap).not.toBe(folder.bitmap);
+  });
+
+  it('leaves unused canvas transparent without removing intentional white artwork', () => {
+    for (const icon of [folder, systemFolder]) {
+      expect(icon.fills).toEqual(['#000', '#fff']);
+      expect(icon.paintedBounds).toEqual({ bottom: 24, left: 2, right: 28, top: 7 });
+      expect(icon.markup).not.toContain('<rect fill="#fff" height="32"');
+    }
+  });
+});
+
+describe('Icon surface backgrounds', () => {
+  it('keeps free-placement icon tiles transparent and backs only their labels', () => {
+    expect(backgroundFor('.desktop-icon')).toBe('transparent');
+    expect(backgroundFor('.finder-item')).toBe('transparent');
+    expect(backgroundFor('.finder-item-label')).toBe('#fff');
+    expect(backgroundFor('.finder-list-row')).toBe('#fff');
+    expect(declarationsFor('.pixel-icon')).not.toMatch(/background(?:-color)?\s*:/);
+  });
+
+  it('limits pointer input to artwork and labels without shrinking layout footprints', () => {
+    expect(declarationsFor('.desktop-icon')).toContain('width: 82px');
+    expect(declarationsFor('.desktop-icon')).toContain('min-height: 78px');
+    expect(declarationsFor('.desktop-icon')).toContain('pointer-events: none');
+    expect(declarationsFor('.desktop-icon-glyph')).toContain(
+      'pointer-events: var(--icon-hit-pointer-events)',
+    );
+    expect(declarationsFor('.desktop-icon-label')).toContain(
+      'pointer-events: var(--icon-hit-pointer-events)',
+    );
+    expect(declarationsFor('.finder-item')).toContain('width: 112px');
+    expect(declarationsFor('.finder-item')).toContain('height: 84px');
+    expect(declarationsFor('.finder-item')).toContain('pointer-events: none');
+    expect(declarationsFor('.finder-item-glyph')).toContain(
+      'pointer-events: var(--icon-hit-pointer-events)',
+    );
+    expect(declarationsFor('.finder-item-label')).toContain(
+      'pointer-events: var(--icon-hit-pointer-events)',
+    );
+  });
+
+  it('retains bounded selected and drop-target feedback', () => {
+    expect(backgroundFor('.desktop-icon.is-selected .desktop-icon-glyph')).toBe('#000');
+    expect(backgroundFor('.finder-item.is-selected .pixel-icon')).toBe('#000');
+    expect(declarationsFor('.finder-item.is-selected .pixel-icon')).toContain('filter: invert(1)');
+    expect(backgroundFor('.finder-item.is-file-drop-target .pixel-icon')).toBe('#000');
+    expect(declarationsFor('.finder-item.is-file-drop-target .pixel-icon')).toContain(
+      'filter: invert(1)',
+    );
+  });
+});
+
+describe('System Disk ejection feedback', () => {
+  it('exposes an inverted flash phase without assigning motion to the desktop icon', () => {
+    const markup = renderToStaticMarkup(
+      createElement(DesktopIcon, {
+        ejecting: true,
+        ejectionFlashPhase: { appearance: 'inverted', flashNumber: 1 },
+        icon: 'disk',
+        id: 'system-disk',
+        interactionCancelToken: 0,
+        label: 'System Disk',
+        onDrag: () => undefined,
+        onDragCancel: () => undefined,
+        onDragEnd: () => undefined,
+        onDragStart: () => undefined,
+        onInteractionChange: () => undefined,
+        onOpen: () => undefined,
+        onSelect: () => undefined,
+        position: { x: 12, y: 34 },
+        selected: true,
+      }),
+    );
+
+    expect(markup).toContain('class="desktop-icon is-selected is-ejecting is-ejection-inverted"');
+    expect(markup).toContain('data-ejection-flash-appearance="inverted"');
+    expect(markup).toContain('data-ejection-flash-number="1"');
+    expect(declarationsFor('.desktop-icon.is-ejecting')).not.toMatch(
+      /animation|transform|visibility/,
+    );
+    expect(backgroundFor('.desktop-icon.is-ejecting .desktop-icon-glyph')).toBe('transparent');
+    expect(declarationsFor('.desktop-icon.is-ejecting .desktop-icon-glyph .pixel-icon')).toContain(
+      'filter: none',
+    );
+    expect(
+      backgroundFor('.desktop-icon.is-ejecting.is-ejection-inverted .desktop-icon-glyph'),
+    ).toBe('#000');
+    expect(
+      declarationsFor(
+        '.desktop-icon.is-ejecting.is-ejection-inverted .desktop-icon-glyph .pixel-icon',
+      ),
+    ).toContain('filter: invert(1)');
+  });
+});
 
 describe('Trash pixel icons', () => {
   const empty = renderBitmap('trash');

@@ -38,8 +38,9 @@ compact-computer icon.
 - Synthesized menu and ejection sounds.
 
 System Disk and Trash can be repositioned independently. Dragging System Disk onto the visible
-Trash artwork begins the Macintosh shutdown gesture: dirty Write documents are reviewed, the latest
-desktop and virtual-disk state is saved, and the application quits only after persistence succeeds.
+Trash artwork begins the Macintosh shutdown gesture: dirty Write documents are reviewed, the disk
+artwork remains at its durable position and flashes twice, the latest desktop and virtual-disk state
+is saved, and the application quits only after persistence succeeds.
 
 ### Write
 
@@ -56,6 +57,9 @@ virtual document directly from the desktop or Finder.
   spacing; and left, first-line, and right indents.
 - A working ruler with draggable indents, default half-inch tabs, and custom tab stops that can be
   added, moved, or removed with cancellable pointer sessions.
+- Finder-matched 15-pixel horizontal and vertical scroll bars with authored arrows, patterned
+  tracks, and black-and-white thumbs. Wheel and trackpad scrolling remain native to each document
+  viewport, while the ruler follows horizontal page scrolling at narrow window sizes.
 - Undo, Redo, Cut, Copy, Paste, Clear, Plain Text, Select All, and exact supported Command-key
   shortcuts, including Shift-Command-S for Save As and Shift-Command-Z for Redo.
 - 50%, 75%, and 100% page zoom without changing document semantics.
