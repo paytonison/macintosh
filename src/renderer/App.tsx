@@ -71,7 +71,13 @@ import {
   findMenuShortcutEntry,
   hasOpenDocumentInTrash,
 } from './model/command-context';
-import { resolveDesktopIconPosition, translateDesktopIconDrag } from './model/desktop-icon-layout';
+import {
+  cleanUpDesktopIconPositions,
+  DESKTOP_ICON_HEIGHT,
+  DESKTOP_ICON_WIDTH,
+  resolveDesktopIconPosition,
+  translateDesktopIconDrag,
+} from './model/desktop-icon-layout';
 import { isTrashDropPoint } from './model/desktop-drop-target';
 import {
   AUTOMATION_EJECTION_FLASH_PHASE_DURATION_MS,
@@ -79,7 +85,7 @@ import {
   runEjectionFlashSequence,
   type EjectionFlashPhase,
 } from './model/ejection-feedback';
-import { translateFinderIconDrag } from './model/finder-icon-layout';
+import { cleanUpFinderIconPositions, translateFinderIconDrag } from './model/finder-icon-layout';
 import {
   createIconDragPreviewItems,
   resolveIconDragPreviewPosition,
@@ -2971,8 +2977,27 @@ export default function App() {
           { id: 'view-separator', separator: true },
           {
             id: 'clean-window',
-            label: 'Clean Up Window',
-            disabled: true,
+            label: 'Clean Up Folder',
+            disabled: state.desktop.viewMode !== 'icons' || activeNode?.kind !== 'folder',
+            action: () => {
+              updateState((current) => {
+                if (current.desktop.viewMode !== 'icons') return current;
+                const currentWindow = current.desktop.windows.find(
+                  (windowState) => windowState.id === activeFinderWindowId,
+                );
+                const currentFolder = currentWindow
+                  ? current.nodes.find((node) => node.id === currentWindow.nodeId)
+                  : undefined;
+                if (currentFolder?.kind !== 'folder') return current;
+                return placeFinderIcons(
+                  current,
+                  currentFolder.id,
+                  cleanUpFinderIconPositions(
+                    current.nodes.filter((node) => node.parentId === currentFolder.id),
+                  ),
+                );
+              });
+            },
           },
         ],
       },
@@ -2990,15 +3015,42 @@ export default function App() {
             id: 'clean-desktop',
             label: 'Clean Up Desktop',
             action: () => {
+              const surface = document.querySelector<HTMLElement>('.desktop-surface');
+              if (!surface) return;
+
               const defaults = createDefaultState().desktop;
-              updateState((current) => ({
-                ...current,
-                desktop: {
-                  ...current.desktop,
-                  diskPosition: defaults.diskPosition,
-                  trashPosition: defaults.trashPosition,
-                },
-              }));
+              const reservedRectangles = [defaults.diskPosition, defaults.trashPosition].map(
+                (position) => ({
+                  left: position.x,
+                  top: position.y,
+                  right: position.x + DESKTOP_ICON_WIDTH,
+                  bottom: position.y + DESKTOP_ICON_HEIGHT,
+                }),
+              );
+              updateState((current) => {
+                const placements = cleanUpDesktopIconPositions(
+                  current.nodes.filter((node) => node.parentId === 'desktop'),
+                  { width: surface.clientWidth, height: surface.clientHeight },
+                  reservedRectangles,
+                );
+                if (!placements) {
+                  showTransferNotice(
+                    'The Desktop does not have enough room to clean up every item.',
+                    true,
+                  );
+                  return current;
+                }
+
+                const positioned = placeFinderIcons(current, 'desktop', placements);
+                return {
+                  ...positioned,
+                  desktop: {
+                    ...positioned.desktop,
+                    diskPosition: defaults.diskPosition,
+                    trashPosition: defaults.trashPosition,
+                  },
+                };
+              });
             },
           },
           { id: 'special-separator', separator: true },
@@ -3013,6 +3065,8 @@ export default function App() {
   }, [
     activateCalculator,
     activeApplication,
+    activeFinderWindowId,
+    activeNode,
     activeTarget.type,
     activeWindow,
     closeWindow,

@@ -1,6 +1,7 @@
 import type { Point, VfsNode } from '../../shared/state';
 import { initialDesktopIconPosition } from '../../shared/desktop-icon-position';
-import { rectanglesOverlap, type Rectangle } from '../../shared/vfs';
+import { rectanglesOverlap, type NodeIconPlacement, type Rectangle } from '../../shared/vfs';
+import { orderNodesForIconCleanup } from './icon-cleanup-order';
 import { translateVfsIconDrag, type VfsIconDragLayout } from './vfs-drag';
 
 export const DESKTOP_ICON_WIDTH = 82;
@@ -21,6 +22,45 @@ export const defaultDesktopIconPosition = (nodeId: string): Point =>
 
 export const resolveDesktopIconPosition = (node: VfsNode): Point =>
   node.iconPosition ?? initialDesktopIconPosition(node.id);
+
+export const cleanUpDesktopIconPositions = (
+  nodes: readonly VfsNode[],
+  surface: DesktopSurfaceSize,
+  reservedRectangles: readonly Rectangle[],
+): NodeIconPlacement[] | null => {
+  const orderedNodes = orderNodesForIconCleanup(nodes);
+  if (orderedNodes.length === 0) return [];
+
+  const width = Math.round(surface.width);
+  const height = Math.round(surface.height);
+  if (width < DESKTOP_ICON_WIDTH || height < DESKTOP_ICON_HEIGHT) return null;
+
+  const maximumX = width - DESKTOP_ICON_WIDTH;
+  const maximumY = height - DESKTOP_ICON_HEIGHT;
+  const columnCount = Math.floor(maximumX / DESKTOP_ICON_WIDTH) + 1;
+  const rowCount = Math.floor(maximumY / DESKTOP_ICON_HEIGHT) + 1;
+  const placements: NodeIconPlacement[] = [];
+
+  for (let column = 0; column < columnCount; column += 1) {
+    const x = maximumX - column * DESKTOP_ICON_WIDTH;
+    for (let row = 0; row < rowCount; row += 1) {
+      const y = row * DESKTOP_ICON_HEIGHT;
+      const candidate = {
+        left: x,
+        top: y,
+        right: x + DESKTOP_ICON_WIDTH,
+        bottom: y + DESKTOP_ICON_HEIGHT,
+      };
+      if (reservedRectangles.some((reserved) => rectanglesOverlap(candidate, reserved))) continue;
+
+      const node = orderedNodes[placements.length];
+      if (!node) return placements;
+      placements.push({ nodeId: node.id, position: { x, y } });
+    }
+  }
+
+  return placements.length === orderedNodes.length ? placements : null;
+};
 
 const desktopDragBounds = (surface: DesktopSurfaceSize) => ({
   minimumX: 0,

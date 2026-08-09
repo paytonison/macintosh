@@ -117,8 +117,8 @@ try {
           (inline) => inline.type === 'text' && inline.marks?.some((mark) => mark.type === 'bold'),
         ),
     ) ||
-    desktopDocument.iconPosition?.x !== 121 ||
-    desktopDocument.iconPosition?.y !== 591
+    desktopDocument.iconPosition?.x !== 1070 ||
+    desktopDocument.iconPosition?.y !== 234
   ) {
     throw new Error('The externally dropped Desktop document and its position were not persisted.');
   }
@@ -170,17 +170,27 @@ try {
   );
   if (
     !droppedFolder ||
-    droppedFolder.iconPosition?.x !== 134 ||
-    droppedFolder.iconPosition?.y !== 602
+    droppedFolder.iconPosition?.x !== 1070 ||
+    droppedFolder.iconPosition?.y !== 156
   ) {
-    throw new Error('The externally dropped Desktop folder and its position were not persisted.');
+    throw new Error('Clean Up Desktop did not persist the imported folder position.');
+  }
+  const cleanedNestedNote = state.nodes.find(
+    (node) => node.parentId === droppedFolder.id && node.name === 'Nested Note.txt',
+  );
+  const cleanedNestedFolder = state.nodes.find(
+    (node) => node.parentId === droppedFolder.id && node.name === 'untitled folder',
+  );
+  if (!cleanedNestedNote || !cleanedNestedFolder) {
+    throw new Error('The externally dropped folder hierarchy was not persisted.');
   }
   if (
-    !state.nodes.some(
-      (node) => node.parentId === droppedFolder.id && node.name === 'Nested Note.txt',
-    )
+    cleanedNestedNote.iconPosition?.x !== 24 ||
+    cleanedNestedNote.iconPosition?.y !== 28 ||
+    cleanedNestedFolder.iconPosition?.x !== 168 ||
+    cleanedNestedFolder.iconPosition?.y !== 28
   ) {
-    throw new Error('The externally dropped folder hierarchy was not persisted.');
+    throw new Error('Clean Up Folder positions were not persisted.');
   }
   const movedSystemFolder = state.nodes.find(
     (node) => node.id === 'system-folder' && node.parentId === 'documents',
@@ -199,8 +209,8 @@ try {
   const desktopUtilities = state.nodes.find(
     (node) => node.id === 'utilities' && node.parentId === 'desktop',
   );
-  if (desktopUtilities?.iconPosition?.x !== 593 || desktopUtilities.iconPosition?.y !== 649) {
-    throw new Error('The internally moved and repositioned Desktop folder was not persisted.');
+  if (desktopUtilities?.iconPosition?.x !== 1070 || desktopUtilities.iconPosition?.y !== 312) {
+    throw new Error('Clean Up Desktop did not persist the internally moved folder position.');
   }
   if (state.desktop.diskPosition.x < 0 || state.desktop.diskPosition.y < 0) {
     throw new Error('The disk did not return to a valid persisted desktop position.');
@@ -232,6 +242,19 @@ try {
   assertCanonicalCreationMetadata(normalQuitState, 'Normal-quit state');
   if (normalQuitState.nodes.length !== state.nodes.length) {
     throw new Error('Normal quit unexpectedly changed the authoritative virtual filesystem.');
+  }
+  for (const nodeId of [
+    desktopDocument.id,
+    droppedFolder.id,
+    desktopUtilities.id,
+    cleanedNestedNote.id,
+    cleanedNestedFolder.id,
+  ]) {
+    const before = state.nodes.find((node) => node.id === nodeId)?.iconPosition;
+    const after = normalQuitState.nodes.find((node) => node.id === nodeId)?.iconPosition;
+    if (JSON.stringify(after) !== JSON.stringify(before)) {
+      throw new Error(`Normal quit lost a cleaned icon position for ${nodeId}.`);
+    }
   }
   const normalQuitWindow = normalQuitState.desktop.windows.find(
     (item) => item.id === 'window-applications',
@@ -284,7 +307,19 @@ try {
     proof.desktopUtilitiesX !== desktopUtilities.iconPosition.x ||
     proof.desktopUtilitiesY !== desktopUtilities.iconPosition.y
   ) {
-    throw new Error('Desktop VFS items did not restore their exact free positions on relaunch.');
+    throw new Error('Cleaned Desktop positions were not restored on relaunch.');
+  }
+  const cleanedFolderProof = new Map(
+    Array.isArray(proof.cleanedFolderItems)
+      ? proof.cleanedFolderItems.map((item) => [item.id, item])
+      : [],
+  );
+  for (const nodeId of [cleanedNestedNote.id, cleanedNestedFolder.id]) {
+    const expected = normalQuitState.nodes.find((node) => node.id === nodeId)?.iconPosition;
+    const restored = cleanedFolderProof.get(nodeId);
+    if (!expected || restored?.x !== expected.x || restored?.y !== expected.y) {
+      throw new Error(`Clean Up Folder position for ${nodeId} was not restored on relaunch.`);
+    }
   }
   if (
     !proof.writeReopened ||
@@ -308,10 +343,10 @@ try {
   }
 
   console.log(
-    'Electron smoke passed: native The Macintosh identity/icon, pixel cursor assets/hotspots, artwork-and-label-only Desktop/Finder icon hit regions, pointer menu selection, Finder zoom and stationary outline resize controls, outline-only Finder and Write opening/closing transitions, content-heavy Write outline resizing without held-frame reflow, host file/folder Desktop placement, Desktop selection/open/info, direct System Disk import, blocked document fall-through, external Trash rejection, pointer-owned Finder-to-Desktop movement and free reposition, document paste and duplication, free Finder icon placement, direct folder move, drag-session input ownership, focus-loss preview/cursor cleanup, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled and committed Trash movement, precise glyph-edge/label/internal/scaled Trash hit testing with an ordinary VFS commit at 1.25x, free System Disk placement with an icon-only preview, Write launch and document routing, shared Finder/Write classic scroll controls, native Write wheel scrolling, minimum-size 50%/75%/100% overflow and ruler alignment, automatic pagination and backflow, rich formatting, ruler tabs, manual page breaks, Save As, virtual Open, dirty-close choices, multi-document quit cancellation, stationary two-flash ejection with final-save failure recovery, persisted eject, normal-quit save failure recovery, repeated quit coalescing, canonical schema-4 built-in metadata, committed presentation persistence inside the debounce window, and provisional outline resize cancellation before quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, pixel cursor assets/hotspots, artwork-and-label-only Desktop/Finder icon hit regions, pointer menu selection, Finder zoom and stationary outline resize controls, outline-only Finder and Write opening/closing transitions, content-heavy Write outline resizing without held-frame reflow, host file/folder Desktop placement, Desktop selection/open/info, alphabetical bounded Clean Up Desktop with preserved special-icon anchors, active-folder Clean Up Folder, direct System Disk import, blocked document fall-through, external Trash rejection, pointer-owned Finder-to-Desktop movement and free reposition, document paste and duplication, free Finder icon placement, direct folder move, drag-session input ownership, focus-loss preview/cursor cleanup, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled and committed Trash movement, precise glyph-edge/label/internal/scaled Trash hit testing with an ordinary VFS commit at 1.25x, free System Disk placement with an icon-only preview, Write launch and document routing, shared Finder/Write classic scroll controls, native Write wheel scrolling, minimum-size 50%/75%/100% overflow and ruler alignment, automatic pagination and backflow, rich formatting, ruler tabs, manual page breaks, Save As, virtual Open, dirty-close choices, multi-document quit cancellation, stationary two-flash ejection with final-save failure recovery, persisted eject, normal-quit save failure recovery, repeated quit coalescing, canonical schema-4 built-in metadata, committed presentation persistence inside the debounce window, and provisional outline resize cancellation before quit.',
   );
   console.log(
-    'Persistence relaunch passed: normal-quit committed Finder geometry, exact Desktop and Finder icon positions, canonical System Disk metadata, schema-4 virtual filesystem reload, and the saved rich Write document reopened without discarded edits.',
+    'Persistence relaunch passed: normal-quit committed Finder geometry, cleaned Desktop and ordinary-folder icon positions, the free Finder icon position, canonical System Disk metadata, schema-4 virtual filesystem reload, and the saved rich Write document reopened without discarded edits.',
   );
 } finally {
   await rm(userData, { recursive: true, force: true });

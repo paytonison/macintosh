@@ -3103,6 +3103,86 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   );
   if (!desktopFolderOpened)
     throw new Error('The imported Desktop folder did not open its hierarchy.');
+
+  const cleanFolderVfsCountBefore = (await window.webContents.executeJavaScript(
+    "Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)",
+    true,
+  )) as number;
+  await invokeRendererMenuAction('file', 'new-folder');
+  let cleanFolderChildrenReady = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    cleanFolderChildrenReady = (await window.webContents.executeJavaScript(
+      `document.querySelectorAll(
+        '[aria-label="Drop Folder window"] [data-vfs-item]'
+      ).length === 2`,
+      true,
+    )) as boolean;
+    if (cleanFolderChildrenReady) break;
+    await pause(25);
+  }
+  if (!cleanFolderChildrenReady) {
+    throw new Error('The Clean Up Folder smoke fixture could not create its second child.');
+  }
+
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu="view"]')?.click()`,
+    true,
+  );
+  await pause(20);
+  const cleanFolderMenuState = (await window.webContents.executeJavaScript(
+    `(() => {
+      const action = document.querySelector('[data-menu-action="clean-window"]');
+      return action instanceof HTMLButtonElement
+        ? {
+            disabled: action.disabled,
+            label: action.querySelector('.menu-label')?.textContent?.trim() ?? ''
+          }
+        : null;
+    })()`,
+    true,
+  )) as { disabled: boolean; label: string } | null;
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu="view"]')?.click()`,
+    true,
+  );
+  if (cleanFolderMenuState?.disabled || cleanFolderMenuState?.label !== 'Clean Up Folder') {
+    throw new Error(
+      `Clean Up Folder was not available for an active icon-view folder: ${JSON.stringify(cleanFolderMenuState)}.`,
+    );
+  }
+
+  await invokeRendererMenuAction('view', 'clean-window');
+  const cleanedFolderItems = (await window.webContents.executeJavaScript(
+    `(() => ({
+      items: [...document.querySelectorAll(
+        '[aria-label="Drop Folder window"] [data-vfs-item]'
+      )].map((item) => ({
+        id: item.getAttribute('data-vfs-item') ?? '',
+        name: item.querySelector('.finder-item-label')?.textContent?.trim() ?? '',
+        x: Number(item.getAttribute('data-icon-x')),
+        y: Number(item.getAttribute('data-icon-y'))
+      })),
+      vfsCount: Number(document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0)
+    }))()`,
+    true,
+  )) as {
+    items: { id: string; name: string; x: number; y: number }[];
+    vfsCount: number;
+  };
+  const cleanedFolderByName = new Map(cleanedFolderItems.items.map((item) => [item.name, item]));
+  if (
+    cleanedFolderItems.items.length !== 2 ||
+    cleanedFolderItems.vfsCount !== cleanFolderVfsCountBefore + 1 ||
+    cleanedFolderByName.get('Nested Note.txt')?.x !== 24 ||
+    cleanedFolderByName.get('Nested Note.txt')?.y !== 28 ||
+    cleanedFolderByName.get('untitled folder')?.x !== 168 ||
+    cleanedFolderByName.get('untitled folder')?.y !== 28
+  ) {
+    throw new Error(
+      `Clean Up Folder did not commit its alphabetical icon layout without changing contents: ${JSON.stringify(cleanedFolderItems)}.`,
+    );
+  }
+
   const heldDesktopFolderClose = await observeWindowAnimation(
     '[aria-label="Drop Folder window"]',
     'closing',
@@ -7307,6 +7387,125 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     }
   };
 
+  type DesktopCleanupItem = {
+    id: string;
+    name: string;
+    x: number;
+    y: number;
+  };
+  type DesktopCleanupSnapshot = {
+    disk: SmokePoint;
+    trash: SmokePoint;
+    surface: { width: number; height: number };
+    items: DesktopCleanupItem[];
+  };
+  const readDesktopCleanupSnapshot = async (): Promise<DesktopCleanupSnapshot | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const surface = document.querySelector('.desktop-surface');
+        const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+        const trash = document.querySelector('[data-desktop-icon="trash"]');
+        if (!(surface instanceof HTMLElement) || !(disk instanceof HTMLElement) || !(trash instanceof HTMLElement)) return null;
+        const point = (element) => ({
+          x: Number.parseFloat(element.style.getPropertyValue('--icon-x')),
+          y: Number.parseFloat(element.style.getPropertyValue('--icon-y'))
+        });
+        return {
+          disk: point(disk),
+          trash: point(trash),
+          surface: { width: surface.clientWidth, height: surface.clientHeight },
+          items: [...surface.querySelectorAll('[data-desktop-vfs-item]')].map((item) => ({
+            id: item.getAttribute('data-desktop-vfs-item') ?? '',
+            name: item.getAttribute('aria-label') ?? '',
+            x: Number(item.getAttribute('data-icon-x')),
+            y: Number(item.getAttribute('data-icon-y'))
+          }))
+        };
+      })()`,
+      true,
+    )) as DesktopCleanupSnapshot | null;
+
+  const assertCleanedDesktopLayout = async (): Promise<DesktopCleanupSnapshot> => {
+    const snapshot = await readDesktopCleanupSnapshot();
+    if (!snapshot) throw new Error('Clean Up Desktop layout could not be inspected.');
+
+    const compareNames = (left: DesktopCleanupItem, right: DesktopCleanupItem): number => {
+      const leftName = left.name.toLowerCase();
+      const rightName = right.name.toLowerCase();
+      if (leftName < rightName) return -1;
+      if (leftName > rightName) return 1;
+      if (left.id < right.id) return -1;
+      if (left.id > right.id) return 1;
+      return 0;
+    };
+    const alphabeticalIds = [...snapshot.items].sort(compareNames).map((item) => item.id);
+    const layoutIds = [...snapshot.items]
+      .sort((left, right) => right.x - left.x || left.y - right.y)
+      .map((item) => item.id);
+    const rectangles = snapshot.items.map((item) => ({
+      id: item.id,
+      left: item.x,
+      top: item.y,
+      right: item.x + 82,
+      bottom: item.y + 78,
+    }));
+    const specialRectangles = [
+      {
+        id: 'system-disk',
+        left: snapshot.disk.x,
+        top: snapshot.disk.y,
+        right: snapshot.disk.x + 82,
+        bottom: snapshot.disk.y + 78,
+      },
+      {
+        id: 'trash',
+        left: snapshot.trash.x,
+        top: snapshot.trash.y,
+        right: snapshot.trash.x + 82,
+        bottom: snapshot.trash.y + 78,
+      },
+    ];
+    const overlaps = (
+      first: (typeof rectangles)[number],
+      second: (typeof rectangles)[number],
+    ): boolean =>
+      first.left < second.right &&
+      first.right > second.left &&
+      first.top < second.bottom &&
+      first.bottom > second.top;
+    const ordinaryOverlap = rectangles.some((rectangle, index) =>
+      rectangles.slice(index + 1).some((other) => overlaps(rectangle, other)),
+    );
+    const specialOverlap = rectangles.some((rectangle) =>
+      specialRectangles.some((special) => overlaps(rectangle, special)),
+    );
+    const outsideSurface = rectangles.some(
+      (rectangle) =>
+        rectangle.left < 0 ||
+        rectangle.top < 0 ||
+        rectangle.right > snapshot.surface.width ||
+        rectangle.bottom > snapshot.surface.height,
+    );
+    const expectedNames = ['Drop Folder', 'Dropped Note.txt', 'Utilities'];
+    if (
+      snapshot.disk.x !== 1036 ||
+      snapshot.disk.y !== 52 ||
+      snapshot.trash.x !== 1040 ||
+      snapshot.trash.y !== 626 ||
+      JSON.stringify([...snapshot.items].map((item) => item.name).sort()) !==
+        JSON.stringify(expectedNames) ||
+      JSON.stringify(layoutIds) !== JSON.stringify(alphabeticalIds) ||
+      ordinaryOverlap ||
+      specialOverlap ||
+      outsideSurface
+    ) {
+      throw new Error(
+        `Clean Up Desktop violated alphabetical, bounded, or special-icon layout: ${JSON.stringify({ alphabeticalIds, layoutIds, snapshot })}.`,
+      );
+    }
+    return snapshot;
+  };
+
   const restoreDefaultDesktopLayout = async (): Promise<DesktopGeometry> => {
     await window.webContents.executeJavaScript(
       'document.querySelector(\'[data-menu="special"]\')?.click()',
@@ -7379,6 +7578,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   const safeDiskPoint = { x: 137, y: 343 };
   const separatedTrashPoint = { x: 650, y: 430 };
   desktopGeometry = await restoreDefaultDesktopLayout();
+  const firstCleanedDesktopLayout = await assertCleanedDesktopLayout();
 
   probePoints = trashProbePoints(desktopGeometry);
   await beginDrag(desktopGeometry.disk, probePoints.insideEdge, true);
@@ -7390,6 +7590,17 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   await assertRejectedDiskRelease(probePoints.label, 'The Trash-label release');
 
   await restoreDefaultDesktopLayout();
+  const secondCleanedDesktopLayout = await assertCleanedDesktopLayout();
+  const cleanupPositions = (snapshot: DesktopCleanupSnapshot) =>
+    [...snapshot.items]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map(({ id, x, y }) => ({ id, x, y }));
+  if (
+    JSON.stringify(cleanupPositions(secondCleanedDesktopLayout)) !==
+    JSON.stringify(cleanupPositions(firstCleanedDesktopLayout))
+  ) {
+    throw new Error('Repeating Clean Up Desktop did not preserve its deterministic layout.');
+  }
 
   await window.webContents.executeJavaScript(
     `document.querySelector('[data-finder-window="window-system-disk"]')?.dispatchEvent(
@@ -8362,6 +8573,49 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
       `Relaunch restored transient Write session state: ${JSON.stringify(transientWriteState)}.`,
     );
   }
+
+  const cleanedFolderOpened = await window.webContents.executeJavaScript(
+    `(() => {
+      const folder = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Drop Folder"]'
+      );
+      if (!(folder instanceof HTMLElement)) return false;
+      folder.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return true;
+    })()`,
+    true,
+  );
+  if (!cleanedFolderOpened) {
+    throw new Error('Persistence probe could not open the cleaned Desktop folder.');
+  }
+  let cleanedFolderItems: { id: string; x: number; y: number }[] | null = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    cleanedFolderItems = (await window.webContents.executeJavaScript(
+      `(() => {
+        const folder = document.querySelector('[aria-label="Drop Folder window"]');
+        if (!(folder instanceof HTMLElement) || folder.classList.contains('is-opening')) return null;
+        return [...folder.querySelectorAll('[data-vfs-item]')].map((item) => ({
+          id: item.getAttribute('data-vfs-item') ?? '',
+          x: Number(item.getAttribute('data-icon-x')),
+          y: Number(item.getAttribute('data-icon-y'))
+        }));
+      })()`,
+      true,
+    )) as { id: string; x: number; y: number }[] | null;
+    if (cleanedFolderItems?.length === 2) break;
+    await pause(25);
+  }
+  if (cleanedFolderItems?.length !== 2) {
+    throw new Error(
+      `Persistence probe did not restore the cleaned folder positions: ${JSON.stringify(cleanedFolderItems)}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Close Drop Folder"]')?.click()`,
+    true,
+  );
+  await pause(220);
+
   const writeItemOpened = await window.webContents.executeJavaScript(
     `(() => {
       const item = [...document.querySelectorAll(
@@ -8498,6 +8752,7 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
       desktopFolderY: Number(desktopFolder.dataset.iconY),
       desktopUtilitiesX: Number(desktopUtilities.dataset.iconX),
       desktopUtilitiesY: Number(desktopUtilities.dataset.iconY),
+      cleanedFolderItems: ${JSON.stringify(cleanedFolderItems)},
       startedWithoutWriteWindows: ${transientWriteState.windows === 0},
       writeReopened: write instanceof HTMLElement,
       writeFormat: write?.getAttribute('data-document-format') ?? '',

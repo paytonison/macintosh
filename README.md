@@ -33,7 +33,7 @@ compact-computer icon.
 - Movement between folders, the desktop, System Disk, and Trash, including recursive folder moves
   and protection against invalid descendant drops.
 - New Folder, Open, Close Window, Get Info, Copy, Paste, Select All, Clear Selection, View by Icon,
-  View by Name, Empty Trash, and Clean Up Desktop commands.
+  View by Name, Clean Up Folder, Empty Trash, and Clean Up Desktop commands.
 - Original Get Info, About, error, and ejection dialogs with modal input ownership.
 - Synthesized menu and ejection sounds.
 

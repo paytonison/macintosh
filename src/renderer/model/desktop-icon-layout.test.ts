@@ -2,16 +2,20 @@ import { describe, expect, it } from 'vitest';
 
 import { initialDesktopIconPosition } from '../../shared/desktop-icon-position';
 import type { VfsNode } from '../../shared/state';
+import { rectanglesOverlap, type Rectangle } from '../../shared/vfs';
 import {
+  cleanUpDesktopIconPositions,
+  DESKTOP_ICON_HEIGHT,
+  DESKTOP_ICON_WIDTH,
   desktopIconIdsInRectangle,
   resolveDesktopIconPosition,
   translateDesktopIconDrag,
 } from './desktop-icon-layout';
 
-const desktopNode = (id: string, iconPosition?: { x: number; y: number }): VfsNode => ({
+const desktopNode = (id: string, iconPosition?: { x: number; y: number }, name = id): VfsNode => ({
   id,
   parentId: 'desktop',
-  name: id,
+  name,
   kind: 'document',
   ...(iconPosition ? { iconPosition } : {}),
   createdAt: '1989-01-24T09:00:00.000Z',
@@ -146,5 +150,74 @@ describe('Desktop free icon layout', () => {
     expect(
       desktopIconIdsInRectangle({ left: 120, top: 120, right: 121, bottom: 121 }, [icon]),
     ).toEqual(['document-m2']);
+  });
+});
+
+describe('Desktop cleanup layout', () => {
+  it('orders mixed-case names by stable identity and fills columns from the right edge', () => {
+    const nodes = [
+      desktopNode('tie-z', { x: 11, y: 12 }, 'alpha'),
+      desktopNode('zulu', { x: 13, y: 14 }, 'Zulu'),
+      desktopNode('tie-a', { x: 15, y: 16 }, 'Alpha'),
+      desktopNode('beta', { x: 17, y: 18 }, 'beta'),
+    ];
+    const expected = [
+      { nodeId: 'tie-a', position: { x: 82, y: 0 } },
+      { nodeId: 'tie-z', position: { x: 82, y: 78 } },
+      { nodeId: 'beta', position: { x: 0, y: 0 } },
+      { nodeId: 'zulu', position: { x: 0, y: 78 } },
+    ];
+
+    expect(cleanUpDesktopIconPositions(nodes, { width: 164, height: 156 }, [])).toEqual(expected);
+    expect(
+      cleanUpDesktopIconPositions([...nodes].reverse(), { width: 164, height: 156 }, []),
+    ).toEqual(expected);
+  });
+
+  it('places every item within bounds without ordinary or reserved-icon overlap', () => {
+    const nodes = Array.from({ length: 6 }, (_, index) =>
+      desktopNode(`item-${index}`, undefined, `Item ${index}`),
+    );
+    const surface = { width: 410, height: 234 };
+    const reserved: Rectangle[] = [
+      { left: 328, top: 0, right: 410, bottom: 78 },
+      { left: 328, top: 156, right: 410, bottom: 234 },
+    ];
+    const placements = cleanUpDesktopIconPositions(nodes, surface, reserved);
+    expect(placements).not.toBeNull();
+    if (!placements) throw new Error('Expected every Desktop item to fit.');
+
+    expect(placements).toHaveLength(nodes.length);
+    expect(placements[0]).toEqual({ nodeId: 'item-0', position: { x: 328, y: 78 } });
+    expect(placements[1]).toEqual({ nodeId: 'item-1', position: { x: 246, y: 0 } });
+
+    const rectangles = placements.map(({ position }) => ({
+      left: position.x,
+      top: position.y,
+      right: position.x + DESKTOP_ICON_WIDTH,
+      bottom: position.y + DESKTOP_ICON_HEIGHT,
+    }));
+    for (const rectangle of rectangles) {
+      expect(rectangle.left).toBeGreaterThanOrEqual(0);
+      expect(rectangle.top).toBeGreaterThanOrEqual(0);
+      expect(rectangle.right).toBeLessThanOrEqual(surface.width);
+      expect(rectangle.bottom).toBeLessThanOrEqual(surface.height);
+      expect(reserved.some((special) => rectanglesOverlap(rectangle, special))).toBe(false);
+    }
+    for (let left = 0; left < rectangles.length; left += 1) {
+      for (let right = left + 1; right < rectangles.length; right += 1) {
+        expect(rectanglesOverlap(rectangles[left]!, rectangles[right]!)).toBe(false);
+      }
+    }
+  });
+
+  it('returns null instead of overlapping items when the surface has too few cells', () => {
+    expect(
+      cleanUpDesktopIconPositions(
+        [desktopNode('alpha'), desktopNode('beta')],
+        { width: DESKTOP_ICON_WIDTH, height: DESKTOP_ICON_HEIGHT },
+        [],
+      ),
+    ).toBeNull();
   });
 });
