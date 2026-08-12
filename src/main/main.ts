@@ -1416,6 +1416,133 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   assertPixelCursor('Window control arrow', cursorBindings.windowControl, 11, 16, { x: 1, y: 1 });
   assertPixelCursor('Window resize', cursorBindings.growBox, 15, 15, { x: 7, y: 7 });
 
+  type SmokeIconLabelMetrics = {
+    boxOrient: string;
+    clientHeight: number;
+    clientWidth: number;
+    height: number;
+    lineClamp: string;
+    lineHeight: number;
+    maxWidth: number;
+    overflow: string;
+    overflowWrap: string;
+    paddingBottom: number;
+    paddingTop: number;
+    scrollHeight: number;
+    scrollWidth: number;
+    text: string;
+    textOverflow: string;
+    whiteSpace: string;
+    width: number;
+  };
+  type SmokeIconLabelProbe = {
+    long: SmokeIconLabelMetrics;
+    originalText: string;
+    restoredText: string;
+    short: SmokeIconLabelMetrics;
+  };
+  const inspectIconLabelLayout = async (
+    selector: string,
+    shortText: string,
+    longText: string,
+  ): Promise<SmokeIconLabelProbe | null> =>
+    (await window.webContents.executeJavaScript(
+      `(() => {
+        const label = document.querySelector(${JSON.stringify(selector)});
+        if (!(label instanceof HTMLElement)) return null;
+        const originalText = label.textContent ?? '';
+        const read = () => {
+          const bounds = label.getBoundingClientRect();
+          const style = getComputedStyle(label);
+          return {
+            boxOrient: style.webkitBoxOrient,
+            clientHeight: label.clientHeight,
+            clientWidth: label.clientWidth,
+            height: bounds.height,
+            lineClamp: style.webkitLineClamp,
+            lineHeight: Number.parseFloat(style.lineHeight),
+            maxWidth: Number.parseFloat(style.maxWidth),
+            overflow: style.overflow,
+            overflowWrap: style.overflowWrap,
+            paddingBottom: Number.parseFloat(style.paddingBottom),
+            paddingTop: Number.parseFloat(style.paddingTop),
+            scrollHeight: label.scrollHeight,
+            scrollWidth: label.scrollWidth,
+            text: label.textContent ?? '',
+            textOverflow: style.textOverflow,
+            whiteSpace: style.whiteSpace,
+            width: bounds.width
+          };
+        };
+        let short;
+        let long;
+        try {
+          label.textContent = ${JSON.stringify(shortText)};
+          short = read();
+          label.textContent = ${JSON.stringify(longText)};
+          long = read();
+        } finally {
+          label.textContent = originalText;
+        }
+        return { long, originalText, restoredText: label.textContent ?? '', short };
+      })()`,
+      true,
+    )) as SmokeIconLabelProbe | null;
+  const smokeShortIconName = 'I';
+  const smokeLongIconName = 'W'.repeat(96);
+  const assertIconLabelLayout = (
+    probe: SmokeIconLabelProbe | null,
+    maximumWidth: number,
+    label: string,
+  ): void => {
+    const shortSingleLineHeight = probe
+      ? probe.short.lineHeight + probe.short.paddingTop + probe.short.paddingBottom
+      : 0;
+    const longSingleLineHeight = probe
+      ? probe.long.lineHeight + probe.long.paddingTop + probe.long.paddingBottom
+      : 0;
+    const longTwoLineHeight = probe
+      ? probe.long.lineHeight * 2 + probe.long.paddingTop + probe.long.paddingBottom
+      : 0;
+    if (
+      !probe ||
+      probe.short.text !== smokeShortIconName ||
+      probe.long.text !== smokeLongIconName ||
+      probe.restoredText !== probe.originalText ||
+      probe.short.width >= maximumWidth ||
+      probe.short.height > shortSingleLineHeight + 0.5 ||
+      Math.abs(probe.long.maxWidth - maximumWidth) > 0.05 ||
+      probe.long.width < maximumWidth - 0.5 ||
+      probe.long.width > maximumWidth + 0.05 ||
+      probe.long.height <= longSingleLineHeight + 0.5 ||
+      probe.long.height > longTwoLineHeight + 0.5 ||
+      probe.long.clientHeight > longTwoLineHeight + 0.5 ||
+      probe.long.scrollHeight <= probe.long.clientHeight ||
+      probe.long.scrollWidth > probe.long.clientWidth + 1 ||
+      probe.long.boxOrient !== 'vertical' ||
+      probe.long.lineClamp !== '2' ||
+      probe.long.overflow !== 'hidden' ||
+      probe.long.overflowWrap !== 'anywhere' ||
+      probe.long.textOverflow !== 'ellipsis' ||
+      probe.long.whiteSpace !== 'normal'
+    ) {
+      throw new Error(`${label} did not size and clamp dynamically: ${JSON.stringify(probe)}.`);
+    }
+  };
+
+  const desktopIconLabelLayout = await inspectIconLabelLayout(
+    '[data-desktop-icon="system-disk"] .desktop-icon-label',
+    smokeShortIconName,
+    smokeLongIconName,
+  );
+  assertIconLabelLayout(desktopIconLabelLayout, 82, 'Desktop icon label');
+  const finderIconLabelLayout = await inspectIconLabelLayout(
+    '[data-finder-window="window-system-disk"] [data-vfs-item="applications"] .finder-item-label',
+    smokeShortIconName,
+    smokeLongIconName,
+  );
+  assertIconLabelLayout(finderIconLabelLayout, 112, 'Finder icon label');
+
   type SmokeIconHitRegionProbe = {
     itemPointerEvents: string;
     margin: {

@@ -263,15 +263,22 @@ html.is-normal-quit-pending .macintosh,
 }
 
 .desktop-icon-label {
+  display: -webkit-box;
+  width: max-content;
   max-width: 82px;
+  overflow: hidden;
   padding: 1px 3px;
   background: #fff;
   font-size: 11px;
   font-weight: 700;
   line-height: 15px;
+  overflow-wrap: anywhere;
   pointer-events: var(--icon-hit-pointer-events);
   text-align: center;
-  white-space: nowrap;
+  text-overflow: ellipsis;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .desktop-icon.is-selected .desktop-icon-glyph {
@@ -641,15 +648,23 @@ html.is-item-dragging *,
 }
 
 .finder-item-label {
-  max-width: 120px;
+  display: -webkit-box;
+  width: max-content;
+  max-width: 112px;
+  overflow: hidden;
   margin-top: 5px;
   padding: 1px 3px;
   background: #fff;
   font-size: 11px;
   font-weight: 600;
   line-height: 14px;
+  overflow-wrap: anywhere;
   pointer-events: var(--icon-hit-pointer-events);
   text-align: center;
+  text-overflow: ellipsis;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .finder-item.is-selected .pixel-icon {
