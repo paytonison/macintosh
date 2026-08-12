@@ -7142,13 +7142,21 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     true,
   );
   await pause(20);
+  const saveFailureGeometry = await readDesktopGeometry();
+  if (!saveFailureGeometry) {
+    throw new Error('Save-failure cleanup did not leave measurable desktop geometry.');
+  }
+  const saveFailureCoordinates = {
+    disk: saveFailureGeometry.disk,
+    trash: saveFailureGeometry.trash,
+  };
   await ensureNativeInputFocus('Save-failure System Disk drag');
-  window.webContents.sendInputEvent({ type: 'mouseMove', ...coordinates.disk });
+  window.webContents.sendInputEvent({ type: 'mouseMove', ...saveFailureCoordinates.disk });
   window.webContents.sendInputEvent({
     type: 'mouseDown',
     button: 'left',
     clickCount: 1,
-    ...coordinates.disk,
+    ...saveFailureCoordinates.disk,
   });
   for (let step = 1; step <= 8; step += 1) {
     const progress = step / 8;
@@ -7156,8 +7164,14 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       type: 'mouseMove',
       button: 'left',
       modifiers: ['leftbuttondown'],
-      x: Math.round(coordinates.disk.x + (coordinates.trash.x - coordinates.disk.x) * progress),
-      y: Math.round(coordinates.disk.y + (coordinates.trash.y - coordinates.disk.y) * progress),
+      x: Math.round(
+        saveFailureCoordinates.disk.x +
+          (saveFailureCoordinates.trash.x - saveFailureCoordinates.disk.x) * progress,
+      ),
+      y: Math.round(
+        saveFailureCoordinates.disk.y +
+          (saveFailureCoordinates.trash.y - saveFailureCoordinates.disk.y) * progress,
+      ),
     });
     await pause(16);
   }
@@ -7180,8 +7194,8 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       const bounds = disk.getBoundingClientRect();
       return !disk.classList.contains('is-dragging') &&
         Math.hypot(
-          bounds.left + bounds.width / 2 - ${coordinates.disk.x},
-          bounds.top + bounds.height / 2 - ${coordinates.disk.y}
+          bounds.left + bounds.width / 2 - ${saveFailureCoordinates.disk.x},
+          bounds.top + bounds.height / 2 - ${saveFailureCoordinates.disk.y}
         ) <= 2;
     })()`,
     true,
@@ -7193,7 +7207,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     type: 'mouseUp',
     button: 'left',
     clickCount: 1,
-    ...coordinates.trash,
+    ...saveFailureCoordinates.trash,
   });
   await pause(100);
   const failedSaveStayedModal = await window.webContents.executeJavaScript(
@@ -7225,11 +7239,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   const trashProbePoints = (geometry: DesktopGeometry) => ({
     insideEdge: {
-      x: Math.floor(geometry.trashGlyph.right + geometry.trashTolerance - 1),
+      x: Math.ceil(geometry.trashGlyph.left - geometry.trashTolerance + 1),
       y: Math.round((geometry.trashGlyph.top + geometry.trashGlyph.bottom) / 2),
     },
     outsideEdge: {
-      x: Math.ceil(geometry.trashGlyph.right + geometry.trashTolerance + 1),
+      x: Math.floor(geometry.trashGlyph.left - geometry.trashTolerance - 1),
       y: Math.round((geometry.trashGlyph.top + geometry.trashGlyph.bottom) / 2),
     },
     label: {
@@ -7392,9 +7406,11 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     name: string;
     x: number;
     y: number;
+    hitRegions: ClientBounds[];
   };
   type DesktopCleanupSnapshot = {
     disk: SmokePoint;
+    diskHitRegions: ClientBounds[];
     trash: SmokePoint;
     surface: { width: number; height: number };
     items: DesktopCleanupItem[];
@@ -7410,15 +7426,22 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
           x: Number.parseFloat(element.style.getPropertyValue('--icon-x')),
           y: Number.parseFloat(element.style.getPropertyValue('--icon-y'))
         });
+        const hitRegions = (element) =>
+          [...element.querySelectorAll('[data-icon-hit-region]')].map((region) => {
+            const bounds = region.getBoundingClientRect();
+            return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom };
+          });
         return {
           disk: point(disk),
+          diskHitRegions: hitRegions(disk),
           trash: point(trash),
           surface: { width: surface.clientWidth, height: surface.clientHeight },
           items: [...surface.querySelectorAll('[data-desktop-vfs-item]')].map((item) => ({
             id: item.getAttribute('data-desktop-vfs-item') ?? '',
             name: item.getAttribute('aria-label') ?? '',
             x: Number(item.getAttribute('data-icon-x')),
-            y: Number(item.getAttribute('data-icon-y'))
+            y: Number(item.getAttribute('data-icon-y')),
+            hitRegions: hitRegions(item)
           }))
         };
       })()`,
@@ -7442,6 +7465,12 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     const layoutIds = [...snapshot.items]
       .sort((left, right) => right.x - left.x || left.y - right.y)
       .map((item) => item.id);
+    const cleanupColumnX = Math.max(0, Math.round(snapshot.surface.width) - 82);
+    const cleanupTrashPosition = {
+      x: cleanupColumnX,
+      y: Math.max(0, Math.round(snapshot.surface.height) - 78 - 15),
+    };
+    const rightmostOrdinaryX = Math.max(...snapshot.items.map((item) => item.x));
     const rectangles = snapshot.items.map((item) => ({
       id: item.id,
       left: item.x,
@@ -7449,26 +7478,14 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
       right: item.x + 82,
       bottom: item.y + 78,
     }));
-    const specialRectangles = [
-      {
-        id: 'system-disk',
-        left: snapshot.disk.x,
-        top: snapshot.disk.y,
-        right: snapshot.disk.x + 82,
-        bottom: snapshot.disk.y + 78,
-      },
-      {
-        id: 'trash',
-        left: snapshot.trash.x,
-        top: snapshot.trash.y,
-        right: snapshot.trash.x + 82,
-        bottom: snapshot.trash.y + 78,
-      },
-    ];
-    const overlaps = (
-      first: (typeof rectangles)[number],
-      second: (typeof rectangles)[number],
-    ): boolean =>
+    const trashRectangle = {
+      id: 'trash',
+      left: snapshot.trash.x,
+      top: snapshot.trash.y,
+      right: snapshot.trash.x + 82,
+      bottom: snapshot.trash.y + 78,
+    };
+    const overlaps = (first: ClientBounds, second: ClientBounds): boolean =>
       first.left < second.right &&
       first.right > second.left &&
       first.top < second.bottom &&
@@ -7476,8 +7493,14 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     const ordinaryOverlap = rectangles.some((rectangle, index) =>
       rectangles.slice(index + 1).some((other) => overlaps(rectangle, other)),
     );
-    const specialOverlap = rectangles.some((rectangle) =>
-      specialRectangles.some((special) => overlaps(rectangle, special)),
+    const trashOverlap = rectangles.some((rectangle) => overlaps(rectangle, trashRectangle));
+    const missingHitRegions =
+      snapshot.diskHitRegions.length !== 2 ||
+      snapshot.items.some((item) => item.hitRegions.length !== 2);
+    const diskVisibleOverlap = snapshot.items.some((item) =>
+      item.hitRegions.some((itemRegion) =>
+        snapshot.diskHitRegions.some((diskRegion) => overlaps(itemRegion, diskRegion)),
+      ),
     );
     const outsideSurface = rectangles.some(
       (rectangle) =>
@@ -7486,18 +7509,35 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
         rectangle.right > snapshot.surface.width ||
         rectangle.bottom > snapshot.surface.height,
     );
+    const specialOutsideSurface = [snapshot.disk, snapshot.trash].some(
+      (position) =>
+        position.x < 0 ||
+        position.y < 0 ||
+        position.x + 82 > snapshot.surface.width ||
+        position.y + 78 > snapshot.surface.height,
+    );
     const expectedNames = ['Drop Folder', 'Dropped Note.txt', 'Utilities'];
     if (
-      snapshot.disk.x !== 1036 ||
-      snapshot.disk.y !== 52 ||
-      snapshot.trash.x !== 1040 ||
-      snapshot.trash.y !== 626 ||
+      snapshot.disk.x !== cleanupColumnX ||
+      snapshot.disk.y !== 7 ||
+      rightmostOrdinaryX !== cleanupColumnX ||
+      snapshot.trash.x !== cleanupTrashPosition.x ||
+      snapshot.trash.y !== cleanupTrashPosition.y ||
       JSON.stringify([...snapshot.items].map((item) => item.name).sort()) !==
         JSON.stringify(expectedNames) ||
       JSON.stringify(layoutIds) !== JSON.stringify(alphabeticalIds) ||
+      JSON.stringify([...snapshot.items].sort(compareNames).map(({ x, y }) => ({ x, y }))) !==
+        JSON.stringify([
+          { x: cleanupColumnX, y: 77 },
+          { x: cleanupColumnX, y: 160 },
+          { x: cleanupColumnX, y: 243 },
+        ]) ||
       ordinaryOverlap ||
-      specialOverlap ||
-      outsideSurface
+      trashOverlap ||
+      missingHitRegions ||
+      diskVisibleOverlap ||
+      outsideSurface ||
+      specialOutsideSurface
     ) {
       throw new Error(
         `Clean Up Desktop violated alphabetical, bounded, or special-icon layout: ${JSON.stringify({ alphabeticalIds, layoutIds, snapshot })}.`,
@@ -7506,7 +7546,7 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     return snapshot;
   };
 
-  const restoreDefaultDesktopLayout = async (): Promise<DesktopGeometry> => {
+  const cleanUpDesktopLayout = async (): Promise<DesktopGeometry> => {
     await window.webContents.executeJavaScript(
       'document.querySelector(\'[data-menu="special"]\')?.click()',
       true,
@@ -7577,24 +7617,51 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
 
   const safeDiskPoint = { x: 137, y: 343 };
   const separatedTrashPoint = { x: 650, y: 430 };
-  desktopGeometry = await restoreDefaultDesktopLayout();
+  desktopGeometry = await cleanUpDesktopLayout();
   const firstCleanedDesktopLayout = await assertCleanedDesktopLayout();
 
   probePoints = trashProbePoints(desktopGeometry);
+  const cleanupDragMaximum = {
+    x: Math.max(0, firstCleanedDesktopLayout.surface.width - 90),
+    y: Math.max(0, firstCleanedDesktopLayout.surface.height - 92),
+  };
+  const labelReleasePosition = {
+    x: Math.max(
+      0,
+      Math.min(
+        cleanupDragMaximum.x,
+        firstCleanedDesktopLayout.disk.x + probePoints.label.x - desktopGeometry.disk.x,
+      ),
+    ),
+    y: Math.max(
+      0,
+      Math.min(
+        cleanupDragMaximum.y,
+        firstCleanedDesktopLayout.disk.y + probePoints.label.y - desktopGeometry.disk.y,
+      ),
+    ),
+  };
+  const expectedLabelReleaseCenter = {
+    x: desktopGeometry.disk.x + labelReleasePosition.x - firstCleanedDesktopLayout.disk.x,
+    y: desktopGeometry.disk.y + labelReleasePosition.y - firstCleanedDesktopLayout.disk.y,
+  };
   await beginDrag(desktopGeometry.disk, probePoints.insideEdge, true);
   await waitForTrashHighlight(true);
   await moveHeldPointer(probePoints.insideEdge, probePoints.label, 6);
   await waitForTrashHighlight(false);
   releaseDrag(probePoints.label);
   await pause(80);
-  await assertRejectedDiskRelease(probePoints.label, 'The Trash-label release');
+  await assertRejectedDiskRelease(expectedLabelReleaseCenter, 'The Trash-label release');
 
-  await restoreDefaultDesktopLayout();
+  await cleanUpDesktopLayout();
   const secondCleanedDesktopLayout = await assertCleanedDesktopLayout();
-  const cleanupPositions = (snapshot: DesktopCleanupSnapshot) =>
-    [...snapshot.items]
+  const cleanupPositions = (snapshot: DesktopCleanupSnapshot) => ({
+    disk: snapshot.disk,
+    trash: snapshot.trash,
+    items: [...snapshot.items]
       .sort((left, right) => left.id.localeCompare(right.id))
-      .map(({ id, x, y }) => ({ id, x, y }));
+      .map(({ id, x, y }) => ({ id, x, y })),
+  });
   if (
     JSON.stringify(cleanupPositions(secondCleanedDesktopLayout)) !==
     JSON.stringify(cleanupPositions(firstCleanedDesktopLayout))

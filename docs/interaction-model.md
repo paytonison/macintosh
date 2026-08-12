@@ -157,10 +157,13 @@ Current Finder command context is:
 - **Clean Up Folder** is enabled only for an active ordinary folder in icon view. It commits that
   folder's direct children to the standard icon grid in case-insensitive displayed-name order, with
   stable node identity breaking name ties.
-- **Clean Up Desktop** restores the default System Disk and Trash positions and commits every
-  ordinary Desktop item to a bounded, non-overlapping layout ordered case-insensitively by displayed
-  name. Items fill downward from the right edge before continuing in columns to the left, with
-  stable node identity breaking name ties.
+- **Clean Up Desktop** builds one authored right-side composition from the live Desktop bounds.
+  System Disk anchors at the top of the ordinary items' cleanup column, ordinary items continue
+  downward in compact rows before continuing in columns to the left, and Trash aligns with the same
+  column at its authored bottom inset. Ordinary items are ordered case-insensitively by displayed
+  name, with stable node identity breaking name ties. On the default `1152 x 746` Desktop surface,
+  the shared column origin is `x = 1070`: System Disk uses `y = 7`, ordinary rows begin at `y = 77`
+  with an `83`-pixel step, and Trash uses `y = 653`.
 - **Eject System Disk…** explains the drag-to-Trash shutdown gesture; it does not eject by itself.
 
 ## Write
@@ -324,7 +327,7 @@ Ordinary Desktop items follow Finder semantics:
 - **Get Info** reports Desktop as their parent;
 - a folder icon is a drop destination, while a document icon blocks the drop instead of allowing it to fall through to bare Desktop behind it.
 
-Ordinary Desktop icon positions are explicit persisted integer-pixel coordinates relative to the actual Desktop surface. Direct placement is free-form and never grid-snapped or derived from node-array order. **Clean Up Desktop** is the explicit exception: it deterministically replaces those coordinates with its right-edge alphabetical layout while preserving later free placement. A drag of several selected Desktop children applies one shared translation so their relative layout remains intact. Committed positions are clamped using the rendered icon footprint so every item remains recoverable inside the usable surface.
+Ordinary Desktop icon positions are explicit persisted integer-pixel coordinates relative to the actual Desktop surface. Direct placement is free-form and never grid-snapped or derived from node-array order. **Clean Up Desktop** is the explicit exception: it deterministically replaces those coordinates with its authored right-side alphabetical layout, places System Disk at the top of that column, and aligns Trash to it at a bottom inset derived from the same live surface. The disk's transparent layout-tile margin may overlap the first ordinary row, but their visible artwork and labels remain distinct. Later free placement remains available. A drag of several selected Desktop children applies one shared translation so their relative layout remains intact. Committed positions are clamped using the rendered icon footprint so every item remains recoverable inside the usable surface.
 
 Dragging an ordinary item from Finder to bare Desktop moves its selected top-level VFS roots beneath `desktop` and assigns positions from the drop point. Dragging an ordinary Desktop item to another container moves it and clears its Desktop-relative root position. Descendant layout inside moved folders remains unchanged. Moving an item to Desktop is a filesystem mutation; dropping an item already on Desktop onto another bare Desktop location is placement-only and does not change its parent or timestamps.
 

@@ -75,6 +75,7 @@ import {
   cleanUpDesktopIconPositions,
   DESKTOP_ICON_HEIGHT,
   DESKTOP_ICON_WIDTH,
+  desktopCleanupSpecialIconPositions,
   resolveDesktopIconPosition,
   translateDesktopIconDrag,
 } from './model/desktop-icon-layout';
@@ -3018,19 +3019,24 @@ export default function App() {
               const surface = document.querySelector<HTMLElement>('.desktop-surface');
               if (!surface) return;
 
-              const defaults = createDefaultState().desktop;
-              const reservedRectangles = [defaults.diskPosition, defaults.trashPosition].map(
-                (position) => ({
-                  left: position.x,
-                  top: position.y,
-                  right: position.x + DESKTOP_ICON_WIDTH,
-                  bottom: position.y + DESKTOP_ICON_HEIGHT,
-                }),
-              );
+              const surfaceSize = {
+                width: surface.clientWidth,
+                height: surface.clientHeight,
+              };
+              const { diskPosition: cleanupDiskPosition, trashPosition: cleanupTrashPosition } =
+                desktopCleanupSpecialIconPositions(surfaceSize);
+              // The authored first row sits below the disk's visible hit regions. Its transparent
+              // tile margin overlaps that row, so only Trash needs a full-footprint reservation.
+              const reservedRectangles = [cleanupTrashPosition].map((position) => ({
+                left: position.x,
+                top: position.y,
+                right: position.x + DESKTOP_ICON_WIDTH,
+                bottom: position.y + DESKTOP_ICON_HEIGHT,
+              }));
               updateState((current) => {
                 const placements = cleanUpDesktopIconPositions(
                   current.nodes.filter((node) => node.parentId === 'desktop'),
-                  { width: surface.clientWidth, height: surface.clientHeight },
+                  surfaceSize,
                   reservedRectangles,
                 );
                 if (!placements) {
@@ -3046,8 +3052,8 @@ export default function App() {
                   ...positioned,
                   desktop: {
                     ...positioned.desktop,
-                    diskPosition: defaults.diskPosition,
-                    trashPosition: defaults.trashPosition,
+                    diskPosition: cleanupDiskPosition,
+                    trashPosition: cleanupTrashPosition,
                   },
                 };
               });

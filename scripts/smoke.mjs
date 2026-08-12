@@ -118,7 +118,7 @@ try {
         ),
     ) ||
     desktopDocument.iconPosition?.x !== 1070 ||
-    desktopDocument.iconPosition?.y !== 234
+    desktopDocument.iconPosition?.y !== 160
   ) {
     throw new Error('The externally dropped Desktop document and its position were not persisted.');
   }
@@ -171,7 +171,7 @@ try {
   if (
     !droppedFolder ||
     droppedFolder.iconPosition?.x !== 1070 ||
-    droppedFolder.iconPosition?.y !== 156
+    droppedFolder.iconPosition?.y !== 77
   ) {
     throw new Error('Clean Up Desktop did not persist the imported folder position.');
   }
@@ -209,7 +209,7 @@ try {
   const desktopUtilities = state.nodes.find(
     (node) => node.id === 'utilities' && node.parentId === 'desktop',
   );
-  if (desktopUtilities?.iconPosition?.x !== 1070 || desktopUtilities.iconPosition?.y !== 312) {
+  if (desktopUtilities?.iconPosition?.x !== 1070 || desktopUtilities.iconPosition?.y !== 243) {
     throw new Error('Clean Up Desktop did not persist the internally moved folder position.');
   }
   if (state.desktop.diskPosition.x < 0 || state.desktop.diskPosition.y < 0) {
@@ -343,7 +343,7 @@ try {
   }
 
   console.log(
-    'Electron smoke passed: native The Macintosh identity/icon, pixel cursor assets/hotspots, artwork-and-label-only Desktop/Finder icon hit regions, pointer menu selection, Finder zoom and stationary outline resize controls, outline-only Finder and Write opening/closing transitions, content-heavy Write outline resizing without held-frame reflow, host file/folder Desktop placement, Desktop selection/open/info, alphabetical bounded Clean Up Desktop with preserved special-icon anchors, active-folder Clean Up Folder, direct System Disk import, blocked document fall-through, external Trash rejection, pointer-owned Finder-to-Desktop movement and free reposition, document paste and duplication, free Finder icon placement, direct folder move, drag-session input ownership, focus-loss preview/cursor cleanup, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled and committed Trash movement, precise glyph-edge/label/internal/scaled Trash hit testing with an ordinary VFS commit at 1.25x, free System Disk placement with an icon-only preview, Write launch and document routing, shared Finder/Write classic scroll controls, native Write wheel scrolling, minimum-size 50%/75%/100% overflow and ruler alignment, automatic pagination and backflow, rich formatting, ruler tabs, manual page breaks, Save As, virtual Open, dirty-close choices, multi-document quit cancellation, stationary two-flash ejection with final-save failure recovery, persisted eject, normal-quit save failure recovery, repeated quit coalescing, canonical schema-4 built-in metadata, committed presentation persistence inside the debounce window, and provisional outline resize cancellation before quit.',
+    'Electron smoke passed: native The Macintosh identity/icon, pixel cursor assets/hotspots, artwork-and-label-only Desktop/Finder icon hit regions, pointer menu selection, Finder zoom and stationary outline resize controls, outline-only Finder and Write opening/closing transitions, content-heavy Write outline resizing without held-frame reflow, host file/folder Desktop placement, Desktop selection/open/info, alphabetical bounded Clean Up Desktop with the authored disk, item-column, and Trash anchors, active-folder Clean Up Folder, direct System Disk import, blocked document fall-through, external Trash rejection, pointer-owned Finder-to-Desktop movement and free reposition, document paste and duplication, free Finder icon placement, direct folder move, drag-session input ownership, focus-loss preview/cursor cleanup, shared menu shortcuts, Calculator buttons/keyboard/outline drag, modal input precedence, save-failure drag cancellation, Finder drag overlap/release redraw, cancelled and committed Trash movement, precise glyph-edge/label/internal/scaled Trash hit testing with an ordinary VFS commit at 1.25x, free System Disk placement with an icon-only preview, Write launch and document routing, shared Finder/Write classic scroll controls, native Write wheel scrolling, minimum-size 50%/75%/100% overflow and ruler alignment, automatic pagination and backflow, rich formatting, ruler tabs, manual page breaks, Save As, virtual Open, dirty-close choices, multi-document quit cancellation, stationary two-flash ejection with final-save failure recovery, persisted eject, normal-quit save failure recovery, repeated quit coalescing, canonical schema-4 built-in metadata, committed presentation persistence inside the debounce window, and provisional outline resize cancellation before quit.',
   );
   console.log(
     'Persistence relaunch passed: normal-quit committed Finder geometry, cleaned Desktop and ordinary-folder icon positions, the free Finder icon position, canonical System Disk metadata, schema-4 virtual filesystem reload, and the saved rich Write document reopened without discarded edits.',

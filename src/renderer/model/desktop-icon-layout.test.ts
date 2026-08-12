@@ -7,6 +7,8 @@ import {
   cleanUpDesktopIconPositions,
   DESKTOP_ICON_HEIGHT,
   DESKTOP_ICON_WIDTH,
+  desktopCleanupColumnX,
+  desktopCleanupSpecialIconPositions,
   desktopIconIdsInRectangle,
   resolveDesktopIconPosition,
   translateDesktopIconDrag,
@@ -154,6 +156,25 @@ describe('Desktop free icon layout', () => {
 });
 
 describe('Desktop cleanup layout', () => {
+  it.each([
+    [1152, 1070],
+    [800, 718],
+    [410, 328],
+  ])('derives the rightmost cleanup-column origin for a %i-pixel surface', (width, expectedX) => {
+    expect(desktopCleanupColumnX({ width, height: 746 })).toBe(expectedX);
+  });
+
+  it('derives the authored special-icon cleanup anchors from the live surface', () => {
+    expect(desktopCleanupSpecialIconPositions({ width: 1152, height: 746 })).toEqual({
+      diskPosition: { x: 1070, y: 7 },
+      trashPosition: { x: 1070, y: 653 },
+    });
+    expect(desktopCleanupSpecialIconPositions({ width: 800, height: 538 })).toEqual({
+      diskPosition: { x: 718, y: 7 },
+      trashPosition: { x: 718, y: 445 },
+    });
+  });
+
   it('orders mixed-case names by stable identity and fills columns from the right edge', () => {
     const nodes = [
       desktopNode('tie-z', { x: 11, y: 12 }, 'alpha'),
@@ -161,35 +182,65 @@ describe('Desktop cleanup layout', () => {
       desktopNode('tie-a', { x: 15, y: 16 }, 'Alpha'),
       desktopNode('beta', { x: 17, y: 18 }, 'beta'),
     ];
+    const surface = { width: 164, height: 238 };
+    const cleanupColumnX = desktopCleanupColumnX(surface);
     const expected = [
-      { nodeId: 'tie-a', position: { x: 82, y: 0 } },
-      { nodeId: 'tie-z', position: { x: 82, y: 78 } },
-      { nodeId: 'beta', position: { x: 0, y: 0 } },
-      { nodeId: 'zulu', position: { x: 0, y: 78 } },
+      { nodeId: 'tie-a', position: { x: cleanupColumnX, y: 77 } },
+      { nodeId: 'tie-z', position: { x: cleanupColumnX, y: 160 } },
+      { nodeId: 'beta', position: { x: 0, y: 77 } },
+      { nodeId: 'zulu', position: { x: 0, y: 160 } },
     ];
 
-    expect(cleanUpDesktopIconPositions(nodes, { width: 164, height: 156 }, [])).toEqual(expected);
+    expect(cleanUpDesktopIconPositions(nodes, surface, [])).toEqual(expected);
+    expect(cleanUpDesktopIconPositions([...nodes].reverse(), surface, [])).toEqual(expected);
+  });
+
+  it('matches the authored default-size right-column composition', () => {
+    const surface = { width: 1152, height: 746 };
+    const { trashPosition } = desktopCleanupSpecialIconPositions(surface);
+    const reserved: Rectangle[] = [
+      {
+        left: trashPosition.x,
+        top: trashPosition.y,
+        right: trashPosition.x + DESKTOP_ICON_WIDTH,
+        bottom: trashPosition.y + DESKTOP_ICON_HEIGHT,
+      },
+    ];
+
     expect(
-      cleanUpDesktopIconPositions([...nodes].reverse(), { width: 164, height: 156 }, []),
-    ).toEqual(expected);
+      cleanUpDesktopIconPositions(
+        [desktopNode('read-me'), desktopNode('untitled'), desktopNode('welcome')],
+        surface,
+        reserved,
+      ),
+    ).toEqual([
+      { nodeId: 'read-me', position: { x: 1070, y: 77 } },
+      { nodeId: 'untitled', position: { x: 1070, y: 160 } },
+      { nodeId: 'welcome', position: { x: 1070, y: 243 } },
+    ]);
   });
 
   it('places every item within bounds without ordinary or reserved-icon overlap', () => {
     const nodes = Array.from({ length: 6 }, (_, index) =>
       desktopNode(`item-${index}`, undefined, `Item ${index}`),
     );
-    const surface = { width: 410, height: 234 };
+    const surface = { width: 410, height: 326 };
+    const { trashPosition } = desktopCleanupSpecialIconPositions(surface);
     const reserved: Rectangle[] = [
-      { left: 328, top: 0, right: 410, bottom: 78 },
-      { left: 328, top: 156, right: 410, bottom: 234 },
+      {
+        left: trashPosition.x,
+        top: trashPosition.y,
+        right: trashPosition.x + DESKTOP_ICON_WIDTH,
+        bottom: trashPosition.y + DESKTOP_ICON_HEIGHT,
+      },
     ];
     const placements = cleanUpDesktopIconPositions(nodes, surface, reserved);
     expect(placements).not.toBeNull();
     if (!placements) throw new Error('Expected every Desktop item to fit.');
 
     expect(placements).toHaveLength(nodes.length);
-    expect(placements[0]).toEqual({ nodeId: 'item-0', position: { x: 328, y: 78 } });
-    expect(placements[1]).toEqual({ nodeId: 'item-1', position: { x: 246, y: 0 } });
+    expect(placements[0]).toEqual({ nodeId: 'item-0', position: { x: 328, y: 77 } });
+    expect(placements[1]).toEqual({ nodeId: 'item-1', position: { x: 246, y: 77 } });
 
     const rectangles = placements.map(({ position }) => ({
       left: position.x,
@@ -211,12 +262,29 @@ describe('Desktop cleanup layout', () => {
     }
   });
 
-  it('returns null instead of overlapping items when the surface has too few cells', () => {
+  it('returns null after exhausting the usable cells around the reserved Trash rectangle', () => {
+    const surface = { width: 164, height: 238 };
+    const { trashPosition } = desktopCleanupSpecialIconPositions(surface);
+    const reserved: Rectangle[] = [
+      {
+        left: trashPosition.x,
+        top: trashPosition.y,
+        right: trashPosition.x + DESKTOP_ICON_WIDTH,
+        bottom: trashPosition.y + DESKTOP_ICON_HEIGHT,
+      },
+    ];
+
+    expect(
+      cleanUpDesktopIconPositions([desktopNode('alpha'), desktopNode('beta')], surface, reserved),
+    ).toEqual([
+      { nodeId: 'alpha', position: { x: 0, y: 77 } },
+      { nodeId: 'beta', position: { x: 0, y: 160 } },
+    ]);
     expect(
       cleanUpDesktopIconPositions(
-        [desktopNode('alpha'), desktopNode('beta')],
-        { width: DESKTOP_ICON_WIDTH, height: DESKTOP_ICON_HEIGHT },
-        [],
+        [desktopNode('alpha'), desktopNode('beta'), desktopNode('gamma')],
+        surface,
+        reserved,
       ),
     ).toBeNull();
   });

@@ -37,6 +37,11 @@ compact-computer icon.
 - Original Get Info, About, error, and ejection dialogs with modal input ownership.
 - Synthesized menu and ejection sounds.
 
+**Clean Up Desktop** builds one authored right-side composition from the live Desktop bounds:
+System Disk anchors at the top of the ordinary items' cleanup column, ordinary items continue
+downward in a compact alphabetical rhythm, and Trash aligns with the same column at its authored
+bottom inset. All icons remain freely repositionable afterward.
+
 System Disk and Trash can be repositioned independently. Dragging System Disk onto the visible
 Trash artwork begins the Macintosh shutdown gesture: dirty Write documents are reviewed, the disk
 artwork remains at its durable position and flashes twice, the latest desktop and virtual-disk state
