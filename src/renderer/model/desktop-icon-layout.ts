@@ -1,47 +1,29 @@
 import type { Point, VfsNode } from '../../shared/state';
 import { initialDesktopIconPosition } from '../../shared/desktop-icon-position';
+import {
+  DESKTOP_ICON_HEIGHT,
+  DESKTOP_ICON_WIDTH,
+  desktopCleanupColumnX,
+  desktopCleanupFirstItemY,
+  desktopCleanupRowStep,
+  type DesktopSurfaceSize,
+} from '../../shared/desktop-layout';
 import { rectanglesOverlap, type NodeIconPlacement, type Rectangle } from '../../shared/vfs';
 import { orderNodesForIconCleanup } from './icon-cleanup-order';
 import { translateVfsIconDrag, type VfsIconDragLayout } from './vfs-drag';
 
-export const DESKTOP_ICON_WIDTH = 82;
-export const DESKTOP_ICON_HEIGHT = 78;
-
-const DESKTOP_CLEANUP_DISK_Y = 7;
-const DESKTOP_CLEANUP_FIRST_ITEM_Y = 77;
-const DESKTOP_CLEANUP_ROW_STEP = 83;
-const DESKTOP_CLEANUP_TRASH_BOTTOM_INSET = 15;
-
-export interface DesktopSurfaceSize {
-  width: number;
-  height: number;
-}
+export {
+  DESKTOP_ICON_HEIGHT,
+  DESKTOP_ICON_WIDTH,
+  desktopCleanupColumnX,
+  desktopCleanupSpecialIconPositions,
+  type DesktopSurfaceSize,
+} from '../../shared/desktop-layout';
 
 export interface DesktopIconRectangle {
   id: string;
   hitRegions: readonly Rectangle[];
 }
-
-export const desktopCleanupColumnX = (surface: DesktopSurfaceSize): number =>
-  Math.max(0, Math.round(surface.width) - DESKTOP_ICON_WIDTH);
-
-export const desktopCleanupSpecialIconPositions = (
-  surface: DesktopSurfaceSize,
-): { diskPosition: Point; trashPosition: Point } => {
-  const cleanupColumnX = desktopCleanupColumnX(surface);
-  const maximumY = Math.max(0, Math.round(surface.height) - DESKTOP_ICON_HEIGHT);
-
-  return {
-    diskPosition: {
-      x: cleanupColumnX,
-      y: Math.min(DESKTOP_CLEANUP_DISK_Y, maximumY),
-    },
-    trashPosition: {
-      x: cleanupColumnX,
-      y: Math.max(0, maximumY - DESKTOP_CLEANUP_TRASH_BOTTOM_INSET),
-    },
-  };
-};
 
 export const defaultDesktopIconPosition = (nodeId: string): Point =>
   initialDesktopIconPosition(nodeId);
@@ -65,15 +47,15 @@ export const cleanUpDesktopIconPositions = (
   const maximumY = height - DESKTOP_ICON_HEIGHT;
   const columnCount = Math.floor(maximumX / DESKTOP_ICON_WIDTH) + 1;
   const rowCount =
-    maximumY < DESKTOP_CLEANUP_FIRST_ITEM_Y
+    maximumY < desktopCleanupFirstItemY
       ? 0
-      : Math.floor((maximumY - DESKTOP_CLEANUP_FIRST_ITEM_Y) / DESKTOP_CLEANUP_ROW_STEP) + 1;
+      : Math.floor((maximumY - desktopCleanupFirstItemY) / desktopCleanupRowStep) + 1;
   const placements: NodeIconPlacement[] = [];
 
   for (let column = 0; column < columnCount; column += 1) {
     const x = maximumX - column * DESKTOP_ICON_WIDTH;
     for (let row = 0; row < rowCount; row += 1) {
-      const y = DESKTOP_CLEANUP_FIRST_ITEM_Y + row * DESKTOP_CLEANUP_ROW_STEP;
+      const y = desktopCleanupFirstItemY + row * desktopCleanupRowStep;
       const candidate = {
         left: x,
         top: y,

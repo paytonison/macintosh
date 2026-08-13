@@ -39,6 +39,7 @@ import {
   InfoDialog,
   PersistenceAlert,
   RenameDialog,
+  ResetDialog,
   renameValidationMessage,
 } from './components/Dialogs';
 import { DesktopIcon } from './components/DesktopIcon';
@@ -70,6 +71,7 @@ import {
   type WriteWindowAnimation,
   type WriteWindowState,
 } from './components/WriteWindow';
+import { formatMenuClock, millisecondsUntilNextMinute } from './model/clock';
 import type { WriteSaveQueue, VersionedWriteSnapshot } from './model/write-save-queue';
 import { createWriteSaveQueue } from './model/write-save-queue';
 import {
@@ -128,6 +130,7 @@ type DialogState =
   | { type: 'info'; node: VfsNode }
   | { type: 'rename'; node: VfsNode }
   | { type: 'eject-tip' }
+  | { type: 'reset' }
   | null;
 type TransferNotice = { message: string; error: boolean } | null;
 type WindowAnimationSource = HTMLElement | null;
@@ -198,11 +201,16 @@ const pause = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const useClock = (): string => {
-  const format = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  const [clock, setClock] = useState(format);
+  const [clock, setClock] = useState(() => formatMenuClock(new Date()));
   useEffect(() => {
-    const timer = setInterval(() => setClock(format()), 15_000);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = (): void => {
+      const now = new Date();
+      setClock(formatMenuClock(now));
+      timer = setTimeout(refresh, millisecondsUntilNextMinute(now));
+    };
+    timer = setTimeout(refresh, 0);
+    return () => clearTimeout(timer);
   }, []);
   return clock;
 };
@@ -366,6 +374,7 @@ export default function App() {
   const [interactionCancelToken, setInteractionCancelToken] = useState(0);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [normalQuitPending, setNormalQuitPending] = useState(false);
+  const [resetInProgress, setResetInProgress] = useState(false);
   const [transferNotice, setTransferNotice] = useState<TransferNotice>(null);
   const [windowAnimations, setWindowAnimations] = useState<Record<string, FinderWindowAnimation>>(
     {},
@@ -645,7 +654,7 @@ export default function App() {
   }, [replaceState, reportPersistenceError]);
 
   useEffect(() => {
-    if (!state || !hydrated.current || ejecting || normalQuitPending) return;
+    if (!state || !hydrated.current || ejecting || normalQuitPending || resetInProgress) return;
     const timer = setTimeout(() => {
       if (persistenceTimer.current === timer) persistenceTimer.current = null;
       void persistState(state).catch((error: unknown) => {
@@ -658,7 +667,7 @@ export default function App() {
       clearTimeout(timer);
       if (persistenceTimer.current === timer) persistenceTimer.current = null;
     };
-  }, [state, ejecting, normalQuitPending, persistState, reportPersistenceError]);
+  }, [state, ejecting, normalQuitPending, resetInProgress, persistState, reportPersistenceError]);
 
   const ready = Boolean(state && startupComplete);
   useEffect(() => {
@@ -1241,6 +1250,42 @@ export default function App() {
     },
     [automation, clearSystemDiskDragPreview, ejecting, reportPersistenceError, restoreIcon],
   );
+
+  const resetMacintosh = useCallback(async (): Promise<void> => {
+    if (resetInProgress) return;
+    const surface = document.querySelector<HTMLElement>('.desktop-surface');
+    if (!surface) {
+      setDialog(null);
+      reportPersistenceError('The Macintosh could not determine the Desktop size for reset.');
+      return;
+    }
+
+    if (persistenceTimer.current) {
+      clearTimeout(persistenceTimer.current);
+      persistenceTimer.current = null;
+    }
+    hydrated.current = false;
+    cancelPointerInteractions();
+    setOpenMenu(null);
+    setResetInProgress(true);
+
+    try {
+      await window.macintosh.resetState({
+        surfaceSize: {
+          width: surface.clientWidth,
+          height: surface.clientHeight,
+        },
+      });
+      // The main process reloads this renderer after the canonical state is safely written.
+      // Leave the modal in place so no stale renderer work can race that reload.
+    } catch (error) {
+      console.error(error);
+      hydrated.current = true;
+      setResetInProgress(false);
+      setDialog(null);
+      reportPersistenceError('The Macintosh could not be reset. Nothing was erased.');
+    }
+  }, [cancelPointerInteractions, reportPersistenceError, resetInProgress]);
 
   const cancelWriteExitReview = useCallback((): void => {
     const normalQuit = writeExitIntent.current?.type === 'normal-quit';
@@ -3158,6 +3203,12 @@ export default function App() {
             label: 'Eject System Disk…',
             action: () => setDialog({ type: 'eject-tip' }),
           },
+          { id: 'reset-separator', separator: true },
+          {
+            id: 'reset-macintosh',
+            label: 'Reset Macintosh…',
+            action: () => setDialog({ type: 'reset' }),
+          },
         ],
       },
     ];
@@ -3453,6 +3504,17 @@ export default function App() {
             interactionCancelToken={interactionCancelToken}
             onClose={() => setDialog(null)}
             onInteractionChange={setPointerInteractionActive}
+          />
+        )}
+        {!persistenceError && dialog?.type === 'reset' && (
+          <ResetDialog
+            interactionCancelToken={interactionCancelToken}
+            onCancel={() => {
+              if (!resetInProgress) setDialog(null);
+            }}
+            onInteractionChange={setPointerInteractionActive}
+            onReset={() => void resetMacintosh()}
+            resetting={resetInProgress}
           />
         )}
         {!persistenceError && writeFileDialog?.type === 'open' && (

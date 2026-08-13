@@ -82,11 +82,14 @@ describe('Write virtual-file dialog navigation', () => {
       modifiedAt: timestamp,
     };
     state.nodes.push(desktopFolder, desktopDocument);
+    const readMe = state.nodes.find((node) => node.id === 'read-me');
+    if (!readMe) throw new Error('Missing Desktop Read Me fixture.');
 
     expect(writeDialogAlternateRoot(state.nodes, 'documents')?.id).toBe('desktop');
     expect(writeDialogVisibleChildren(state.nodes, 'desktop', 'open')).toEqual([
       desktopFolder,
       desktopDocument,
+      readMe,
     ]);
     expect(writeDialogVisibleChildren(state.nodes, 'desktop', 'save-as')).toEqual([desktopFolder]);
     expect(

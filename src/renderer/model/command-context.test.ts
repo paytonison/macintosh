@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createDefaultState } from '../../shared/state';
+import { createDefaultState, type MacintoshState } from '../../shared/state';
 import {
   commandShortcut,
   deriveFinderCommandContext,
@@ -27,6 +27,21 @@ const shortcutEvent = (
   shiftKey: false,
   ...overrides,
 });
+
+const withSystemDiskWindow = (): MacintoshState => {
+  const state = createDefaultState();
+  state.desktop.windows = [
+    {
+      id: 'window-system-disk',
+      nodeId: 'system-disk',
+      x: 170,
+      y: 70,
+      width: 640,
+      height: 420,
+    },
+  ];
+  return state;
+};
 
 describe('menu shortcut matching', () => {
   const menus = [
@@ -103,7 +118,7 @@ describe('Finder command context', () => {
   });
 
   it('uses Desktop when no active disk or folder window owns creation commands', () => {
-    const state = createDefaultState();
+    const state = withSystemDiskWindow();
     expect(finderCommandDestinationId(state, 'window-system-disk')).toBe('system-disk');
     expect(finderCommandDestinationId(state, null)).toBe('desktop');
 
@@ -141,7 +156,7 @@ describe('Finder command context', () => {
   });
 
   it('keeps only selected nodes visible in the active Finder window', () => {
-    const state = createDefaultState();
+    const state = withSystemDiskWindow();
     const context = deriveFinderCommandContext(
       state,
       new Set(['read-me', 'applications', 'missing']),
@@ -154,7 +169,7 @@ describe('Finder command context', () => {
   });
 
   it('changes visible selection when another Finder window becomes frontmost', () => {
-    const state = createDefaultState();
+    const state = withSystemDiskWindow();
     const documentsWindow = {
       id: 'window-documents',
       nodeId: 'documents',
@@ -171,12 +186,12 @@ describe('Finder command context', () => {
           windows: [...state.desktop.windows, documentsWindow],
         },
       },
-      new Set(['applications', 'read-me']),
+      new Set(['applications', 'welcome']),
       'window-documents',
     );
 
     expect(context.activeNode?.id).toBe('documents');
-    expect(context.visibleSelection.map((node) => node.id)).toEqual(['read-me']);
+    expect(context.visibleSelection.map((node) => node.id)).toEqual(['welcome']);
   });
 
   it('has no visible Finder selection without an active window', () => {
@@ -193,7 +208,7 @@ describe('Finder command context', () => {
   });
 
   it('targets Desktop when the desktop owns Finder commands despite an open window', () => {
-    const state = createDefaultState();
+    const state = withSystemDiskWindow();
     const context = deriveFinderCommandContext(state, new Set(['applications']), null);
 
     expect(context.activeWindow).toBeNull();

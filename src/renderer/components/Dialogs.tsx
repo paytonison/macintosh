@@ -478,6 +478,59 @@ export function EjectTipDialog({
   );
 }
 
+export function ResetDialog({
+  interactionCancelToken,
+  onCancel,
+  onInteractionChange,
+  onReset,
+  resetting,
+}: {
+  interactionCancelToken: number;
+  onCancel: () => void;
+  onInteractionChange: (active: boolean) => void;
+  onReset: () => void;
+  resetting: boolean;
+}) {
+  const close = resetting ? () => undefined : onCancel;
+  return (
+    <ClassicDialog
+      interactionCancelToken={interactionCancelToken}
+      onClose={close}
+      onInteractionChange={onInteractionChange}
+      title="Reset Macintosh"
+      width={460}
+    >
+      <div className="message-content reset-message-content">
+        <PixelIcon name="disk" size={48} />
+        <div>
+          <p>
+            Resetting restores the original Desktop, System Disk, Documents, and Trash shown when
+            The Macintosh was new.
+          </p>
+          <p>
+            Everything you created or changed will be permanently erased, including unsaved Write
+            documents.
+          </p>
+        </div>
+      </div>
+      <div className="dialog-actions reset-dialog-actions">
+        <button
+          autoFocus
+          className="classic-default-button"
+          disabled={resetting}
+          onClick={onCancel}
+          type="button"
+        >
+          Cancel
+        </button>
+        <button disabled={resetting} onClick={onReset} type="button">
+          {resetting ? 'Resetting…' : 'Reset'}
+        </button>
+      </div>
+    </ClassicDialog>
+  );
+}
+
 export function PersistenceAlert({ message, onClose }: { message: string; onClose: () => void }) {
   return (
     <ModalLayer kind="persistence-alert" onClose={onClose} persistenceAlert>

@@ -34,10 +34,19 @@ type SmokePoint = { x: number; y: number };
 const smokeMode = process.argv.includes('--smoke-test');
 const persistenceProbeMode = process.argv.includes('--persistence-probe');
 const normalQuitProbeMode = process.argv.includes('--normal-quit-probe');
+const resetProbeMode = process.argv.includes('--reset-probe');
 const captureAboutMode = process.argv.includes('--capture-about');
 const captureCalculatorMode = process.argv.includes('--capture-calculator');
 const captureWriteMixedMode = process.argv.includes('--capture-write-mixed');
 const captureWriteMode = process.argv.includes('--capture-write') || captureWriteMixedMode;
+const captureResetMode = process.argv.includes('--capture-reset');
+const captureDefaultViewArgument = process.argv.find((value) =>
+  value.startsWith('--capture-default-view='),
+);
+const captureDefaultView = (() => {
+  const value = captureDefaultViewArgument?.slice('--capture-default-view='.length);
+  return value === 'disk' || value === 'documents' || value === 'trash' ? value : null;
+})();
 const captureStartupArgument = process.argv.find((value) => value.startsWith('--capture-startup='));
 const captureSizeArgument = process.argv.find((value) => value.startsWith('--capture-size='));
 const captureSize = (() => {
@@ -53,6 +62,7 @@ const automationMode =
   smokeMode ||
   persistenceProbeMode ||
   normalQuitProbeMode ||
+  resetProbeMode ||
   process.argv.some((value) => value.startsWith('--capture-screen='));
 const captureArgument = process.argv.find((value) => value.startsWith('--capture-screen='));
 
@@ -67,7 +77,8 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 let mainWindow: BrowserWindow | null = null;
 let applicationIcon: NativeImage | null = null;
 let quitRequested = false;
-let smokeSaveFailureTarget: 'eject' | 'import' | 'presentation' | 'vfs' | null = null;
+let resetInProgress = false;
+let smokeSaveFailureTarget: 'eject' | 'import' | 'presentation' | 'reset' | 'vfs' | null = null;
 let smokeEjectFinalizationRequestCount = 0;
 
 const getApplicationIcon = (): NativeImage => {
@@ -109,6 +120,64 @@ const installApplicationMenu = (): void => {
 
 const statePath = (): string => path.join(app.getPath('userData'), STATE_FILE_NAME);
 
+// The long-running interaction smoke predates the authored product default and deliberately
+// mutates Utilities, Welcome, and an already-open disk window. Keep that harness fixture local to
+// automation so first launch and Reset Macintosh share one real canonical snapshot.
+const createSmokeState = (): MacintoshState => {
+  const state = createDefaultState();
+  const byId = new Map(state.nodes.map((node) => [node.id, node]));
+  const node = (id: string) => {
+    const found = byId.get(id);
+    if (!found) throw new Error(`Missing smoke fixture node ${id}.`);
+    const copy = { ...found };
+    delete copy.iconPosition;
+    return copy;
+  };
+  const welcome = { ...node('welcome'), parentId: 'system-disk' };
+  const readMe = { ...node('read-me'), parentId: 'documents' };
+  const utilities = {
+    id: 'utilities',
+    parentId: 'system-disk',
+    name: 'Utilities',
+    kind: 'folder' as const,
+    createdAt: '1984-01-24T00:00:00.000Z',
+    modifiedAt: '1989-01-24T09:00:00.000Z',
+  };
+
+  return {
+    ...state,
+    desktop: {
+      diskPosition: { x: 1036, y: 52 },
+      trashPosition: { x: 1040, y: 626 },
+      windows: [
+        {
+          id: 'window-system-disk',
+          nodeId: 'system-disk',
+          x: 238,
+          y: 106,
+          width: 676,
+          height: 442,
+        },
+      ],
+      viewMode: 'icons',
+      lastEjectAt: null,
+    },
+    nodes: [
+      node('system-disk'),
+      node('trash'),
+      node('desktop'),
+      node('system-folder'),
+      node('applications'),
+      node('documents'),
+      utilities,
+      node('write'),
+      welcome,
+      node('finder-notes'),
+      readMe,
+    ],
+  };
+};
+
 const loadState = async (): Promise<MacintoshState> => {
   try {
     const serialized = await readFile(statePath(), 'utf8');
@@ -116,7 +185,7 @@ const loadState = async (): Promise<MacintoshState> => {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT') console.warn('Could not load Macintosh state:', error);
-    return createDefaultState();
+    return smokeMode ? createSmokeState() : createDefaultState();
   }
 };
 
@@ -138,7 +207,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const injectSmokeSaveFailure = (operation: Exclude<typeof smokeSaveFailureTarget, null>): void => {
-  if ((!smokeMode && !normalQuitProbeMode) || smokeSaveFailureTarget !== operation) return;
+  if (
+    (!smokeMode && !normalQuitProbeMode && !resetProbeMode) ||
+    smokeSaveFailureTarget !== operation
+  ) {
+    return;
+  }
   smokeSaveFailureTarget = null;
   throw new Error('Injected smoke-test save failure.');
 };
@@ -160,6 +234,7 @@ const normalQuit = createNormalQuitCoordinator<unknown>({
 });
 
 const requestNormalQuit = (): void => {
+  if (resetInProgress) return;
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
     void normalQuit.finalizeAndQuitWithoutRenderer().catch((error: unknown) => {
       console.error('The Macintosh could not finalize state without its renderer:', error);
@@ -200,14 +275,68 @@ const assertTrustedRenderer = (event: IpcMainInvokeEvent): void => {
   }
 };
 
+const rejectStateChangeDuringReset = (): void => {
+  if (resetInProgress) throw new Error('The Macintosh is resetting.');
+};
+
+const resetSurfaceSize = (value: unknown): { width: number; height: number } => {
+  if (!isRecord(value) || !isRecord(value.surfaceSize)) {
+    throw new TypeError('Invalid reset request.');
+  }
+  const { width, height } = value.surfaceSize;
+  if (
+    typeof width !== 'number' ||
+    !Number.isFinite(width) ||
+    typeof height !== 'number' ||
+    !Number.isFinite(height) ||
+    width < 1 ||
+    width > 4096 ||
+    height < 1 ||
+    height > 4096
+  ) {
+    throw new TypeError('Invalid reset surface size.');
+  }
+  return { width: Math.round(width), height: Math.round(height) };
+};
+
 const registerIpc = (): void => {
   ipcMain.handle(IPC_CHANNELS.loadState, async (event) => {
     assertTrustedRenderer(event);
     return stateController.load();
   });
 
+  ipcMain.handle(IPC_CHANNELS.resetState, async (event, value: unknown) => {
+    assertTrustedRenderer(event);
+    rejectStateChangeDuringReset();
+    const surfaceSize = resetSurfaceSize(value);
+    resetInProgress = true;
+    try {
+      injectSmokeSaveFailure('reset');
+      await stateController.reset(createDefaultState(surfaceSize));
+    } catch (error) {
+      resetInProgress = false;
+      throw error;
+    }
+    setTimeout(() => {
+      const window = mainWindow;
+      if (!window || window.isDestroyed() || window.webContents.isDestroyed()) {
+        resetInProgress = false;
+        return;
+      }
+      window.webContents.once('did-finish-load', () => {
+        resetInProgress = false;
+      });
+      window.webContents.once('did-fail-load', () => {
+        resetInProgress = false;
+      });
+      window.webContents.reload();
+    }, 80);
+    return { accepted: true as const };
+  });
+
   ipcMain.handle(IPC_CHANNELS.savePresentation, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    rejectStateChangeDuringReset();
     injectSmokeSaveFailure('presentation');
     await stateController.savePresentation(value);
     return { ok: true as const };
@@ -215,12 +344,14 @@ const registerIpc = (): void => {
 
   ipcMain.handle(IPC_CHANNELS.mutateVfs, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    rejectStateChangeDuringReset();
     if (!isRecord(value)) throw new TypeError('Invalid VFS mutation request.');
     return commitVfsCommand(value.presentation, value.command);
   });
 
   ipcMain.handle(IPC_CHANNELS.importFiles, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    rejectStateChangeDuringReset();
     if (!isRecord(value)) throw new TypeError('Invalid host import request.');
     const request = {
       type: 'merge-imported-entries',
@@ -266,24 +397,28 @@ const registerIpc = (): void => {
 
   ipcMain.handle(IPC_CHANNELS.normalQuitReady, (event) => {
     assertTrustedRenderer(event);
+    if (resetInProgress) return { accepted: true as const };
     normalQuit.rendererReady();
     return { accepted: true as const };
   });
 
   ipcMain.handle(IPC_CHANNELS.cancelNormalQuit, (event) => {
     assertTrustedRenderer(event);
+    rejectStateChangeDuringReset();
     if (!normalQuit.cancelQuit()) throw new Error('No normal quit is waiting to be cancelled.');
     return { accepted: true as const };
   });
 
   ipcMain.handle(IPC_CHANNELS.flushPresentationAndQuit, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    rejectStateChangeDuringReset();
     await normalQuit.flushAndQuit(value);
     return { accepted: true as const };
   });
 
   ipcMain.handle(IPC_CHANNELS.saveAndQuitAfterEject, async (event, value: unknown) => {
     assertTrustedRenderer(event);
+    rejectStateChangeDuringReset();
     if (smokeMode) smokeEjectFinalizationRequestCount += 1;
     injectSmokeSaveFailure('eject');
     await stateController.finalize(value, (state) => ({
@@ -9228,6 +9363,230 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }, 8_000);
 };
 
+const runResetProbe = async (window: BrowserWindow): Promise<void> => {
+  await waitForRenderer(window);
+  const initial = await stateController.load();
+  const readMe = initial.nodes.find((node) => node.id === 'read-me');
+  if (!readMe) throw new Error('Reset probe could not find Read Me.');
+  await stateController.transact({}, (state) => ({
+    state: {
+      ...state,
+      desktop: {
+        ...state.desktop,
+        diskPosition: { x: 125, y: 196 },
+        windows: [
+          {
+            id: 'window-system-disk',
+            nodeId: 'system-disk',
+            x: 170,
+            y: 70,
+            width: 640,
+            height: 420,
+          },
+        ],
+      },
+      nodes: [
+        ...state.nodes.map((node) =>
+          node.id === readMe.id ? { ...node, name: 'Changed Read Me' } : node,
+        ),
+        {
+          id: 'reset-probe-document',
+          parentId: 'desktop',
+          name: 'Reset Me',
+          kind: 'document',
+          payload: { format: 'plain-text', text: 'This should disappear.' },
+          iconPosition: { x: 420, y: 250 },
+          createdAt: '2026-08-13T00:00:00.000Z',
+          modifiedAt: '2026-08-13T00:00:00.000Z',
+        },
+      ],
+    },
+    value: null,
+  }));
+  window.webContents.reload();
+  await waitForRenderer(window);
+
+  const resetMenuReady = (await window.webContents.executeJavaScript(
+    `(() => ({
+      activeApplication: document.querySelector('[data-menu="special"]') !== null,
+      menus: [...document.querySelectorAll('[data-menu]')].map((item) => item.getAttribute('data-menu'))
+    }))()`,
+    true,
+  )) as { activeApplication: boolean; menus: (string | null)[] };
+
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu="special"]')?.click()`,
+    true,
+  );
+  await pause(30);
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu-action="reset-macintosh"]')?.click()`,
+    true,
+  );
+  await pause(30);
+  const openDialog = (await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Reset Macintosh"]') !== null`,
+    true,
+  )) as boolean;
+  if (!openDialog) {
+    throw new Error(
+      `Reset probe could not open Reset Macintosh: ${JSON.stringify(resetMenuReady)}.`,
+    );
+  }
+
+  const cancelFocused = (await window.webContents.executeJavaScript(
+    `document.activeElement === document.querySelector('[aria-label="Reset Macintosh"] .classic-default-button')`,
+    true,
+  )) as boolean;
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const cancel = document.querySelector('[aria-label="Reset Macintosh"] .classic-default-button');
+      if (!(cancel instanceof HTMLButtonElement)) return false;
+      cancel.click();
+      return true;
+    })()`,
+    true,
+  );
+  await pause(30);
+  const cancelled = (await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Reset Macintosh"]') === null`,
+    true,
+  )) as boolean;
+  if (!cancelFocused || !cancelled) {
+    throw new Error('Reset probe did not keep Cancel as the safe default.');
+  }
+  if (!(await stateController.load()).nodes.some((node) => node.id === 'reset-probe-document')) {
+    throw new Error('Cancelling reset changed the authoritative workspace.');
+  }
+
+  smokeSaveFailureTarget = 'reset';
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu="special"]')?.click()`,
+    true,
+  );
+  await pause(30);
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu-action="reset-macintosh"]')?.click()`,
+    true,
+  );
+  await pause(30);
+  await window.webContents.executeJavaScript(
+    `document.querySelectorAll('[aria-label="Reset Macintosh"] .reset-dialog-actions button').item(1)?.click()`,
+    true,
+  );
+  await pause(80);
+  const failedReset = (await window.webContents.executeJavaScript(
+    `(() => ({
+      alert: document.querySelector('[aria-label="Persistence error"]')?.textContent ?? '',
+      changedItem: document.querySelector('[data-desktop-vfs-item="reset-probe-document"]') !== null,
+      dialog: document.querySelector('[aria-label="Reset Macintosh"]') !== null
+    }))()`,
+    true,
+  )) as { alert: string; changedItem: boolean; dialog: boolean };
+  const stateAfterFailedReset = await stateController.load();
+  if (
+    !failedReset.alert.includes('could not be reset') ||
+    !failedReset.alert.includes('Nothing was erased') ||
+    !failedReset.changedItem ||
+    failedReset.dialog ||
+    !stateAfterFailedReset.nodes.some((node) => node.id === 'reset-probe-document')
+  ) {
+    throw new Error(`Failed reset did not preserve the workspace: ${JSON.stringify(failedReset)}.`);
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Persistence error"] button')?.click()`,
+    true,
+  );
+  await pause(30);
+
+  const navigation = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Reset probe did not reload.')), 6_000);
+    window.webContents.once('did-finish-load', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu="special"]')?.click()`,
+    true,
+  );
+  await pause(30);
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-menu-action="reset-macintosh"]')?.click()`,
+    true,
+  );
+  await pause(30);
+  const confirmed = (await window.webContents.executeJavaScript(
+    `(() => {
+      const buttons = document.querySelectorAll('[aria-label="Reset Macintosh"] .reset-dialog-actions button');
+      const reset = buttons.item(1);
+      if (!(reset instanceof HTMLButtonElement)) return false;
+      reset.click();
+      return true;
+    })()`,
+    true,
+  )) as boolean;
+  if (!confirmed) throw new Error('Reset probe could not confirm Reset Macintosh.');
+  await navigation;
+  await waitForRenderer(window);
+
+  const restored = await stateController.load();
+  const rendered = (await window.webContents.executeJavaScript(
+    `(() => {
+      const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+      const trash = document.querySelector('[data-desktop-icon="trash"]');
+      const readMe = document.querySelector('[data-desktop-vfs-item="read-me"]');
+      return {
+        disk: disk instanceof HTMLElement,
+        trash: trash instanceof HTMLElement,
+        readMe: readMe instanceof HTMLElement,
+        readMeX: readMe instanceof HTMLElement ? Number(readMe.dataset.iconX) : null,
+        readMeY: readMe instanceof HTMLElement ? Number(readMe.dataset.iconY) : null,
+        windows: document.querySelectorAll('[data-finder-window]').length,
+        changedItem: document.querySelector('[data-desktop-vfs-item="reset-probe-document"]') !== null
+      };
+    })()`,
+    true,
+  )) as {
+    disk: boolean;
+    trash: boolean;
+    readMe: boolean;
+    readMeX: number | null;
+    readMeY: number | null;
+    windows: number;
+    changedItem: boolean;
+  };
+  const diskChildren = restored.nodes
+    .filter((node) => node.parentId === 'system-disk')
+    .map((node) => node.id);
+  const trashChildren = restored.nodes
+    .filter((node) => node.parentId === 'trash')
+    .map((node) => node.id);
+  const trashFolderChildren = restored.nodes
+    .filter((node) => node.parentId === 'trash-untitled-folder')
+    .map((node) => node.id);
+  if (
+    JSON.stringify(restored) !== JSON.stringify(createDefaultState({ width: 1152, height: 746 })) ||
+    JSON.stringify(diskChildren) !==
+      JSON.stringify(['system-folder', 'applications', 'documents']) ||
+    JSON.stringify(trashChildren) !== JSON.stringify(['trash-untitled-folder']) ||
+    JSON.stringify(trashFolderChildren) !==
+      JSON.stringify(['trash-all-work', 'trash-untitled-folder-2', 'trash-untitled-folder-3']) ||
+    !rendered.disk ||
+    !rendered.trash ||
+    !rendered.readMe ||
+    rendered.readMeX !== 1070 ||
+    rendered.readMeY !== 77 ||
+    rendered.windows !== 0 ||
+    rendered.changedItem
+  ) {
+    throw new Error(
+      `Reset probe did not restore the canonical state: ${JSON.stringify({ diskChildren, trashChildren, trashFolderChildren, rendered })}.`,
+    );
+  }
+  normalQuit.quitWithoutFlush();
+};
+
 const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
   await waitForRenderer(window);
   const transientWriteState = (await window.webContents.executeJavaScript(
@@ -10314,7 +10673,61 @@ const captureScreen = async (window: BrowserWindow, destination: string): Promis
       true,
     );
   }
+  if (captureResetMode) {
+    await window.webContents.executeJavaScript(
+      'document.querySelector(\'[data-menu="special"]\')?.click()',
+      true,
+    );
+    await pause(60);
+    await window.webContents.executeJavaScript(
+      'document.querySelector(\'[data-menu-action="reset-macintosh"]\')?.click()',
+      true,
+    );
+  }
+  if (captureDefaultView) {
+    const open = async (selector: string, label: string): Promise<void> => {
+      const opened = (await window.webContents.executeJavaScript(
+        `(() => {
+          const item = document.querySelector(${JSON.stringify(selector)});
+          if (!(item instanceof HTMLElement)) return false;
+          item.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+          return true;
+        })()`,
+        true,
+      )) as boolean;
+      if (!opened) throw new Error(`Capture could not open ${label}.`);
+      await pause(240);
+    };
+    if (captureDefaultView === 'trash') {
+      await open('[data-desktop-icon="trash"]', 'Trash');
+    } else {
+      await open('[data-desktop-icon="system-disk"]', 'System Disk');
+      if (captureDefaultView === 'documents') {
+        await open(
+          '[data-finder-window="window-system-disk"] [data-vfs-item="documents"]',
+          'Documents',
+        );
+      }
+    }
+  }
   if (captureWriteMode) {
+    const systemDiskOpen = (await window.webContents.executeJavaScript(
+      `document.querySelector('[data-finder-window="window-system-disk"]') !== null`,
+      true,
+    )) as boolean;
+    if (!systemDiskOpen) {
+      const opened = (await window.webContents.executeJavaScript(
+        `(() => {
+          const disk = document.querySelector('[data-desktop-icon="system-disk"]');
+          if (!(disk instanceof HTMLElement)) return false;
+          disk.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+          return true;
+        })()`,
+        true,
+      )) as boolean;
+      if (!opened) throw new Error('Capture could not open System Disk.');
+      await pause(240);
+    }
     const applicationsOpened = await window.webContents.executeJavaScript(
       `(() => {
         const applications = document.querySelector(
@@ -10544,6 +10957,11 @@ const createWindow = async (): Promise<void> => {
 
   if (smokeMode) {
     void runSmokeDrag(mainWindow).catch((error) => {
+      console.error(error);
+      app.exit(1);
+    });
+  } else if (resetProbeMode) {
+    void runResetProbe(mainWindow).catch((error) => {
       console.error(error);
       app.exit(1);
     });

@@ -119,7 +119,7 @@ describe('virtual Finder helpers', () => {
       renamedFolder.state.nodes.filter((node) => node.id !== readMe.id && node.id !== documents.id),
     ).toEqual(beforeNodes.filter((node) => node.id !== readMe.id && node.id !== documents.id));
     expect(renamedFolder.state.nodes.find((node) => node.id === readMe.id)?.parentId).toBe(
-      documents.id,
+      beforeReadMe.parentId,
     );
   });
 
@@ -323,7 +323,7 @@ describe('virtual Finder helpers', () => {
       state,
       [
         {
-          name: 'Read Me',
+          name: 'Welcome',
           kind: 'document',
           content: 'first imported copy',
           createdAt: '2026-07-22T12:00:00.000Z',
@@ -349,7 +349,7 @@ describe('virtual Finder helpers', () => {
     );
 
     const copy = imported.state.nodes.find(
-      (node) => node.parentId === 'documents' && node.name === 'Read Me copy',
+      (node) => node.parentId === 'documents' && node.name === 'Welcome copy',
     );
     const project = imported.state.nodes.find(
       (node) => node.parentId === 'documents' && node.name === 'Project',
@@ -548,7 +548,7 @@ describe('virtual Finder helpers', () => {
     const state = createDefaultState();
     const duplicated = duplicateNodes(state, ['read-me'], 'documents', '2026-07-22T12:00:00.000Z');
     const copy = duplicated.state.nodes.find(
-      (node) => node.parentId === 'documents' && node.name === 'Read Me copy',
+      (node) => node.parentId === 'documents' && node.name === 'Read Me',
     );
 
     expect(duplicated.addedCount).toBe(1);
@@ -567,7 +567,7 @@ describe('virtual Finder helpers', () => {
 
     const duplicated = duplicateNodes(state, [source.id], 'documents', '2026-07-22T12:00:00.000Z');
     const copy = duplicated.state.nodes.find(
-      (node) => node.parentId === 'documents' && node.name === 'Read Me copy',
+      (node) => node.parentId === 'documents' && node.name === 'Read Me',
     );
 
     expect(duplicated).toMatchObject({
@@ -655,10 +655,10 @@ describe('virtual Finder helpers', () => {
   it('auto-places copied roots while retaining layout inside copied folders', () => {
     const state = createDefaultState();
     const documents = state.nodes.find((node) => node.id === 'documents');
-    const readMe = state.nodes.find((node) => node.id === 'read-me');
-    if (!documents || !readMe) throw new Error('Missing copy fixtures.');
+    const welcome = state.nodes.find((node) => node.id === 'welcome');
+    if (!documents || !welcome) throw new Error('Missing copy fixtures.');
     documents.iconPosition = { x: 173, y: 119 };
-    readMe.iconPosition = { x: 87, y: 133 };
+    welcome.iconPosition = { x: 87, y: 133 };
 
     const duplicated = duplicateNodes(
       state,
@@ -669,12 +669,12 @@ describe('virtual Finder helpers', () => {
     const copiedFolder = duplicated.state.nodes.find(
       (node) => node.parentId === 'system-disk' && node.name === 'Documents copy',
     );
-    const copiedReadMe = duplicated.state.nodes.find(
-      (node) => node.parentId === copiedFolder?.id && node.name === 'Read Me',
+    const copiedWelcome = duplicated.state.nodes.find(
+      (node) => node.parentId === copiedFolder?.id && node.name === 'Welcome',
     );
 
     expect(copiedFolder?.iconPosition).toBeUndefined();
-    expect(copiedReadMe?.iconPosition).toEqual({ x: 87, y: 133 });
+    expect(copiedWelcome?.iconPosition).toEqual({ x: 87, y: 133 });
   });
 
   it('executes typed create commands and returns the new root IDs', () => {
@@ -697,14 +697,14 @@ describe('virtual Finder helpers', () => {
       {
         type: 'create-document',
         parentId: 'documents',
-        name: 'Read Me',
+        name: 'Welcome',
         payload: { format: 'plain-text', text: 'a pasted document' },
       },
       timestamp,
     );
     expect(document.state.nodes.find((node) => node.id === document.affectedIds[0])).toMatchObject({
       parentId: 'documents',
-      name: 'Read Me copy',
+      name: 'Welcome copy',
       kind: 'document',
       payload: { format: 'plain-text', text: 'a pasted document' },
     });
@@ -1215,12 +1215,13 @@ describe('virtual Finder helpers', () => {
     });
     const emptied = executeVfsCommand(moved.state, { type: 'empty-trash' });
     expect(emptied).toMatchObject({
-      affectedIds: [importedId],
+      affectedIds: ['trash-untitled-folder', importedId],
       addedCount: 0,
       skippedCount: 0,
       truncatedCount: 0,
     });
     expect(emptied.state.nodes.some((node) => node.id === importedId)).toBe(false);
+    expect(emptied.state.nodes.some((node) => node.id === 'trash-all-work')).toBe(false);
     expect(emptied.state.nodes.some((node) => node.id === 'trash')).toBe(true);
   });
 });

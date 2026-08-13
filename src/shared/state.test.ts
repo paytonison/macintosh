@@ -17,11 +17,14 @@ const BUILT_IN_ITEM_IDS = [
   'system-folder',
   'applications',
   'documents',
-  'utilities',
   'welcome',
   'finder-notes',
   'read-me',
   'write',
+  'trash-untitled-folder',
+  'trash-all-work',
+  'trash-untitled-folder-2',
+  'trash-untitled-folder-3',
 ] as const;
 
 describe('persistent Macintosh state', () => {
@@ -40,7 +43,62 @@ describe('persistent Macintosh state', () => {
     expect(state.desktop.windows.some((windowState) => windowState.nodeId === 'desktop')).toBe(
       false,
     );
-    expect(state.desktop.windows[0]?.nodeId).toBe('system-disk');
+    expect(state.desktop.windows).toEqual([]);
+  });
+
+  it('recreates the authored Desktop, disk hierarchy, and intentional Trash contents', () => {
+    const state = createDefaultState();
+    const childrenOf = (parentId: string) =>
+      state.nodes.filter((node) => node.parentId === parentId).map((node) => node.id);
+
+    expect(state.desktop).toEqual({
+      diskPosition: { x: 1070, y: 7 },
+      trashPosition: { x: 1070, y: 653 },
+      windows: [],
+      viewMode: 'icons',
+      lastEjectAt: null,
+    });
+    expect(childrenOf('desktop')).toEqual(['read-me']);
+    expect(state.nodes.find((node) => node.id === 'read-me')).toMatchObject({
+      parentId: 'desktop',
+      iconPosition: { x: 1070, y: 77 },
+    });
+    expect(childrenOf('system-disk')).toEqual(['system-folder', 'applications', 'documents']);
+    expect(state.nodes.find((node) => node.id === 'applications')?.iconPosition).toEqual({
+      x: 118,
+      y: 67,
+    });
+    expect(state.nodes.find((node) => node.id === 'system-folder')?.iconPosition).toEqual({
+      x: 265,
+      y: 43,
+    });
+    expect(state.nodes.find((node) => node.id === 'documents')?.iconPosition).toEqual({
+      x: 216,
+      y: 183,
+    });
+    expect(childrenOf('documents')).toEqual(['welcome']);
+    expect(childrenOf('applications')).toEqual(['write']);
+    expect(childrenOf('trash')).toEqual(['trash-untitled-folder']);
+    expect(childrenOf('trash-untitled-folder')).toEqual([
+      'trash-all-work',
+      'trash-untitled-folder-2',
+      'trash-untitled-folder-3',
+    ]);
+    expect(state.nodes.find((node) => node.id === 'trash-all-work')?.payload).toEqual({
+      format: 'plain-text',
+      text: Array(6).fill('All work and no play makes Jack a dull boy.').join('\n'),
+    });
+  });
+
+  it('anchors reset defaults to the current Desktop size', () => {
+    const state = createDefaultState({ width: 800, height: 538 });
+
+    expect(state.desktop.diskPosition).toEqual({ x: 718, y: 7 });
+    expect(state.desktop.trashPosition).toEqual({ x: 718, y: 445 });
+    expect(state.nodes.find((node) => node.id === 'read-me')?.iconPosition).toEqual({
+      x: 718,
+      y: 77,
+    });
   });
 
   it('assigns canonical January 24, 1984 creation metadata to every shipped item', () => {
@@ -230,7 +288,16 @@ describe('persistent Macintosh state', () => {
       legacy.nodes = legacy.nodes.filter((node) => node.id !== 'desktop' && node.id !== 'write');
       legacy.desktop.diskPosition = { x: 731, y: 137 };
       legacy.desktop.trashPosition = { x: 97, y: 611 };
-      legacy.desktop.windows[0] = { ...legacy.desktop.windows[0]!, x: 319, y: 117 };
+      legacy.desktop.windows = [
+        {
+          id: 'window-system-disk',
+          nodeId: 'system-disk',
+          x: 319,
+          y: 117,
+          width: 640,
+          height: 420,
+        },
+      ];
       legacy.desktop.viewMode = 'list';
       legacy.desktop.lastEjectAt = '2026-07-22T12:00:00.000Z';
       const welcome = legacy.nodes.find((node) => node.id === 'welcome');
@@ -298,6 +365,14 @@ describe('persistent Macintosh state', () => {
           node.id === 'read-me' ? { ...node, payload: undefined, content: legacyText } : node,
         );
       legacy.desktop.windows.push(
+        {
+          id: 'window-system-disk',
+          nodeId: 'system-disk',
+          x: 20,
+          y: 20,
+          width: 640,
+          height: 420,
+        },
         { id: 'window-read-me', nodeId: 'read-me', x: 10, y: 10, width: 520, height: 390 },
         { id: 'window-write', nodeId: 'write', x: 20, y: 20, width: 520, height: 390 },
       );
@@ -344,6 +419,8 @@ describe('persistent Macintosh state', () => {
     if (!applications || !documents) throw new Error('Missing Desktop position fixtures.');
     applications.parentId = 'desktop';
     documents.parentId = 'desktop';
+    delete applications.iconPosition;
+    delete documents.iconPosition;
 
     const reordered = { ...state, nodes: [...state.nodes].reverse() };
     const originalPositions = new Map(

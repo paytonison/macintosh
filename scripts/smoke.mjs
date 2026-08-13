@@ -15,7 +15,6 @@ const CANONICAL_CREATED_AT_BY_NODE_ID = new Map([
   ['system-folder', BUILT_IN_ITEM_CREATED_AT],
   ['applications', BUILT_IN_ITEM_CREATED_AT],
   ['documents', BUILT_IN_ITEM_CREATED_AT],
-  ['utilities', BUILT_IN_ITEM_CREATED_AT],
   ['welcome', BUILT_IN_ITEM_CREATED_AT],
   ['finder-notes', BUILT_IN_ITEM_CREATED_AT],
   ['read-me', BUILT_IN_ITEM_CREATED_AT],
@@ -362,6 +361,70 @@ try {
   );
   console.log(
     'Persistence relaunch passed: normal-quit committed Finder geometry, cleaned Desktop and ordinary-folder icon positions, the free Finder icon position, canonical System Disk metadata, schema-4 virtual filesystem reload, and the saved rich Write document reopened without discarded edits.',
+  );
+
+  await runElectron('--reset-probe');
+  const resetState = JSON.parse(
+    await readFile(path.join(userData, 'macintosh-state.json'), 'utf8'),
+  );
+  assertCanonicalCreationMetadata(resetState, 'Reset state');
+  if (
+    resetState.desktop.windows.length !== 0 ||
+    resetState.desktop.diskPosition.x !== 1070 ||
+    resetState.desktop.diskPosition.y !== 7 ||
+    resetState.desktop.trashPosition.x !== 1070 ||
+    resetState.desktop.trashPosition.y !== 653
+  ) {
+    throw new Error('Reset did not restore the clean Desktop presentation.');
+  }
+  const resetDiskChildren = resetState.nodes
+    .filter((node) => node.parentId === 'system-disk')
+    .map((node) => node.id);
+  if (
+    JSON.stringify(resetDiskChildren) !==
+    JSON.stringify(['system-folder', 'applications', 'documents'])
+  ) {
+    throw new Error(`Reset did not restore the three-item System Disk: ${resetDiskChildren}.`);
+  }
+  const resetWelcome = resetState.nodes.find((node) => node.id === 'welcome');
+  const resetReadMe = resetState.nodes.find((node) => node.id === 'read-me');
+  if (
+    resetWelcome?.parentId !== 'documents' ||
+    resetReadMe?.parentId !== 'desktop' ||
+    resetReadMe.iconPosition?.x !== 1070 ||
+    resetReadMe.iconPosition?.y !== 77
+  ) {
+    throw new Error('Reset did not restore Welcome and Read Me to their authored locations.');
+  }
+  const resetTrashFolder = resetState.nodes.find(
+    (node) => node.id === 'trash-untitled-folder' && node.parentId === 'trash',
+  );
+  const resetTrashChildren = resetState.nodes
+    .filter((node) => node.parentId === resetTrashFolder?.id)
+    .map((node) => node.id);
+  if (
+    !resetTrashFolder ||
+    JSON.stringify(resetTrashChildren) !==
+      JSON.stringify(['trash-all-work', 'trash-untitled-folder-2', 'trash-untitled-folder-3']) ||
+    documentText(resetState.nodes.find((node) => node.id === 'trash-all-work')) !==
+      Array(6).fill('All work and no play makes Jack a dull boy.').join('\n')
+  ) {
+    throw new Error('Reset did not restore the intentional Trash subtree.');
+  }
+  for (const nodeId of [
+    'trash-untitled-folder',
+    'trash-all-work',
+    'trash-untitled-folder-2',
+    'trash-untitled-folder-3',
+  ]) {
+    if (
+      resetState.nodes.find((node) => node.id === nodeId)?.createdAt !== BUILT_IN_ITEM_CREATED_AT
+    ) {
+      throw new Error(`Reset did not restore canonical creation metadata for ${nodeId}.`);
+    }
+  }
+  console.log(
+    'Reset probe passed: Cancel and an injected write failure preserved the workspace, confirmation atomically restored the responsive canonical snapshot, the renderer restarted cleanly, and the intentional Trash subtree returned intact.',
   );
 } finally {
   await rm(userData, { recursive: true, force: true });
