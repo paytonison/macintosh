@@ -9,6 +9,7 @@ import {
 } from 'react';
 
 import { canonicalCreatedAtForNodeId, type VfsNode } from '../../shared/state';
+import { validateVfsRename, type VfsRenameValidation } from '../../shared/vfs';
 import { beginPointerDrag, updatePointerDrag, type PointerDragIntent } from '../model/pointer-drag';
 import { PixelIcon } from './PixelIcon';
 
@@ -321,6 +322,130 @@ export function InfoDialog({
       <div className="dialog-actions">
         <button autoFocus className="classic-default-button" onClick={onClose} type="button">
           OK
+        </button>
+      </div>
+    </ClassicDialog>
+  );
+}
+
+export const renameValidationMessage = (validation: VfsRenameValidation): string | null => {
+  if (validation.ok) return null;
+  switch (validation.reason) {
+    case 'empty-name':
+      return 'Enter a name.';
+    case 'name-too-long':
+      return 'Names can contain at most 96 characters.';
+    case 'invalid-character':
+      return 'Names cannot contain “/” or NUL characters.';
+    case 'name-collision':
+      return `An item named “${validation.name}” already exists in this folder.`;
+    case 'missing-node':
+    case 'unsupported-node':
+      return 'This item can no longer be renamed.';
+  }
+};
+
+interface RenameDialogProps extends MovableDialogProps {
+  node: VfsNode;
+  nodes: readonly VfsNode[];
+  onRename: (name: string) => Promise<string | null>;
+}
+
+export function RenameDialog({
+  interactionCancelToken,
+  node,
+  nodes,
+  onClose,
+  onInteractionChange,
+  onRename,
+}: RenameDialogProps) {
+  const [name, setName] = useState(node.name);
+  const [submitting, setSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const submittingRef = useRef(false);
+  const validation = validateVfsRename(nodes, node.id, name);
+  const validationError = renameValidationMessage(validation);
+  const error = validationError ?? submissionError;
+
+  useEffect(() => {
+    input.current?.focus();
+    input.current?.select();
+  }, []);
+
+  const cancel = (): void => {
+    if (!submittingRef.current) onClose();
+  };
+
+  const submit = async (): Promise<void> => {
+    const latestValidation = validateVfsRename(nodes, node.id, name);
+    if (!latestValidation.ok || submittingRef.current) return;
+    if (latestValidation.name === latestValidation.node.name) {
+      onClose();
+      return;
+    }
+    submittingRef.current = true;
+    setSubmitting(true);
+    setSubmissionError(null);
+    let failure: string | null;
+    try {
+      failure = await onRename(latestValidation.name);
+    } catch {
+      failure = 'The name could not be saved. Try again.';
+    }
+    if (!failure) return;
+    submittingRef.current = false;
+    setSubmissionError(failure);
+    setSubmitting(false);
+    requestAnimationFrame(() => input.current?.focus());
+  };
+
+  return (
+    <ClassicDialog
+      interactionCancelToken={interactionCancelToken}
+      onClose={cancel}
+      onInteractionChange={onInteractionChange}
+      title="Rename"
+      width={420}
+    >
+      <div className="rename-dialog-content">
+        <label className="rename-name-field">
+          <span>Name:</span>
+          <input
+            aria-describedby={error ? 'rename-name-error' : undefined}
+            aria-invalid={error ? true : undefined}
+            autoFocus
+            disabled={submitting}
+            onChange={(event) => {
+              setName(event.currentTarget.value);
+              setSubmissionError(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              event.preventDefault();
+              void submit();
+            }}
+            ref={input}
+            value={name}
+          />
+        </label>
+        {error ? (
+          <p className="rename-name-error" id="rename-name-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
+      <div className="dialog-actions rename-dialog-actions">
+        <button disabled={submitting} onClick={cancel} type="button">
+          Cancel
+        </button>
+        <button
+          className="classic-default-button"
+          disabled={!validation.ok || submitting}
+          onClick={() => void submit()}
+          type="button"
+        >
+          {submitting ? 'Renaming…' : 'Rename'}
         </button>
       </div>
     </ClassicDialog>

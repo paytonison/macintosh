@@ -5,10 +5,12 @@ import {
   createDefaultWriteParagraphStyle,
   type DocumentPayload,
 } from '../../shared/write';
+import { createDefaultState } from '../../shared/state';
 import {
   applyWriteCommittedSnapshot,
   applyWriteDraftPayload,
   canFinalizeWriteClose,
+  synchronizeWriteSessionTitles,
   type WriteSessionState,
 } from './write-session-state';
 
@@ -31,6 +33,41 @@ const session = (
 };
 
 describe('Write window session state', () => {
+  it('synchronizes saved window titles from VFS names without changing session state', () => {
+    const dirty = session({
+      documentId: 'read-me',
+      title: 'Old Name',
+      draft: plain('unsaved draft'),
+      saved: plain('saved'),
+      dirty: true,
+      generation: 7,
+    });
+    const clean = session({
+      documentId: 'read-me',
+      title: 'Another Old Name',
+      generation: 3,
+    });
+    const untitled = session({ documentId: null, title: 'Untitled', generation: 2 });
+    const nodes = createDefaultState().nodes.map((node) =>
+      node.id === 'read-me' ? { ...node, name: 'Renamed Document' } : node,
+    );
+
+    const next = synchronizeWriteSessionTitles([dirty, clean, untitled], nodes);
+
+    expect(next[0]).toEqual({ ...dirty, title: 'Renamed Document' });
+    expect(next[0]?.draft).toBe(dirty.draft);
+    expect(next[0]?.saved).toBe(dirty.saved);
+    expect(next[0]?.dirty).toBe(true);
+    expect(next[0]?.generation).toBe(7);
+    expect(next[1]).toEqual({ ...clean, title: 'Renamed Document' });
+    expect(next[1]?.draft).toBe(clean.draft);
+    expect(next[1]?.saved).toBe(clean.saved);
+    expect(next[1]?.dirty).toBe(false);
+    expect(next[1]?.generation).toBe(3);
+    expect(next[2]).toBe(untitled);
+    expect(synchronizeWriteSessionTitles(next, nodes)).toBe(next);
+  });
+
   it('returns the same state object when an equal draft payload arrives', () => {
     const state = session({ draft: plain('same'), saved: plain('same'), generation: 7 });
 

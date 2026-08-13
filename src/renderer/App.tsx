@@ -26,13 +26,21 @@ import {
   descendantsOf,
   listChildren,
   placeFinderIcons,
+  validateVfsRename,
   type DesktopPlacement,
   type VfsCommand,
   type VfsMutationResult,
 } from '../shared/vfs';
 import { playEjectSound, playMenuTick } from './audio/sounds';
 import { CalculatorWindow } from './components/CalculatorWindow';
-import { AboutDialog, EjectTipDialog, InfoDialog, PersistenceAlert } from './components/Dialogs';
+import {
+  AboutDialog,
+  EjectTipDialog,
+  InfoDialog,
+  PersistenceAlert,
+  RenameDialog,
+  renameValidationMessage,
+} from './components/Dialogs';
 import { DesktopIcon } from './components/DesktopIcon';
 import {
   DesktopSurface,
@@ -70,8 +78,16 @@ import {
   finderCommandDestinationId,
   findMenuShortcutEntry,
   hasOpenDocumentInTrash,
+  singleRenameableNode,
 } from './model/command-context';
-import { resolveDesktopIconPosition, translateDesktopIconDrag } from './model/desktop-icon-layout';
+import {
+  cleanUpDesktopIconPositions,
+  DESKTOP_ICON_HEIGHT,
+  DESKTOP_ICON_WIDTH,
+  desktopCleanupSpecialIconPositions,
+  resolveDesktopIconPosition,
+  translateDesktopIconDrag,
+} from './model/desktop-icon-layout';
 import { isTrashDropPoint } from './model/desktop-drop-target';
 import {
   AUTOMATION_EJECTION_FLASH_PHASE_DURATION_MS,
@@ -79,7 +95,7 @@ import {
   runEjectionFlashSequence,
   type EjectionFlashPhase,
 } from './model/ejection-feedback';
-import { translateFinderIconDrag } from './model/finder-icon-layout';
+import { cleanUpFinderIconPositions, translateFinderIconDrag } from './model/finder-icon-layout';
 import {
   createIconDragPreviewItems,
   resolveIconDragPreviewPosition,
@@ -102,12 +118,17 @@ import {
   applyWriteCommittedSnapshot,
   applyWriteDraftPayload,
   canFinalizeWriteClose,
+  synchronizeWriteSessionTitles,
   type WriteCloseAuthorization,
 } from './model/write-session-state';
 
 type SpecialDesktopIconId = 'system-disk' | 'trash';
 type DialogState =
-  { type: 'about' } | { type: 'info'; node: VfsNode } | { type: 'eject-tip' } | null;
+  | { type: 'about' }
+  | { type: 'info'; node: VfsNode }
+  | { type: 'rename'; node: VfsNode }
+  | { type: 'eject-tip' }
+  | null;
 type TransferNotice = { message: string; error: boolean } | null;
 type WindowAnimationSource = HTMLElement | null;
 type WriteFileDialogState =
@@ -663,7 +684,17 @@ export default function App() {
     ];
     return reconcileOrdinaryWindowOrder(ordinaryWindowOrder, validWindowIds);
   }, [calculatorOpen, ordinaryWindowOrder, state, writeWindows]);
-  const { activeWindow, activeNode, visibleSelection } = finderCommandContext;
+  const { activeWindow, activeNode, visibleSelection, visibleSelectionIds } = finderCommandContext;
+  const renameTarget = useMemo(
+    () =>
+      state
+        ? singleRenameableNode(
+            state.nodes,
+            activeFinderWindowId ? visibleSelectionIds : desktopSelection,
+          )
+        : null,
+    [activeFinderWindowId, desktopSelection, state, visibleSelectionIds],
+  );
   const copyableFinderSelectionIds = useMemo(
     () =>
       visibleSelection
@@ -698,6 +729,11 @@ export default function App() {
     },
     [],
   );
+
+  useLayoutEffect(() => {
+    if (!state) return;
+    replaceWriteWindows((current) => synchronizeWriteSessionTitles(current, state.nodes));
+  }, [replaceWriteWindows, state]);
 
   const registerWriteEditor = useCallback(
     (windowId: string, editor: WriteEditorHandle | null): void => {
@@ -1074,14 +1110,17 @@ export default function App() {
           const binding = writeSaveQueues.current.get(windowId);
           if (binding?.token !== token || binding.documentId !== documentId) return;
           replaceWriteWindows((current) =>
-            current.map((item) =>
-              item.id === windowId
-                ? applyWriteCommittedSnapshot(item, {
-                    documentId: result.documentId,
-                    title: result.title,
-                    payload: result.payload,
-                  })
-                : item,
+            synchronizeWriteSessionTitles(
+              current.map((item) =>
+                item.id === windowId
+                  ? applyWriteCommittedSnapshot(item, {
+                      documentId: result.documentId,
+                      title: result.title,
+                      payload: result.payload,
+                    })
+                  : item,
+              ),
+              stateRef.current?.nodes ?? [],
             ),
           );
         },
@@ -1354,18 +1393,21 @@ export default function App() {
           const committed = committedWriteDocumentFromResult(result, documentId, snapshot.value);
           let currentDraftSaved = false;
           replaceWriteWindows((current) =>
-            current.map((item) => {
-              if (item.id !== windowId) return item;
-              const rebound = applyWriteCommittedSnapshot(
-                {
-                  ...item,
-                  documentId: committed.documentId,
-                },
-                committed,
-              );
-              currentDraftSaved = !rebound.dirty;
-              return rebound;
-            }),
+            synchronizeWriteSessionTitles(
+              current.map((item) => {
+                if (item.id !== windowId) return item;
+                const rebound = applyWriteCommittedSnapshot(
+                  {
+                    ...item,
+                    documentId: committed.documentId,
+                  },
+                  committed,
+                );
+                currentDraftSaved = !rebound.dirty;
+                return rebound;
+              }),
+              stateRef.current?.nodes ?? [],
+            ),
           );
           writeSaveQueues.current.delete(windowId);
           writeSaveQueueFor(windowId, committed.documentId, snapshot.generation);
@@ -2254,6 +2296,58 @@ export default function App() {
     return desktopId ? (state.nodes.find((node) => node.id === desktopId) ?? null) : null;
   }, [desktopSelection, state, visibleSelection]);
 
+  const renameSelectedNode = useCallback(
+    async (nodeId: string, name: string): Promise<string | null> => {
+      const current = stateRef.current;
+      if (!current) return 'The virtual disk is unavailable.';
+      const validation = validateVfsRename(current.nodes, nodeId, name);
+      if (!validation.ok) {
+        return renameValidationMessage(validation) ?? 'The item could not be renamed.';
+      }
+      try {
+        const result = await window.macintosh.mutateVfs({
+          command: { type: 'rename-node', nodeId, name: validation.name },
+          presentation: projectPresentation(current),
+        });
+        const latestPresentation = projectPresentation(stateRef.current ?? current);
+        const nextState = mergePresentation(result.state, latestPresentation);
+        replaceState(nextState);
+        if (
+          result.affectedIds.includes(nodeId) &&
+          result.skippedCount === 0 &&
+          result.truncatedCount === 0
+        ) {
+          setDialog((currentDialog) =>
+            currentDialog?.type === 'rename' && currentDialog.node.id === nodeId
+              ? null
+              : currentDialog,
+          );
+          return null;
+        }
+
+        const authoritativeValidation = validateVfsRename(nextState.nodes, nodeId, name);
+        if (
+          !authoritativeValidation.ok &&
+          (authoritativeValidation.reason === 'missing-node' ||
+            authoritativeValidation.reason === 'unsupported-node')
+        ) {
+          setDialog((currentDialog) =>
+            currentDialog?.type === 'rename' && currentDialog.node.id === nodeId
+              ? null
+              : currentDialog,
+          );
+          showTransferNotice('The selected item could no longer be renamed.', true);
+          return null;
+        }
+        return renameValidationMessage(authoritativeValidation) ?? 'The item could not be renamed.';
+      } catch (error) {
+        console.error(error);
+        return 'The name could not be saved. Try again.';
+      }
+    },
+    [replaceState, showTransferNotice],
+  );
+
   const copyFinderSelection = useCallback((): boolean => {
     const current = stateRef.current;
     if (!current) return false;
@@ -2905,6 +2999,12 @@ export default function App() {
             disabled: !selectedNode,
             action: () => selectedNode && setDialog({ type: 'info', node: selectedNode }),
           },
+          {
+            id: 'rename',
+            label: 'Rename',
+            disabled: !renameTarget,
+            action: () => renameTarget && setDialog({ type: 'rename', node: renameTarget }),
+          },
         ],
       },
       {
@@ -2971,8 +3071,27 @@ export default function App() {
           { id: 'view-separator', separator: true },
           {
             id: 'clean-window',
-            label: 'Clean Up Window',
-            disabled: true,
+            label: 'Clean Up Folder',
+            disabled: state.desktop.viewMode !== 'icons' || activeNode?.kind !== 'folder',
+            action: () => {
+              updateState((current) => {
+                if (current.desktop.viewMode !== 'icons') return current;
+                const currentWindow = current.desktop.windows.find(
+                  (windowState) => windowState.id === activeFinderWindowId,
+                );
+                const currentFolder = currentWindow
+                  ? current.nodes.find((node) => node.id === currentWindow.nodeId)
+                  : undefined;
+                if (currentFolder?.kind !== 'folder') return current;
+                return placeFinderIcons(
+                  current,
+                  currentFolder.id,
+                  cleanUpFinderIconPositions(
+                    current.nodes.filter((node) => node.parentId === currentFolder.id),
+                  ),
+                );
+              });
+            },
           },
         ],
       },
@@ -2990,15 +3109,47 @@ export default function App() {
             id: 'clean-desktop',
             label: 'Clean Up Desktop',
             action: () => {
-              const defaults = createDefaultState().desktop;
-              updateState((current) => ({
-                ...current,
-                desktop: {
-                  ...current.desktop,
-                  diskPosition: defaults.diskPosition,
-                  trashPosition: defaults.trashPosition,
-                },
+              const surface = document.querySelector<HTMLElement>('.desktop-surface');
+              if (!surface) return;
+
+              const surfaceSize = {
+                width: surface.clientWidth,
+                height: surface.clientHeight,
+              };
+              const { diskPosition: cleanupDiskPosition, trashPosition: cleanupTrashPosition } =
+                desktopCleanupSpecialIconPositions(surfaceSize);
+              // The authored first row sits below the disk's visible hit regions. Its transparent
+              // tile margin overlaps that row, so only Trash needs a full-footprint reservation.
+              const reservedRectangles = [cleanupTrashPosition].map((position) => ({
+                left: position.x,
+                top: position.y,
+                right: position.x + DESKTOP_ICON_WIDTH,
+                bottom: position.y + DESKTOP_ICON_HEIGHT,
               }));
+              updateState((current) => {
+                const placements = cleanUpDesktopIconPositions(
+                  current.nodes.filter((node) => node.parentId === 'desktop'),
+                  surfaceSize,
+                  reservedRectangles,
+                );
+                if (!placements) {
+                  showTransferNotice(
+                    'The Desktop does not have enough room to clean up every item.',
+                    true,
+                  );
+                  return current;
+                }
+
+                const positioned = placeFinderIcons(current, 'desktop', placements);
+                return {
+                  ...positioned,
+                  desktop: {
+                    ...positioned.desktop,
+                    diskPosition: cleanupDiskPosition,
+                    trashPosition: cleanupTrashPosition,
+                  },
+                };
+              });
             },
           },
           { id: 'special-separator', separator: true },
@@ -3013,6 +3164,8 @@ export default function App() {
   }, [
     activateCalculator,
     activeApplication,
+    activeFinderWindowId,
+    activeNode,
     activeTarget.type,
     activeWindow,
     closeWindow,
@@ -3025,6 +3178,7 @@ export default function App() {
     openSelected,
     pasteFromClipboard,
     requestWriteClose,
+    renameTarget,
     saveWriteDocument,
     selectAll,
     selectedNode,
@@ -3281,6 +3435,17 @@ export default function App() {
             onClose={() => setDialog(null)}
             onInteractionChange={setPointerInteractionActive}
             where={state.nodes.find((node) => node.id === dialog.node.parentId)?.name ?? 'Desktop'}
+          />
+        )}
+        {!persistenceError && dialog?.type === 'rename' && (
+          <RenameDialog
+            interactionCancelToken={interactionCancelToken}
+            key={dialog.node.id}
+            node={dialog.node}
+            nodes={state.nodes}
+            onClose={() => setDialog(null)}
+            onInteractionChange={setPointerInteractionActive}
+            onRename={(name) => renameSelectedNode(dialog.node.id, name)}
           />
         )}
         {!persistenceError && dialog?.type === 'eject-tip' && (

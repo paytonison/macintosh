@@ -71,6 +71,24 @@ const exactRichPayload = (): DocumentPayload => ({
 });
 
 describe('persistent Macintosh state encoding', () => {
+  it('preserves a renamed node through serialization without changing schema', () => {
+    const initial = createDefaultState();
+    const renamed = executeVfsCommand(
+      initial,
+      { type: 'rename-node', nodeId: 'read-me', name: 'Project Notes' },
+      '2026-08-12T12:00:00.000Z',
+    );
+
+    const relaunched = parsePersistentState(serializePersistentState(renamed.state));
+
+    expect(relaunched.schemaVersion).toBe(initial.schemaVersion);
+    expect(relaunched.nodes.find((node) => node.id === 'read-me')).toEqual({
+      ...initial.nodes.find((node) => node.id === 'read-me'),
+      name: 'Project Notes',
+      modifiedAt: '2026-08-12T12:00:00.000Z',
+    });
+  });
+
   it('uses a compact bounded representation that survives a rich-document relaunch', () => {
     const state = createDefaultState();
     state.nodes.push(largeRichDocument('large-rich'));

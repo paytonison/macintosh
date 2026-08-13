@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createDefaultState, MAX_VFS_NODES } from '../../shared/state';
+import { createDefaultState, MAX_VFS_NAME_LENGTH, MAX_VFS_NODES } from '../../shared/state';
 import { createDefaultWriteParagraphStyle, type DocumentPayload } from '../../shared/write';
 import {
   addFolder,
@@ -13,6 +13,7 @@ import {
   moveNodes,
   placeFinderIcons,
   rectanglesOverlap,
+  validateVfsRename,
   MAX_VFS_CONTENT,
 } from '../../shared/vfs';
 
@@ -74,6 +75,199 @@ describe('virtual Finder helpers', () => {
 
     expect(state.nodes.some((node) => node.name === 'untitled folder')).toBe(true);
     expect(state.nodes.some((node) => node.name === 'untitled folder 2')).toBe(true);
+  });
+
+  it('renames documents and folders without changing their identity or contents', () => {
+    const state = createDefaultState();
+    const readMe = state.nodes.find((node) => node.id === 'read-me');
+    const documents = state.nodes.find((node) => node.id === 'documents');
+    if (!readMe || !documents) throw new Error('Missing rename fixtures.');
+    readMe.iconPosition = { x: 91, y: 77 };
+    documents.iconPosition = { x: 173, y: 119 };
+    const beforeReadMe = structuredClone(readMe);
+    const beforeDocuments = structuredClone(documents);
+    const beforeNodes = structuredClone(state.nodes);
+
+    const renamedDocument = executeVfsCommand(
+      state,
+      { type: 'rename-node', nodeId: readMe.id, name: '  Project Notes.txt  ' },
+      '2026-08-12T12:00:00.000Z',
+    );
+    const renamedFolder = executeVfsCommand(
+      renamedDocument.state,
+      { type: 'rename-node', nodeId: documents.id, name: 'Work' },
+      '2026-08-12T12:01:00.000Z',
+    );
+
+    expect(renamedDocument).toMatchObject({
+      affectedIds: [readMe.id],
+      addedCount: 0,
+      skippedCount: 0,
+      truncatedCount: 0,
+    });
+    expect(renamedDocument.state.nodes.find((node) => node.id === readMe.id)).toEqual({
+      ...beforeReadMe,
+      name: 'Project Notes.txt',
+      modifiedAt: '2026-08-12T12:00:00.000Z',
+    });
+    expect(renamedFolder.state.nodes.find((node) => node.id === documents.id)).toEqual({
+      ...beforeDocuments,
+      name: 'Work',
+      modifiedAt: '2026-08-12T12:01:00.000Z',
+    });
+    expect(
+      renamedFolder.state.nodes.filter((node) => node.id !== readMe.id && node.id !== documents.id),
+    ).toEqual(beforeNodes.filter((node) => node.id !== readMe.id && node.id !== documents.id));
+    expect(renamedFolder.state.nodes.find((node) => node.id === readMe.id)?.parentId).toBe(
+      documents.id,
+    );
+  });
+
+  it('supports case-only renames and treats an unchanged canonical name as idempotent', () => {
+    const state = createDefaultState();
+    const readMe = state.nodes.find((node) => node.id === 'read-me');
+    if (!readMe) throw new Error('Missing rename fixture.');
+    const originalModifiedAt = readMe.modifiedAt;
+
+    const unchanged = executeVfsCommand(
+      state,
+      { type: 'rename-node', nodeId: readMe.id, name: `  ${readMe.name}  ` },
+      '2026-08-12T12:00:00.000Z',
+    );
+    const caseChanged = executeVfsCommand(
+      unchanged.state,
+      { type: 'rename-node', nodeId: readMe.id, name: 'READ ME' },
+      '2026-08-12T12:01:00.000Z',
+    );
+
+    expect(unchanged.state).toBe(state);
+    expect(unchanged.affectedIds).toEqual([readMe.id]);
+    expect(unchanged.state.nodes.find((node) => node.id === readMe.id)?.modifiedAt).toBe(
+      originalModifiedAt,
+    );
+    expect(caseChanged.state.nodes.find((node) => node.id === readMe.id)).toMatchObject({
+      name: 'READ ME',
+      modifiedAt: '2026-08-12T12:01:00.000Z',
+    });
+  });
+
+  it('rejects invalid rename requests and case-insensitive sibling collisions', () => {
+    const state = createDefaultState();
+    const readMe = state.nodes.find((node) => node.id === 'read-me');
+    if (!readMe) throw new Error('Missing rename fixture.');
+    state.nodes.push({
+      ...readMe,
+      id: 'document-report',
+      name: 'Report.txt',
+    });
+
+    expect(validateVfsRename(state.nodes, readMe.id, '')).toMatchObject({
+      ok: false,
+      reason: 'empty-name',
+    });
+    expect(validateVfsRename(state.nodes, readMe.id, '   ')).toMatchObject({
+      ok: false,
+      reason: 'empty-name',
+    });
+    expect(
+      validateVfsRename(state.nodes, readMe.id, 'x'.repeat(MAX_VFS_NAME_LENGTH + 1)),
+    ).toMatchObject({ ok: false, reason: 'name-too-long' });
+    expect(validateVfsRename(state.nodes, readMe.id, 'Bad/Name')).toMatchObject({
+      ok: false,
+      reason: 'invalid-character',
+    });
+    expect(validateVfsRename(state.nodes, readMe.id, 'Bad\0Name')).toMatchObject({
+      ok: false,
+      reason: 'invalid-character',
+    });
+    expect(validateVfsRename(state.nodes, readMe.id, 'report.TXT')).toMatchObject({
+      ok: false,
+      reason: 'name-collision',
+    });
+
+    for (const name of [
+      '',
+      '   ',
+      'x'.repeat(MAX_VFS_NAME_LENGTH + 1),
+      'Bad/Name',
+      'Bad\0Name',
+      'report.TXT',
+    ]) {
+      expect(executeVfsCommand(state, { type: 'rename-node', nodeId: readMe.id, name })).toEqual({
+        state,
+        affectedIds: [],
+        addedCount: 0,
+        skippedCount: 1,
+        truncatedCount: 0,
+      });
+    }
+  });
+
+  it('allows matching names in different folders and rejects unsupported rename targets', () => {
+    const state = createDefaultState();
+    const readMe = state.nodes.find((node) => node.id === 'read-me');
+    if (!readMe) throw new Error('Missing rename fixture.');
+    const orphan = {
+      ...readMe,
+      id: 'orphan-document',
+      parentId: null,
+      name: 'Orphan',
+    };
+    state.nodes.push(orphan);
+
+    const otherParent = executeVfsCommand(state, {
+      type: 'rename-node',
+      nodeId: readMe.id,
+      name: 'Finder Notes',
+    });
+    expect(otherParent.state.nodes.find((node) => node.id === readMe.id)?.name).toBe(
+      'Finder Notes',
+    );
+
+    for (const nodeId of ['missing', 'system-disk', 'trash', 'desktop', 'write', orphan.id]) {
+      expect(validateVfsRename(state.nodes, nodeId, 'New Name').ok).toBe(false);
+      expect(executeVfsCommand(state, { type: 'rename-node', nodeId, name: 'New Name' })).toEqual({
+        state,
+        affectedIds: [],
+        addedCount: 0,
+        skippedCount: 1,
+        truncatedCount: 0,
+      });
+    }
+  });
+
+  it('renames ordinary documents and folders inside Trash while protecting the Trash root', () => {
+    const state = createDefaultState();
+    const readMe = state.nodes.find((node) => node.id === 'read-me');
+    const documents = state.nodes.find((node) => node.id === 'documents');
+    if (!readMe || !documents) throw new Error('Missing Trash rename fixtures.');
+    readMe.parentId = 'trash';
+    documents.parentId = 'trash';
+
+    const renamedDocument = executeVfsCommand(state, {
+      type: 'rename-node',
+      nodeId: readMe.id,
+      name: 'Discarded Note',
+    });
+    const renamedFolder = executeVfsCommand(renamedDocument.state, {
+      type: 'rename-node',
+      nodeId: documents.id,
+      name: 'Discarded Folder',
+    });
+
+    expect(renamedFolder.state.nodes.find((node) => node.id === readMe.id)?.name).toBe(
+      'Discarded Note',
+    );
+    expect(renamedFolder.state.nodes.find((node) => node.id === documents.id)?.name).toBe(
+      'Discarded Folder',
+    );
+    expect(
+      executeVfsCommand(renamedFolder.state, {
+        type: 'rename-node',
+        nodeId: 'trash',
+        name: 'Wastebasket',
+      }).skippedCount,
+    ).toBe(1);
   });
 
   it('empties Trash recursively without removing its root', () => {
@@ -661,6 +855,35 @@ describe('virtual Finder helpers', () => {
         },
       }),
     ).toThrow(TypeError);
+    expect(
+      isVfsCommand({
+        type: 'rename-node',
+        nodeId: 'read-me',
+        name: 'Project Notes',
+      }),
+    ).toBe(true);
+    expect(
+      isVfsCommand({
+        type: 'rename-node',
+        nodeId: 'read-me',
+        name: 'Project Notes',
+        parentId: 'documents',
+      }),
+    ).toBe(false);
+    expect(
+      isVfsCommand({
+        type: 'rename-node',
+        nodeId: 'read-me',
+        name: 'x'.repeat(MAX_VFS_NAME_LENGTH + 1),
+      }),
+    ).toBe(true);
+    expect(
+      isVfsCommand({
+        type: 'rename-node',
+        nodeId: 'read-me',
+        name: 42,
+      }),
+    ).toBe(false);
     expect(
       isVfsCommand({
         type: 'update-document',

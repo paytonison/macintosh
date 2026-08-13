@@ -167,9 +167,32 @@ describe('Icon surface backgrounds', () => {
     );
   });
 
+  it('sizes icon labels to their text and clamps long names inside their layout footprints', () => {
+    const desktopLabel = declarationsFor('.desktop-icon-label');
+    const finderLabel = declarationsFor('.finder-item-label');
+
+    for (const declarations of [desktopLabel, finderLabel]) {
+      expect(declarations).toContain('display: -webkit-box');
+      expect(declarations).toContain('width: max-content');
+      expect(declarations).toContain('overflow: hidden');
+      expect(declarations).toContain('overflow-wrap: anywhere');
+      expect(declarations).toContain('text-overflow: ellipsis');
+      expect(declarations).toContain('white-space: normal');
+      expect(declarations).toContain('-webkit-box-orient: vertical');
+      expect(declarations).toContain('-webkit-line-clamp: 2');
+    }
+
+    expect(desktopLabel).toContain('max-width: 82px');
+    expect(finderLabel).toContain('max-width: 112px');
+  });
+
   it('retains bounded selected and drop-target feedback', () => {
+    expect(backgroundFor('.desktop-icon.is-selected .desktop-icon-label')).toBe('#000');
+    expect(backgroundFor('.desktop-icon.is-file-drop-target .desktop-icon-label')).toBe('#000');
     expect(backgroundFor('.desktop-icon.is-selected .desktop-icon-glyph')).toBe('#000');
+    expect(backgroundFor('.finder-item.is-selected .finder-item-label')).toBe('#000');
     expect(backgroundFor('.finder-item.is-selected .pixel-icon')).toBe('#000');
+    expect(backgroundFor('.finder-item.is-file-drop-target .finder-item-label')).toBe('#000');
     expect(declarationsFor('.finder-item.is-selected .pixel-icon')).toContain('filter: invert(1)');
     expect(backgroundFor('.finder-item.is-file-drop-target .pixel-icon')).toBe('#000');
     expect(declarationsFor('.finder-item.is-file-drop-target .pixel-icon')).toContain(

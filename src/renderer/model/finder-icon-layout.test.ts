@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  cleanUpFinderIconPositions,
   defaultFinderIconPosition,
   finderIconCanvasSize,
   resolveFinderIconPositions,
@@ -8,10 +9,10 @@ import {
 } from './finder-icon-layout';
 import type { VfsNode } from '../../shared/state';
 
-const finderNode = (id: string, iconPosition?: { x: number; y: number }): VfsNode => ({
+const finderNode = (id: string, iconPosition?: { x: number; y: number }, name = id): VfsNode => ({
   id,
   parentId: 'system-disk',
-  name: id,
+  name,
   kind: 'folder',
   ...(iconPosition ? { iconPosition } : {}),
   createdAt: '1989-01-24T09:00:00.000Z',
@@ -92,5 +93,50 @@ describe('Finder free icon layout', () => {
 
     expect(translated.applications).toEqual({ x: 8048, y: 8078 });
     expect(translated.documents).toEqual({ x: 8192, y: 8192 });
+  });
+});
+
+describe('Finder cleanup layout', () => {
+  it('replaces saved positions with stable alphabetical Finder slots', () => {
+    const nodes = [
+      finderNode('tie-z', { x: 700, y: 701 }, 'alpha'),
+      finderNode('zulu', { x: 702, y: 703 }, 'Zulu'),
+      finderNode('tie-a', { x: 704, y: 705 }, 'Alpha'),
+      finderNode('charlie', { x: 706, y: 707 }, 'charlie'),
+      finderNode('beta', { x: 708, y: 709 }, 'beta'),
+    ];
+    const expected = [
+      { nodeId: 'tie-a', position: defaultFinderIconPosition(0) },
+      { nodeId: 'tie-z', position: defaultFinderIconPosition(1) },
+      { nodeId: 'beta', position: defaultFinderIconPosition(2) },
+      { nodeId: 'charlie', position: defaultFinderIconPosition(3) },
+      { nodeId: 'zulu', position: defaultFinderIconPosition(4) },
+    ];
+
+    expect(cleanUpFinderIconPositions(nodes)).toEqual(expected);
+    expect(cleanUpFinderIconPositions([...nodes].reverse())).toEqual(expected);
+    expect(expected[0]?.position).toEqual({ x: 24, y: 28 });
+    expect(expected[4]?.position).toEqual({ x: 24, y: 142 });
+  });
+
+  it('continues into another horizontal band before persisted positions can overlap', () => {
+    const nodes = Array.from({ length: 300 }, (_, index) =>
+      finderNode(`item-${index.toString().padStart(3, '0')}`),
+    );
+    const placements = cleanUpFinderIconPositions(nodes);
+    const coordinateKeys = placements.map(
+      ({ position }) => `${position.x.toString()},${position.y.toString()}`,
+    );
+
+    expect(placements[287]?.position).toEqual({ x: 456, y: 8122 });
+    expect(placements[288]?.position).toEqual({ x: 600, y: 28 });
+    expect(placements[292]?.position).toEqual({ x: 600, y: 142 });
+    expect(new Set(coordinateKeys).size).toBe(nodes.length);
+    expect(
+      placements.every(
+        ({ position }) =>
+          position.x >= 0 && position.x <= 8192 && position.y >= 0 && position.y <= 8192,
+      ),
+    ).toBe(true);
   });
 });

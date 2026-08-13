@@ -1,5 +1,6 @@
 import type { ImportedEntry } from './contracts';
 import {
+  MAX_VFS_NAME_LENGTH,
   MAX_VFS_NODES,
   type FinderViewMode,
   type MacintoshState,
@@ -85,6 +86,12 @@ export interface UpdateDocumentCommand {
   payload: DocumentPayload;
 }
 
+export interface RenameNodeCommand {
+  type: 'rename-node';
+  nodeId: string;
+  name: string;
+}
+
 export interface MoveNodesCommand extends DesktopPlacementCommand {
   type: 'move-nodes';
   nodeIds: string[];
@@ -107,6 +114,7 @@ export type VfsCommand =
   | CreateFolderCommand
   | CreateDocumentCommand
   | UpdateDocumentCommand
+  | RenameNodeCommand
   | MoveNodesCommand
   | DuplicateNodesCommand
   | EmptyTrashCommand;
@@ -382,6 +390,12 @@ export const isVfsCommand = (value: unknown): value is VfsCommand => {
         isBoundedString(value.nodeId, 96) &&
         isDocumentPayloadCandidate(value.payload)
       );
+    case 'rename-node':
+      return (
+        hasOnlyKeys(value, ['type', 'nodeId', 'name']) &&
+        isBoundedString(value.nodeId, 96) &&
+        typeof value.name === 'string'
+      );
     case 'move-nodes':
       return (
         hasOnlyKeys(value, ['type', 'nodeIds', 'parentId', 'placements', 'desktopPlacement']) &&
@@ -462,8 +476,56 @@ const isContainer = (node: VfsNode | undefined): boolean =>
 const isWritableContainer = (node: VfsNode | undefined): boolean =>
   node?.kind === 'desktop' || node?.kind === 'disk' || node?.kind === 'folder';
 
+export type VfsRenameFailureReason =
+  | 'missing-node'
+  | 'unsupported-node'
+  | 'empty-name'
+  | 'name-too-long'
+  | 'invalid-character'
+  | 'name-collision';
+
+export type VfsRenameValidation =
+  | { ok: true; name: string; node: VfsNode }
+  | { ok: false; name: string; reason: VfsRenameFailureReason };
+
+export const isVfsRenameTarget = (node: VfsNode | undefined): node is VfsNode =>
+  Boolean(node && (node.kind === 'document' || node.kind === 'folder') && node.parentId !== null);
+
+export const validateVfsRename = (
+  nodes: readonly VfsNode[],
+  nodeId: string,
+  requestedName: string,
+): VfsRenameValidation => {
+  const node = nodes.find((candidate) => candidate.id === nodeId);
+  const name = requestedName.trim();
+  if (!node) return { ok: false, name, reason: 'missing-node' };
+  if (!isVfsRenameTarget(node)) {
+    return { ok: false, name, reason: 'unsupported-node' };
+  }
+  if (!name) return { ok: false, name, reason: 'empty-name' };
+  if (name.length > MAX_VFS_NAME_LENGTH) {
+    return { ok: false, name, reason: 'name-too-long' };
+  }
+  if (name.includes('\0') || name.includes('/')) {
+    return { ok: false, name, reason: 'invalid-character' };
+  }
+  const foldedName = name.toLocaleLowerCase();
+  if (
+    nodes.some(
+      (candidate) =>
+        candidate.id !== node.id &&
+        candidate.parentId === node.parentId &&
+        candidate.name.toLocaleLowerCase() === foldedName,
+    )
+  ) {
+    return { ok: false, name, reason: 'name-collision' };
+  }
+  return { ok: true, name, node };
+};
+
 const cleanName = (value: string): string =>
-  value.replaceAll('\0', '').replaceAll('/', ':').trim().slice(0, 96) || 'untitled';
+  value.replaceAll('\0', '').replaceAll('/', ':').trim().slice(0, MAX_VFS_NAME_LENGTH) ||
+  'untitled';
 
 const splitExtension = (name: string, kind: VfsNode['kind']): [string, string] => {
   if (kind !== 'document') return [name, ''];
@@ -529,6 +591,47 @@ const contentSize = (nodes: VfsNode[]): number =>
 
 const validTimestamp = (value: string, fallback: string): string =>
   value.length <= 64 && !Number.isNaN(Date.parse(value)) ? value : fallback;
+
+export const renameNode = (
+  state: MacintoshState,
+  nodeId: string,
+  requestedName: string,
+  timestamp = new Date().toISOString(),
+): VfsMutationResult => {
+  const validation = validateVfsRename(state.nodes, nodeId, requestedName);
+  if (!validation.ok) {
+    return {
+      state,
+      affectedIds: [],
+      addedCount: 0,
+      skippedCount: 1,
+      truncatedCount: 0,
+    };
+  }
+  if (validation.name === validation.node.name) {
+    return {
+      state,
+      affectedIds: [validation.node.id],
+      addedCount: 0,
+      skippedCount: 0,
+      truncatedCount: 0,
+    };
+  }
+  return {
+    state: {
+      ...state,
+      nodes: state.nodes.map((node) =>
+        node.id === validation.node.id
+          ? { ...node, name: validation.name, modifiedAt: timestamp }
+          : node,
+      ),
+    },
+    affectedIds: [validation.node.id],
+    addedCount: 0,
+    skippedCount: 0,
+    truncatedCount: 0,
+  };
+};
 
 const importedTreeSize = (entry: ImportedEntry): number => {
   const seen = new Set<ImportedEntry>();
@@ -1061,6 +1164,8 @@ export const executeVfsCommand = (
       );
     case 'update-document':
       return updateDocumentMutation(state, value, safeTimestamp);
+    case 'rename-node':
+      return renameNode(state, value.nodeId, value.name, safeTimestamp);
     case 'move-nodes':
       return applyMutationPlacements(
         moveNodes(state, value.nodeIds, value.parentId, safeTimestamp),

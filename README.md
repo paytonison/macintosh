@@ -32,10 +32,15 @@ compact-computer icon.
   legible over either the patterned desktop or white windows.
 - Movement between folders, the desktop, System Disk, and Trash, including recursive folder moves
   and protection against invalid descendant drops.
-- New Folder, Open, Close Window, Get Info, Copy, Paste, Select All, Clear Selection, View by Icon,
-  View by Name, Empty Trash, and Clean Up Desktop commands.
+- New Folder, Open, Close Window, Get Info, Rename, Copy, Paste, Select All, Clear Selection, View
+  by Icon, View by Name, Clean Up Folder, Empty Trash, and Clean Up Desktop commands.
 - Original Get Info, About, error, and ejection dialogs with modal input ownership.
 - Synthesized menu and ejection sounds.
+
+**Clean Up Desktop** builds one authored right-side composition from the live Desktop bounds:
+System Disk anchors at the top of the ordinary items' cleanup column, ordinary items continue
+downward in a compact alphabetical rhythm, and Trash aligns with the same column at its authored
+bottom inset. All icons remain freely repositionable afterward.
 
 System Disk and Trash can be repositioned independently. Dragging System Disk onto the visible
 Trash artwork begins the Macintosh shutdown gesture: dirty Write documents are reviewed, the disk
@@ -120,6 +125,8 @@ milestones in [ROADMAP.md](ROADMAP.md).
   double-click to toggle window zoom.
 - Use the System, File, Edit, View, and Special menus for Finder commands. An active Write window
   replaces them with System, File, Edit, Format, Font, Size, and View.
+- Select one file or folder and use **File > Rename** to edit its name. Rename rejects invalid or
+  duplicate sibling names without changing the item.
 - Open Calculator from the System menu. It receives ordinary keyboard input while preserving the
   current Finder or Write menus; Escape closes it.
 - Quit with Command-Q, the native macOS application menu, or the authored System Disk-to-Trash

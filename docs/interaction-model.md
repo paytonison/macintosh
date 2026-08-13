@@ -147,6 +147,9 @@ Current Finder command context is:
 - **Open** targets the selected node.
 - **Close Window** targets the active Finder window.
 - **Get Info** targets the selected node.
+- **Rename** is enabled only for one selected document or folder in the active Finder context. It
+  opens a modal name editor, preserves stable node identity, and rejects empty, oversized, invalid,
+  or case-insensitively colliding sibling names rather than rewriting another item.
 - **Paste** targets the active disk or folder window; otherwise it targets Desktop.
 - **Select All** selects all children of the active non-document Finder window; otherwise it selects the desktop icons.
 - **Clear Selection** clears both selection domains.
@@ -154,7 +157,16 @@ Current Finder command context is:
 - **Empty Trash** is enabled only when Trash contains nodes and no open saved Write document is
   directly or indirectly inside Trash. The action repeats that check against current state before
   mutating the VFS.
-- **Clean Up Desktop** restores the default System Disk and Trash positions; ordinary Desktop item positions remain free-form.
+- **Clean Up Folder** is enabled only for an active ordinary folder in icon view. It commits that
+  folder's direct children to the standard icon grid in case-insensitive displayed-name order, with
+  stable node identity breaking name ties.
+- **Clean Up Desktop** builds one authored right-side composition from the live Desktop bounds.
+  System Disk anchors at the top of the ordinary items' cleanup column, ordinary items continue
+  downward in compact rows before continuing in columns to the left, and Trash aligns with the same
+  column at its authored bottom inset. Ordinary items are ordered case-insensitively by displayed
+  name, with stable node identity breaking name ties. On the default `1152 x 746` Desktop surface,
+  the shared column origin is `x = 1070`: System Disk uses `y = 7`, ordinary rows begin at `y = 77`
+  with an `83`-pixel step, and Trash uses `y = 653`.
 - **Eject System Disk…** explains the drag-to-Trash shutdown gesture; it does not eject by itself.
 
 ## Write
@@ -301,6 +313,8 @@ Icon view begins with an orderly deterministic arrangement ranked by stable node
 - Dropping onto a folder icon performs the existing virtual filesystem move instead of a placement-only change.
 - Dropping into the bare icon canvas of another open folder moves the items and places them at the drop point.
 - List view ignores icon positions and remains name-sorted. Returning to icon view restores the saved positions.
+- **Clean Up Folder** is an explicit position-only commit onto the standard icon grid. It neither
+  changes the folder's contents nor constrains later free placement.
 - Cancellation or a drop outside a valid target discards the preview and changes neither layout nor filesystem state.
 
 ## Desktop icons and drag behavior
@@ -316,7 +330,7 @@ Ordinary Desktop items follow Finder semantics:
 - **Get Info** reports Desktop as their parent;
 - a folder icon is a drop destination, while a document icon blocks the drop instead of allowing it to fall through to bare Desktop behind it.
 
-Ordinary Desktop icon positions are explicit persisted integer-pixel coordinates relative to the actual Desktop surface. They are free-form and never grid-snapped or derived from node-array order. A drag of several selected Desktop children applies one shared translation so their relative layout remains intact. Committed positions are clamped using the rendered icon footprint so every item remains recoverable inside the usable surface.
+Ordinary Desktop icon positions are explicit persisted integer-pixel coordinates relative to the actual Desktop surface. Direct placement is free-form and never grid-snapped or derived from node-array order. **Clean Up Desktop** is the explicit exception: it deterministically replaces those coordinates with its authored right-side alphabetical layout, places System Disk at the top of that column, and aligns Trash to it at a bottom inset derived from the same live surface. The disk's transparent layout-tile margin may overlap the first ordinary row, but their visible artwork and labels remain distinct. Later free placement remains available. A drag of several selected Desktop children applies one shared translation so their relative layout remains intact. Committed positions are clamped using the rendered icon footprint so every item remains recoverable inside the usable surface.
 
 Dragging an ordinary item from Finder to bare Desktop moves its selected top-level VFS roots beneath `desktop` and assigns positions from the drop point. Dragging an ordinary Desktop item to another container moves it and clears its Desktop-relative root position. Descendant layout inside moved folders remains unchanged. Moving an item to Desktop is a filesystem mutation; dropping an item already on Desktop onto another bare Desktop location is placement-only and does not change its parent or timestamps.
 
@@ -369,7 +383,7 @@ Repositioning either special desktop icon has no hidden filesystem effect. Their
 
 ## Dialogs and alerts
 
-Only one ordinary dialog is open at a time. About, Get Info, the eject explanation, Write's virtual Open and Save As, and Write's unsaved-changes question share the classic modal behavior.
+Only one ordinary dialog is open at a time. About, Get Info, Rename, the eject explanation, Write's virtual Open and Save As, and Write's unsaved-changes question share the classic modal behavior.
 
 Dialogs are modal interaction contexts. They appear above ordinary windows, retain input priority until dismissed, and do not alter Finder stacking merely by opening. Their geometry is transient.
 
@@ -387,14 +401,22 @@ not live references to host paths.
 
 Each node has a stable identifier, parent identifier, name, kind, and timestamps. Non-root nodes may also carry bounded icon coordinates. Documents carry either a bounded exact plain-text payload or a defensively sanitized `write-v1` payload. Application nodes carry an allowlisted application identifier and no executable host path. System Disk, Trash, and Desktop are required roots. Desktop has the stable identity `desktop`, kind `desktop`, and a null parent. Root nodes never retain `iconPosition`.
 
-Finder and Write commands operate on the virtual tree only. Create, update, move, duplicate, host-import,
-and Trash mutations cross a typed preload boundary and execute against canonical state in the main
+Finder and Write commands operate on the virtual tree only. Create, update, rename, move, duplicate,
+host-import, and Trash mutations cross a typed preload boundary and execute against canonical state in the main
 process. Host import paths may come only from browser-granted `File` objects and must be inspected
 behind that boundary; inspection and insertion into the VFS are one serialized main-process
 transaction. Imported nodes do not retain arbitrary paths or ongoing host access. General host
 filesystem browsing or arbitrary path handling remains a separate product and security decision.
 
 Opening, selecting, changing view mode, moving a window, and repositioning icons must not mutate virtual filesystem contents. Finder and same-parent Desktop icon movement change layout metadata only. Filesystem mutations occur only through explicit commands and transfers such as New Folder, Paste, import, cross-container move, or Empty Trash.
+
+Rename trims outer whitespace, keeps the requested case and internal characters, and accepts at
+most 96 characters. Documents and folders may be renamed, including items inside Trash; the
+Desktop, System Disk, Trash, and application nodes are protected. `/`, NUL characters, and
+case-insensitive sibling collisions are rejected. Matching names in different folders and case-only
+renames are valid. Submitting the unchanged canonical name succeeds without changing state or its
+modification timestamp. A real change updates only the node name and modification timestamp, so
+contents, descendants, icon positions, and open-window identity remain stable.
 
 The renderer owns selection, hit testing, previews, and proposed layout coordinates. It may persist
 only allowlisted presentation fields and parent-scoped icon positions; it cannot replace node
