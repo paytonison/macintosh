@@ -71,6 +71,7 @@ import {
   type WriteWindowAnimation,
   type WriteWindowState,
 } from './components/WriteWindow';
+import { formatMenuClock, millisecondsUntilNextMinute } from './model/clock';
 import type { WriteSaveQueue, VersionedWriteSnapshot } from './model/write-save-queue';
 import { createWriteSaveQueue } from './model/write-save-queue';
 import {
@@ -200,11 +201,16 @@ const pause = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const useClock = (): string => {
-  const format = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  const [clock, setClock] = useState(format);
+  const [clock, setClock] = useState(() => formatMenuClock(new Date()));
   useEffect(() => {
-    const timer = setInterval(() => setClock(format()), 15_000);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = (): void => {
+      const now = new Date();
+      setClock(formatMenuClock(now));
+      timer = setTimeout(refresh, millisecondsUntilNextMinute(now));
+    };
+    timer = setTimeout(refresh, 0);
+    return () => clearTimeout(timer);
   }, []);
   return clock;
 };
