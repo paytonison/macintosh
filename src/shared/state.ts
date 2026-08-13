@@ -3,6 +3,7 @@ import { sanitizeDocumentPayload, type DocumentPayload } from './write';
 
 export const STATE_SCHEMA_VERSION = 4 as const;
 const LEGACY_STATE_SCHEMA_VERSIONS = new Set([1, 2, 3]);
+export const MAX_VFS_NAME_LENGTH = 96;
 // Schema 2 allowed two required roots plus 510 ordinary nodes. Schema 3 added
 // Desktop and schema 4 adds Write without reducing that user-visible capacity.
 export const MAX_VFS_NODES = 514;
@@ -189,7 +190,7 @@ const sanitizeNode = (value: unknown, legacy: boolean): VfsNode | null => {
   const kind = value.kind;
   if (typeof kind !== 'string' || !validKinds.has(kind as VfsNodeKind)) return null;
   const id = safeString(value.id, '', 96);
-  const name = safeString(value.name, '', 96);
+  const name = safeString(value.name, '', MAX_VFS_NAME_LENGTH);
   if (!id || !name) return null;
   const createdAt = safeTimestamp(value.createdAt, seedTimestamp) ?? seedTimestamp;
   const modifiedAt = safeTimestamp(value.modifiedAt, createdAt) ?? createdAt;

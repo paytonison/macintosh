@@ -1,5 +1,6 @@
 import type { DocumentPayload } from '../../shared/write';
 import { documentPayloadEqual } from '../../shared/write';
+import type { VfsNode } from '../../shared/state';
 
 export interface WriteSessionState {
   documentId: string | null;
@@ -48,6 +49,23 @@ export const applyWriteCommittedSnapshot = <State extends WriteSessionState>(
     saved: committed.payload,
     dirty: !documentPayloadEqual(state.draft, committed.payload),
   };
+};
+
+export const synchronizeWriteSessionTitles = <State extends WriteSessionState>(
+  sessions: State[],
+  nodes: readonly VfsNode[],
+): State[] => {
+  const titles = new Map(
+    nodes.flatMap((node) => (node.kind === 'document' ? ([[node.id, node.name]] as const) : [])),
+  );
+  let changed = false;
+  const next = sessions.map((session) => {
+    const title = session.documentId ? titles.get(session.documentId) : undefined;
+    if (!title || title === session.title) return session;
+    changed = true;
+    return { ...session, title };
+  });
+  return changed ? next : sessions;
 };
 
 export const canFinalizeWriteClose = (

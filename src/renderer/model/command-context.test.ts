@@ -8,6 +8,7 @@ import {
   findMenuShortcutEntry,
   hasOpenDocumentInTrash,
   menuShortcutLabel,
+  singleRenameableNode,
 } from './command-context';
 
 const shortcutEvent = (
@@ -88,6 +89,19 @@ describe('open Write documents in Trash', () => {
 });
 
 describe('Finder command context', () => {
+  it('returns exactly one selected renameable document or folder', () => {
+    const state = createDefaultState();
+
+    expect(singleRenameableNode(state.nodes, ['read-me'])?.id).toBe('read-me');
+    expect(singleRenameableNode(state.nodes, ['documents'])?.id).toBe('documents');
+    expect(singleRenameableNode(state.nodes, [])).toBeNull();
+    expect(singleRenameableNode(state.nodes, ['read-me', 'documents'])).toBeNull();
+    expect(singleRenameableNode(state.nodes, ['system-disk'])).toBeNull();
+    expect(singleRenameableNode(state.nodes, ['trash'])).toBeNull();
+    expect(singleRenameableNode(state.nodes, ['write'])).toBeNull();
+    expect(singleRenameableNode(state.nodes, ['missing'])).toBeNull();
+  });
+
   it('uses Desktop when no active disk or folder window owns creation commands', () => {
     const state = createDefaultState();
     expect(finderCommandDestinationId(state, 'window-system-disk')).toBe('system-disk');

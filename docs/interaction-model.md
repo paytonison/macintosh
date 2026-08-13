@@ -147,6 +147,9 @@ Current Finder command context is:
 - **Open** targets the selected node.
 - **Close Window** targets the active Finder window.
 - **Get Info** targets the selected node.
+- **Rename** is enabled only for one selected document or folder in the active Finder context. It
+  opens a modal name editor, preserves stable node identity, and rejects empty, oversized, invalid,
+  or case-insensitively colliding sibling names rather than rewriting another item.
 - **Paste** targets the active disk or folder window; otherwise it targets Desktop.
 - **Select All** selects all children of the active non-document Finder window; otherwise it selects the desktop icons.
 - **Clear Selection** clears both selection domains.
@@ -380,7 +383,7 @@ Repositioning either special desktop icon has no hidden filesystem effect. Their
 
 ## Dialogs and alerts
 
-Only one ordinary dialog is open at a time. About, Get Info, the eject explanation, Write's virtual Open and Save As, and Write's unsaved-changes question share the classic modal behavior.
+Only one ordinary dialog is open at a time. About, Get Info, Rename, the eject explanation, Write's virtual Open and Save As, and Write's unsaved-changes question share the classic modal behavior.
 
 Dialogs are modal interaction contexts. They appear above ordinary windows, retain input priority until dismissed, and do not alter Finder stacking merely by opening. Their geometry is transient.
 
@@ -398,14 +401,22 @@ not live references to host paths.
 
 Each node has a stable identifier, parent identifier, name, kind, and timestamps. Non-root nodes may also carry bounded icon coordinates. Documents carry either a bounded exact plain-text payload or a defensively sanitized `write-v1` payload. Application nodes carry an allowlisted application identifier and no executable host path. System Disk, Trash, and Desktop are required roots. Desktop has the stable identity `desktop`, kind `desktop`, and a null parent. Root nodes never retain `iconPosition`.
 
-Finder and Write commands operate on the virtual tree only. Create, update, move, duplicate, host-import,
-and Trash mutations cross a typed preload boundary and execute against canonical state in the main
+Finder and Write commands operate on the virtual tree only. Create, update, rename, move, duplicate,
+host-import, and Trash mutations cross a typed preload boundary and execute against canonical state in the main
 process. Host import paths may come only from browser-granted `File` objects and must be inspected
 behind that boundary; inspection and insertion into the VFS are one serialized main-process
 transaction. Imported nodes do not retain arbitrary paths or ongoing host access. General host
 filesystem browsing or arbitrary path handling remains a separate product and security decision.
 
 Opening, selecting, changing view mode, moving a window, and repositioning icons must not mutate virtual filesystem contents. Finder and same-parent Desktop icon movement change layout metadata only. Filesystem mutations occur only through explicit commands and transfers such as New Folder, Paste, import, cross-container move, or Empty Trash.
+
+Rename trims outer whitespace, keeps the requested case and internal characters, and accepts at
+most 96 characters. Documents and folders may be renamed, including items inside Trash; the
+Desktop, System Disk, Trash, and application nodes are protected. `/`, NUL characters, and
+case-insensitive sibling collisions are rejected. Matching names in different folders and case-only
+renames are valid. Submitting the unchanged canonical name succeeds without changing state or its
+modification timestamp. A real change updates only the node name and modification timestamp, so
+contents, descendants, icon positions, and open-window identity remain stable.
 
 The renderer owns selection, hit testing, previews, and proposed layout coordinates. It may persist
 only allowlisted presentation fields and parent-scoped icon positions; it cannot replace node

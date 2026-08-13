@@ -3251,6 +3251,244 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
     throw new Error('The Clean Up Folder smoke fixture could not create its second child.');
   }
 
+  const nestedRenameFixture = (await window.webContents.executeJavaScript(
+    `(() => {
+      const items = [...document.querySelectorAll(
+        '[aria-label="Drop Folder window"] [data-vfs-item]'
+      )];
+      const note = items.find((item) => item.textContent?.includes('Nested Note.txt'));
+      const folder = items.find((item) => item.textContent?.includes('untitled folder'));
+      if (!(note instanceof HTMLElement) || !(folder instanceof HTMLElement)) return null;
+      note.click();
+      folder.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+      return {
+        noteId: note.getAttribute('data-vfs-item') ?? '',
+        folderId: folder.getAttribute('data-vfs-item') ?? ''
+      };
+    })()`,
+    true,
+  )) as { noteId: string; folderId: string } | null;
+  if (!nestedRenameFixture?.noteId || !nestedRenameFixture.folderId) {
+    throw new Error('The nested rename fixture could not identify both folder children.');
+  }
+  await pause(40);
+  const multiRenameMenu = await readRendererMenuState('file', ['rename']);
+  if (!multiRenameMenu.rename.disabled) {
+    throw new Error('Rename remained enabled for a multi-selection in the active Finder window.');
+  }
+
+  await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[aria-label="Drop Folder window"] [data-vfs-item="${nestedRenameFixture.noteId}"]'
+    )?.click()`,
+    true,
+  );
+  await pause(40);
+  const singleRenameMenu = await readRendererMenuState('file', ['rename']);
+  if (singleRenameMenu.rename.disabled) {
+    throw new Error('Rename was disabled for one selected Finder document.');
+  }
+  await invokeRendererMenuAction('file', 'rename');
+  const nestedRenameSelection = (await window.webContents.executeJavaScript(
+    `(() => {
+      const dialog = document.querySelector('[aria-label="Rename"]');
+      const input = dialog?.querySelector('input');
+      if (!(dialog instanceof HTMLElement) || !(input instanceof HTMLInputElement)) return null;
+      return {
+        value: input.value,
+        focused: document.activeElement === input,
+        start: input.selectionStart,
+        end: input.selectionEnd
+      };
+    })()`,
+    true,
+  )) as { value: string; focused: boolean; start: number | null; end: number | null } | null;
+  if (
+    nestedRenameSelection?.value !== 'Nested Note.txt' ||
+    !nestedRenameSelection.focused ||
+    nestedRenameSelection.start !== 0 ||
+    nestedRenameSelection.end !== 'Nested Note.txt'.length
+  ) {
+    throw new Error(
+      `Rename did not prefill, focus, and select the complete current name: ${JSON.stringify(nestedRenameSelection)}.`,
+    );
+  }
+
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const input = document.querySelector('[aria-label="Rename"] input');
+      if (!(input instanceof HTMLInputElement)) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'untitled folder');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`,
+    true,
+  );
+  await pause(30);
+  const nestedCollision = (await window.webContents.executeJavaScript(
+    `(() => {
+      const dialog = document.querySelector('[aria-label="Rename"]');
+      const submit = dialog?.querySelector('.classic-default-button');
+      const items = [...document.querySelectorAll(
+        '[aria-label="Drop Folder window"] [data-vfs-item]'
+      )];
+      return {
+        open: dialog instanceof HTMLElement,
+        error: dialog?.querySelector('[role="alert"]')?.textContent?.trim() ?? '',
+        submitDisabled: submit instanceof HTMLButtonElement && submit.disabled,
+        oldNameCount: items.filter((item) => item.textContent?.includes('Nested Note.txt')).length,
+        collisionNameCount: items.filter((item) => item.textContent?.includes('untitled folder')).length
+      };
+    })()`,
+    true,
+  )) as {
+    open: boolean;
+    error: string;
+    submitDisabled: boolean;
+    oldNameCount: number;
+    collisionNameCount: number;
+  };
+  if (
+    !nestedCollision.open ||
+    nestedCollision.error !== 'An item named “untitled folder” already exists in this folder.' ||
+    !nestedCollision.submitDisabled ||
+    nestedCollision.oldNameCount !== 1 ||
+    nestedCollision.collisionNameCount !== 1
+  ) {
+    throw new Error(
+      `Rename did not reject a sibling collision without changing either node: ${JSON.stringify(nestedCollision)}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const cancel = [...(document.querySelector('[aria-label="Rename"]')?.querySelectorAll('button') ?? [])]
+        .find((button) => button.textContent?.trim() === 'Cancel');
+      if (!(cancel instanceof HTMLButtonElement)) return false;
+      cancel.click();
+      return true;
+    })()`,
+    true,
+  );
+  await pause(40);
+  const collisionCancelled = (await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Rename"]') === null &&
+      document.querySelector(
+        '[aria-label="Drop Folder window"] [data-vfs-item="${nestedRenameFixture.noteId}"]'
+      )?.textContent?.includes('Nested Note.txt') === true`,
+    true,
+  )) as boolean;
+  if (!collisionCancelled) {
+    throw new Error('Cancel did not dismiss Rename while preserving the nested document name.');
+  }
+
+  await invokeRendererMenuAction('file', 'rename');
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const input = document.querySelector('[aria-label="Rename"] input');
+      if (!(input instanceof HTMLInputElement)) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'Nested Note Renamed.txt');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`,
+    true,
+  );
+  await pause(30);
+  smokeSaveFailureTarget = 'vfs';
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Rename"] .classic-default-button')?.click()`,
+    true,
+  );
+  let nestedRenameFailure: {
+    error: string;
+    draft: string;
+    submitDisabled: boolean;
+    oldNameRetained: boolean;
+  } | null = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    nestedRenameFailure = (await window.webContents.executeJavaScript(
+      `(() => {
+        const dialog = document.querySelector('[aria-label="Rename"]');
+        const input = dialog?.querySelector('input');
+        const submit = dialog?.querySelector('.classic-default-button');
+        if (!(input instanceof HTMLInputElement) || !(submit instanceof HTMLButtonElement)) return null;
+        return {
+          error: dialog?.querySelector('[role="alert"]')?.textContent?.trim() ?? '',
+          draft: input.value,
+          submitDisabled: submit.disabled,
+          oldNameRetained: document.querySelector(
+            '[aria-label="Drop Folder window"] [data-vfs-item="${nestedRenameFixture.noteId}"]'
+          )?.textContent?.includes('Nested Note.txt') === true
+        };
+      })()`,
+      true,
+    )) as {
+      error: string;
+      draft: string;
+      submitDisabled: boolean;
+      oldNameRetained: boolean;
+    } | null;
+    if (nestedRenameFailure?.error === 'The name could not be saved. Try again.') break;
+    await pause(25);
+  }
+  if (
+    nestedRenameFailure?.error !== 'The name could not be saved. Try again.' ||
+    nestedRenameFailure.draft !== 'Nested Note Renamed.txt' ||
+    nestedRenameFailure.submitDisabled ||
+    !nestedRenameFailure.oldNameRetained
+  ) {
+    throw new Error(
+      `A failed canonical rename did not retain the old name and retryable draft: ${JSON.stringify(nestedRenameFailure)}.`,
+    );
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Rename"] .classic-default-button')?.click()`,
+    true,
+  );
+  let nestedRenameCommitted = false;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    nestedRenameCommitted = (await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="Rename"]') === null &&
+        document.querySelector(
+          '[aria-label="Drop Folder window"] [data-vfs-item="${nestedRenameFixture.noteId}"]'
+        )?.textContent?.includes('Nested Note Renamed.txt') === true`,
+      true,
+    )) as boolean;
+    if (nestedRenameCommitted) break;
+    await pause(25);
+  }
+  if (!nestedRenameCommitted) {
+    throw new Error('Retrying the failed nested rename did not commit the new name.');
+  }
+
+  await invokeRendererMenuAction('view', 'view-list');
+  const renamedNameView = (await window.webContents.executeJavaScript(
+    `(() => {
+      const rows = [...document.querySelectorAll(
+        '[aria-label="Drop Folder window"] .finder-list-row'
+      )];
+      return rows.map((row) => ({
+        id: row.getAttribute('data-vfs-item') ?? '',
+        selected: row.classList.contains('is-selected'),
+        text: row.textContent?.trim() ?? ''
+      }));
+    })()`,
+    true,
+  )) as { id: string; selected: boolean; text: string }[];
+  if (
+    renamedNameView.length !== 2 ||
+    renamedNameView[0]?.id !== nestedRenameFixture.noteId ||
+    !renamedNameView[0]?.selected ||
+    !renamedNameView[0]?.text.includes('Nested Note Renamed.txt') ||
+    renamedNameView[1]?.id !== nestedRenameFixture.folderId
+  ) {
+    throw new Error(
+      `Finder name view did not re-sort the renamed node while retaining its stable selection: ${JSON.stringify(renamedNameView)}.`,
+    );
+  }
+  await invokeRendererMenuAction('view', 'view-icons');
+
   await window.webContents.executeJavaScript(
     `document.querySelector('[data-menu="view"]')?.click()`,
     true,
@@ -3300,8 +3538,8 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   if (
     cleanedFolderItems.items.length !== 2 ||
     cleanedFolderItems.vfsCount !== cleanFolderVfsCountBefore + 1 ||
-    cleanedFolderByName.get('Nested Note.txt')?.x !== 24 ||
-    cleanedFolderByName.get('Nested Note.txt')?.y !== 28 ||
+    cleanedFolderByName.get('Nested Note Renamed.txt')?.x !== 24 ||
+    cleanedFolderByName.get('Nested Note Renamed.txt')?.y !== 28 ||
     cleanedFolderByName.get('untitled folder')?.x !== 168 ||
     cleanedFolderByName.get('untitled folder')?.y !== 28
   ) {
@@ -7797,6 +8035,248 @@ const runSmokeDrag = async (window: BrowserWindow): Promise<void> => {
   }
 
   await window.webContents.executeJavaScript(
+    `document.querySelector('[data-desktop-icon="system-disk"]')?.click()`,
+    true,
+  );
+  await pause(40);
+  const protectedRenameMenu = await readRendererMenuState('file', ['rename']);
+  if (!protectedRenameMenu.rename.disabled) {
+    throw new Error('Rename remained enabled for the protected System Disk root.');
+  }
+
+  const desktopRenameFixture = (await window.webContents.executeJavaScript(
+    `(() => {
+      const item = document.querySelector(
+        '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+      );
+      if (!(item instanceof HTMLElement)) return null;
+      const fixture = {
+        nodeId: item.getAttribute('data-desktop-vfs-item') ?? '',
+        x: Number(item.getAttribute('data-icon-x')),
+        y: Number(item.getAttribute('data-icon-y')),
+        vfsCount: Number(
+          document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0
+        )
+      };
+      item.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, button: 0 }));
+      return fixture;
+    })()`,
+    true,
+  )) as { nodeId: string; x: number; y: number; vfsCount: number } | null;
+  if (!desktopRenameFixture?.nodeId) {
+    throw new Error('The Desktop rename fixture could not open its Write document.');
+  }
+  let desktopWriteBefore: {
+    windowId: string;
+    documentId: string;
+    text: string;
+    dirty: boolean;
+    format: string;
+    left: string;
+    top: string;
+    width: string;
+    height: string;
+  } | null = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    desktopWriteBefore = (await window.webContents.executeJavaScript(
+      `(() => {
+        const write = document.querySelector('[data-write-title="Dropped Note.txt"]');
+        const editor = write?.querySelector('[data-write-editor="true"]');
+        if (!(write instanceof HTMLElement) || !(editor instanceof HTMLElement)) return null;
+        return {
+          windowId: write.getAttribute('data-write-window') ?? '',
+          documentId: write.getAttribute('data-document-id') ?? '',
+          text: editor.textContent ?? '',
+          dirty: write.querySelector('h2')?.textContent?.includes('•') === true,
+          format: write.getAttribute('data-document-format') ?? '',
+          left: write.style.left,
+          top: write.style.top,
+          width: write.style.width,
+          height: write.style.height
+        };
+      })()`,
+      true,
+    )) as {
+      windowId: string;
+      documentId: string;
+      text: string;
+      dirty: boolean;
+      format: string;
+      left: string;
+      top: string;
+      width: string;
+      height: string;
+    } | null;
+    if (desktopWriteBefore?.windowId) break;
+    await pause(25);
+  }
+  if (
+    !desktopWriteBefore ||
+    desktopWriteBefore.documentId !== desktopRenameFixture.nodeId ||
+    desktopWriteBefore.format !== 'write-v1'
+  ) {
+    throw new Error(
+      `The Desktop Write session was not ready for rename: ${JSON.stringify(desktopWriteBefore)}.`,
+    );
+  }
+
+  await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+    )?.click()`,
+    true,
+  );
+  await pause(40);
+  const desktopRenameMenu = await readRendererMenuState('file', ['rename']);
+  if (desktopRenameMenu.rename.disabled) {
+    throw new Error('Rename was disabled for one selected Desktop document.');
+  }
+  await invokeRendererMenuAction('file', 'rename');
+  await window.webContents.executeJavaScript(
+    `(() => {
+      const input = document.querySelector('[aria-label="Rename"] input');
+      if (!(input instanceof HTMLInputElement)) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'Renamed Desktop Note.txt');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`,
+    true,
+  );
+  await pause(30);
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Rename"] .classic-default-button')?.click()`,
+    true,
+  );
+  let desktopRenameResult: {
+    oldIconGone: boolean;
+    nodeId: string;
+    ariaLabel: string | null;
+    selected: boolean;
+    x: number;
+    y: number;
+    vfsCount: number;
+    writeWindowId: string;
+    writeDocumentId: string;
+    writeText: string;
+    writeDirty: boolean;
+    writeFormat: string;
+    writeLeft: string;
+    writeTop: string;
+    writeWidth: string;
+    writeHeight: string;
+  } | null = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    desktopRenameResult = (await window.webContents.executeJavaScript(
+      `(() => {
+        if (document.querySelector('[aria-label="Rename"]')) return null;
+        const icon = document.querySelector(
+          '[data-desktop-vfs-item][aria-label="Renamed Desktop Note.txt"]'
+        );
+        const write = document.querySelector('[data-write-title="Renamed Desktop Note.txt"]');
+        const editor = write?.querySelector('[data-write-editor="true"]');
+        if (
+          !(icon instanceof HTMLElement) ||
+          !(write instanceof HTMLElement) ||
+          !(editor instanceof HTMLElement)
+        ) return null;
+        return {
+          oldIconGone: document.querySelector(
+            '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+          ) === null,
+          nodeId: icon.getAttribute('data-desktop-vfs-item') ?? '',
+          ariaLabel: icon.getAttribute('aria-label'),
+          selected: icon.classList.contains('is-selected'),
+          x: Number(icon.getAttribute('data-icon-x')),
+          y: Number(icon.getAttribute('data-icon-y')),
+          vfsCount: Number(
+            document.querySelector('[data-vfs-count]')?.getAttribute('data-vfs-count') || 0
+          ),
+          writeWindowId: write.getAttribute('data-write-window') ?? '',
+          writeDocumentId: write.getAttribute('data-document-id') ?? '',
+          writeText: editor.textContent ?? '',
+          writeDirty: write.querySelector('h2')?.textContent?.includes('•') === true,
+          writeFormat: write.getAttribute('data-document-format') ?? '',
+          writeLeft: write.style.left,
+          writeTop: write.style.top,
+          writeWidth: write.style.width,
+          writeHeight: write.style.height
+        };
+      })()`,
+      true,
+    )) as {
+      oldIconGone: boolean;
+      nodeId: string;
+      ariaLabel: string | null;
+      selected: boolean;
+      x: number;
+      y: number;
+      vfsCount: number;
+      writeWindowId: string;
+      writeDocumentId: string;
+      writeText: string;
+      writeDirty: boolean;
+      writeFormat: string;
+      writeLeft: string;
+      writeTop: string;
+      writeWidth: string;
+      writeHeight: string;
+    } | null;
+    if (desktopRenameResult) break;
+    await pause(25);
+  }
+  if (
+    !desktopRenameResult?.oldIconGone ||
+    desktopRenameResult.nodeId !== desktopRenameFixture.nodeId ||
+    desktopRenameResult.ariaLabel !== 'Renamed Desktop Note.txt' ||
+    !desktopRenameResult.selected ||
+    desktopRenameResult.x !== desktopRenameFixture.x ||
+    desktopRenameResult.y !== desktopRenameFixture.y ||
+    desktopRenameResult.vfsCount !== desktopRenameFixture.vfsCount ||
+    desktopRenameResult.writeWindowId !== desktopWriteBefore.windowId ||
+    desktopRenameResult.writeDocumentId !== desktopWriteBefore.documentId ||
+    desktopRenameResult.writeText !== desktopWriteBefore.text ||
+    desktopRenameResult.writeDirty !== desktopWriteBefore.dirty ||
+    desktopRenameResult.writeFormat !== desktopWriteBefore.format ||
+    desktopRenameResult.writeLeft !== desktopWriteBefore.left ||
+    desktopRenameResult.writeTop !== desktopWriteBefore.top ||
+    desktopRenameResult.writeWidth !== desktopWriteBefore.width ||
+    desktopRenameResult.writeHeight !== desktopWriteBefore.height
+  ) {
+    throw new Error(
+      `Desktop rename changed identity, content, dirty state, icon position, or Write geometry: ${JSON.stringify({ desktopWriteBefore, desktopRenameFixture, desktopRenameResult })}.`,
+    );
+  }
+
+  await invokeRendererMenuAction('file', 'get-info');
+  const renamedInfoOpened = (await window.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Renamed Desktop Note.txt Info"]')?.textContent
+      ?.includes('Renamed Desktop Note.txt') === true`,
+    true,
+  )) as boolean;
+  if (!renamedInfoOpened) {
+    throw new Error('Get Info did not use the committed Desktop document name.');
+  }
+  await window.webContents.executeJavaScript(
+    `document.querySelector(
+      '[aria-label="Renamed Desktop Note.txt Info"] .classic-default-button'
+    )?.click()`,
+    true,
+  );
+  await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Renamed Desktop Note.txt"] .window-close')?.click()`,
+    true,
+  );
+  await pause(240);
+  const renamedWriteClosed = (await window.webContents.executeJavaScript(
+    `document.querySelector('[data-write-title="Renamed Desktop Note.txt"]') === null`,
+    true,
+  )) as boolean;
+  if (!renamedWriteClosed) {
+    throw new Error('The clean renamed Write document did not close after verification.');
+  }
+
+  await window.webContents.executeJavaScript(
     `document.querySelector('[data-finder-window="window-system-disk"]')?.dispatchEvent(
       new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 9001 })
     )`,
@@ -8782,7 +9262,7 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
   if (!cleanedFolderOpened) {
     throw new Error('Persistence probe could not open the cleaned Desktop folder.');
   }
-  let cleanedFolderItems: { id: string; x: number; y: number }[] | null = null;
+  let cleanedFolderItems: { id: string; name: string; x: number; y: number }[] | null = null;
   for (let attempt = 0; attempt < 40; attempt += 1) {
     cleanedFolderItems = (await window.webContents.executeJavaScript(
       `(() => {
@@ -8790,18 +9270,28 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
         if (!(folder instanceof HTMLElement) || folder.classList.contains('is-opening')) return null;
         return [...folder.querySelectorAll('[data-vfs-item]')].map((item) => ({
           id: item.getAttribute('data-vfs-item') ?? '',
+          name: item.querySelector('.finder-item-label')?.textContent?.trim() ?? '',
           x: Number(item.getAttribute('data-icon-x')),
           y: Number(item.getAttribute('data-icon-y'))
         }));
       })()`,
       true,
-    )) as { id: string; x: number; y: number }[] | null;
+    )) as { id: string; name: string; x: number; y: number }[] | null;
     if (cleanedFolderItems?.length === 2) break;
     await pause(25);
   }
   if (cleanedFolderItems?.length !== 2) {
     throw new Error(
       `Persistence probe did not restore the cleaned folder positions: ${JSON.stringify(cleanedFolderItems)}.`,
+    );
+  }
+  const cleanedFolderNames = cleanedFolderItems.map((item) => item.name).sort();
+  if (
+    JSON.stringify(cleanedFolderNames) !==
+    JSON.stringify(['Nested Note Renamed.txt', 'untitled folder'])
+  ) {
+    throw new Error(
+      `Persistence probe did not restore the renamed nested item: ${JSON.stringify(cleanedFolderItems)}.`,
     );
   }
   await window.webContents.executeJavaScript(
@@ -8915,7 +9405,7 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
     const finder = document.querySelector('[data-finder-window="window-applications"]');
     const applications = document.querySelector('[data-vfs-item="applications"]');
     const desktopDocument = document.querySelector(
-      '[data-desktop-vfs-item][aria-label="Dropped Note.txt"]'
+      '[data-desktop-vfs-item][aria-label="Renamed Desktop Note.txt"]'
     );
     const desktopFolder = document.querySelector(
       '[data-desktop-vfs-item][aria-label="Drop Folder"]'
@@ -8940,6 +9430,7 @@ const runPersistenceProbe = async (window: BrowserWindow): Promise<void> => {
       diskY: Number.parseFloat(disk.style.getPropertyValue('--icon-y')),
       applicationsX: Number(applications.dataset.iconX),
       applicationsY: Number(applications.dataset.iconY),
+      desktopDocumentName: desktopDocument.getAttribute('aria-label'),
       desktopDocumentX: Number(desktopDocument.dataset.iconX),
       desktopDocumentY: Number(desktopDocument.dataset.iconY),
       desktopFolderX: Number(desktopFolder.dataset.iconX),

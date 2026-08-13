@@ -32,8 +32,8 @@ compact-computer icon.
   legible over either the patterned desktop or white windows.
 - Movement between folders, the desktop, System Disk, and Trash, including recursive folder moves
   and protection against invalid descendant drops.
-- New Folder, Open, Close Window, Get Info, Copy, Paste, Select All, Clear Selection, View by Icon,
-  View by Name, Clean Up Folder, Empty Trash, and Clean Up Desktop commands.
+- New Folder, Open, Close Window, Get Info, Rename, Copy, Paste, Select All, Clear Selection, View
+  by Icon, View by Name, Clean Up Folder, Empty Trash, and Clean Up Desktop commands.
 - Original Get Info, About, error, and ejection dialogs with modal input ownership.
 - Synthesized menu and ejection sounds.
 
@@ -125,6 +125,8 @@ milestones in [ROADMAP.md](ROADMAP.md).
   double-click to toggle window zoom.
 - Use the System, File, Edit, View, and Special menus for Finder commands. An active Write window
   replaces them with System, File, Edit, Format, Font, Size, and View.
+- Select one file or folder and use **File > Rename** to edit its name. Rename rejects invalid or
+  duplicate sibling names without changing the item.
 - Open Calculator from the System menu. It receives ordinary keyboard input while preserving the
   current Finder or Write menus; Escape closes it.
 - Quit with Command-Q, the native macOS application menu, or the authored System Disk-to-Trash

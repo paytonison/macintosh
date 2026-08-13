@@ -105,7 +105,7 @@ try {
     throw new Error('The folder created through the File menu was not persisted.');
   }
   const desktopDocument = state.nodes.find(
-    (node) => node.parentId === 'desktop' && node.name === 'Dropped Note.txt',
+    (node) => node.parentId === 'desktop' && node.name === 'Renamed Desktop Note.txt',
   );
   if (
     desktopDocument?.payload?.format !== 'write-v1' ||
@@ -176,7 +176,7 @@ try {
     throw new Error('Clean Up Desktop did not persist the imported folder position.');
   }
   const cleanedNestedNote = state.nodes.find(
-    (node) => node.parentId === droppedFolder.id && node.name === 'Nested Note.txt',
+    (node) => node.parentId === droppedFolder.id && node.name === 'Nested Note Renamed.txt',
   );
   const cleanedNestedFolder = state.nodes.find(
     (node) => node.parentId === droppedFolder.id && node.name === 'untitled folder',
@@ -256,6 +256,14 @@ try {
       throw new Error(`Normal quit lost a cleaned icon position for ${nodeId}.`);
     }
   }
+  if (
+    normalQuitState.nodes.find((node) => node.id === desktopDocument.id)?.name !==
+      'Renamed Desktop Note.txt' ||
+    normalQuitState.nodes.find((node) => node.id === cleanedNestedNote.id)?.name !==
+      'Nested Note Renamed.txt'
+  ) {
+    throw new Error('Normal quit did not preserve the committed Desktop and Finder renames.');
+  }
   const normalQuitWindow = normalQuitState.desktop.windows.find(
     (item) => item.id === 'window-applications',
   );
@@ -300,6 +308,7 @@ try {
     throw new Error('The free Finder icon position was not restored on relaunch.');
   }
   if (
+    proof.desktopDocumentName !== 'Renamed Desktop Note.txt' ||
     proof.desktopDocumentX !== desktopDocument.iconPosition.x ||
     proof.desktopDocumentY !== desktopDocument.iconPosition.y ||
     proof.desktopFolderX !== droppedFolder.iconPosition.x ||
@@ -320,6 +329,12 @@ try {
     if (!expected || restored?.x !== expected.x || restored?.y !== expected.y) {
       throw new Error(`Clean Up Folder position for ${nodeId} was not restored on relaunch.`);
     }
+  }
+  if (
+    cleanedFolderProof.get(cleanedNestedNote.id)?.name !== 'Nested Note Renamed.txt' ||
+    cleanedFolderProof.get(cleanedNestedFolder.id)?.name !== 'untitled folder'
+  ) {
+    throw new Error('The renamed Finder item names were not restored on relaunch.');
   }
   if (
     !proof.writeReopened ||

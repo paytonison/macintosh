@@ -1486,7 +1486,8 @@ html.is-item-dragging *,
 
 .write-save-actions > button,
 .write-file-location > button,
-.write-file-dialog + .dialog-actions > button {
+.write-file-dialog + .dialog-actions > button,
+.rename-dialog-actions > button {
   min-width: 78px;
   height: 26px;
   padding: 0 12px;
@@ -1498,7 +1499,8 @@ html.is-item-dragging *,
 
 .write-save-actions > button:active:not(:disabled),
 .write-file-location > button:active:not(:disabled),
-.write-file-dialog + .dialog-actions > button:active:not(:disabled) {
+.write-file-dialog + .dialog-actions > button:active:not(:disabled),
+.rename-dialog-actions > button:active:not(:disabled) {
   color: #fff;
   background: #000;
   box-shadow: none;
@@ -1574,6 +1576,45 @@ html.is-item-dragging *,
   outline: 0;
   background: #fff;
   user-select: text;
+}
+
+.rename-dialog-content {
+  min-height: 74px;
+  padding: 22px 24px 0;
+}
+
+.rename-name-field {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.rename-name-field input {
+  height: 26px;
+  min-width: 0;
+  padding: 2px 5px;
+  border: 2px solid #000;
+  outline: 0;
+  background: #fff;
+  user-select: text;
+}
+
+.rename-name-field input[aria-invalid='true'] {
+  outline: 1px dotted #000;
+  outline-offset: 2px;
+}
+
+.rename-name-error {
+  min-height: 15px;
+  margin: 8px 0 0 50px;
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.rename-dialog-actions {
+  gap: 10px;
 }
 
 .calculator-window.is-inactive {

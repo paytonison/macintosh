@@ -1,5 +1,5 @@
 import type { FinderWindowState, MacintoshState, VfsNode } from '../../shared/state';
-import { descendantsOf } from '../../shared/vfs';
+import { descendantsOf, isVfsRenameTarget } from '../../shared/vfs';
 
 export interface MenuShortcut {
   key: string;
@@ -82,6 +82,16 @@ export interface FinderCommandContext {
   visibleSelection: VfsNode[];
   visibleSelectionIds: string[];
 }
+
+export const singleRenameableNode = (
+  nodes: readonly VfsNode[],
+  selectedIds: Iterable<string>,
+): VfsNode | null => {
+  const ids = [...selectedIds];
+  if (ids.length !== 1) return null;
+  const node = nodes.find((candidate) => candidate.id === ids[0]);
+  return isVfsRenameTarget(node) ? node : null;
+};
 
 export const finderCommandDestinationId = (
   state: MacintoshState,
