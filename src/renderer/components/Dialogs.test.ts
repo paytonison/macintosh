@@ -8,8 +8,46 @@ import {
   formatInfoCreatedDate,
   InfoDialog,
   RenameDialog,
+  ResetDialog,
   renameValidationMessage,
 } from './Dialogs';
+
+describe('Reset dialog', () => {
+  it('warns about permanent loss and keeps Cancel as the safe initial action', () => {
+    const markup = renderToStaticMarkup(
+      createElement(ResetDialog, {
+        interactionCancelToken: 0,
+        onCancel: () => undefined,
+        onInteractionChange: () => undefined,
+        onReset: () => undefined,
+        resetting: false,
+      }),
+    );
+
+    expect(markup).toContain('aria-label="Reset Macintosh"');
+    expect(markup).toContain('permanently erased');
+    expect(markup).toContain('including unsaved Write documents');
+    expect(markup).toContain(
+      '<button autofocus="" class="classic-default-button" type="button">Cancel</button>',
+    );
+    expect(markup).toContain('>Reset</button>');
+  });
+
+  it('locks both actions while the replacement is being committed', () => {
+    const markup = renderToStaticMarkup(
+      createElement(ResetDialog, {
+        interactionCancelToken: 0,
+        onCancel: () => undefined,
+        onInteractionChange: () => undefined,
+        onReset: () => undefined,
+        resetting: true,
+      }),
+    );
+
+    expect(markup.match(/disabled=""/g)).toHaveLength(2);
+    expect(markup).toContain('Resetting…');
+  });
+});
 
 describe('Get Info creation date', () => {
   afterEach(() => vi.restoreAllMocks());

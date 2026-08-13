@@ -8,6 +8,7 @@ export interface StateTransition<T> {
 
 export interface AuthoritativeStateController {
   load: () => Promise<MacintoshState>;
+  reset: (state: MacintoshState) => Promise<MacintoshState>;
   savePresentation: (patch: unknown) => Promise<MacintoshState>;
   transact: <T>(
     patch: unknown,
@@ -66,6 +67,20 @@ export const createAuthoritativeStateController = ({
 
   return {
     load: () => enqueue(loadCurrent),
+
+    reset: (state) => {
+      try {
+        rejectIfFinalizing();
+      } catch (error) {
+        return Promise.reject(error as Error);
+      }
+      return enqueue(async () => {
+        const next = sanitizeState(state);
+        await write(next);
+        current = next;
+        return next;
+      });
+    },
 
     savePresentation: (patch) => {
       try {

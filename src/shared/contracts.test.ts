@@ -6,6 +6,7 @@ describe('Electron capability contract', () => {
   it('exposes semantic VFS and presentation channels without whole-state replacement', () => {
     expect(IPC_CHANNELS).toEqual({
       loadState: 'macintosh:state:load',
+      resetState: 'macintosh:state:reset',
       savePresentation: 'macintosh:presentation:save',
       mutateVfs: 'macintosh:vfs:mutate',
       importFiles: 'macintosh:files:import',

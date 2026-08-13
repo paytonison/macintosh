@@ -1,5 +1,6 @@
 export const IPC_CHANNELS = {
   loadState: 'macintosh:state:load',
+  resetState: 'macintosh:state:reset',
   savePresentation: 'macintosh:presentation:save',
   mutateVfs: 'macintosh:vfs:mutate',
   importFiles: 'macintosh:files:import',
@@ -33,6 +34,14 @@ export interface SaveResult {
   ok: true;
 }
 
+export interface ResetStateRequest {
+  surfaceSize: import('./desktop-layout').DesktopSurfaceSize;
+}
+
+export interface ResetStateResult {
+  accepted: true;
+}
+
 export interface QuitResult {
   accepted: true;
 }
@@ -60,6 +69,7 @@ export interface ImportFilesOptions {
 
 export interface MacintoshAPI {
   loadState: () => Promise<import('./state').MacintoshState>;
+  resetState: (request: ResetStateRequest) => Promise<ResetStateResult>;
   savePresentation: (
     presentation: import('./presentation').PresentationPatch,
   ) => Promise<SaveResult>;

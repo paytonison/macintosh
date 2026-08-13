@@ -34,7 +34,7 @@ compact-computer icon.
   and protection against invalid descendant drops.
 - New Folder, Open, Close Window, Get Info, Rename, Copy, Paste, Select All, Clear Selection, View
   by Icon, View by Name, Clean Up Folder, Empty Trash, and Clean Up Desktop commands.
-- Original Get Info, About, error, and ejection dialogs with modal input ownership.
+- Original Get Info, About, error, ejection, and reset dialogs with modal input ownership.
 - Synthesized menu and ejection sounds.
 
 **Clean Up Desktop** builds one authored right-side composition from the live Desktop bounds:
@@ -125,6 +125,9 @@ milestones in [ROADMAP.md](ROADMAP.md).
   double-click to toggle window zoom.
 - Use the System, File, Edit, View, and Special menus for Finder commands. An active Write window
   replaces them with System, File, Edit, Format, Font, Size, and View.
+- Use **Special > Reset Macintosh…** to permanently erase the working environment and restore its
+  shipped Desktop, System Disk, Documents, and intentionally populated Trash. Cancel is the safe
+  default; a confirmed reset restarts the interface only after the replacement state is saved.
 - Select one file or folder and use **File > Rename** to edit its name. Rename rejects invalid or
   duplicate sibling names without changing the item.
 - Open Calculator from the System menu. It receives ordinary keyboard input while preserving the
@@ -149,6 +152,11 @@ State is stored as `macintosh-state.json` in Electron's per-user application-dat
 main process validates mutations, serializes them through one writer, and replaces the state file
 atomically. Normal Quit and ejection do not exit until required document saves and the final desktop
 write have completed successfully.
+
+Reset Macintosh uses the same main-owned writer. A failed reset leaves the current workspace
+intact; a successful reset restores the canonical snapshot at the live Desktop size and reloads the
+renderer so open windows, selections, menus, Calculator state, and unsaved Write drafts cannot leak
+into the fresh environment.
 
 ## Run it
 
@@ -199,6 +207,6 @@ production build.
 `npm run smoke` builds and launches the real Electron application with isolated temporary user data.
 It exercises the native application identity, desktop and Finder interactions, host import,
 Calculator, Write editing and saving, dirty-document exit review, persistence failures, System Disk
-ejection, atomic state recovery, and relaunch persistence.
+ejection, atomic state recovery, relaunch persistence, and the cancel/confirm Reset Macintosh flow.
 
 The project is licensed under the [BSD 3-Clause License](LICENSE).

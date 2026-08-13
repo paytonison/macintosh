@@ -1,4 +1,10 @@
 import { initialDesktopIconPosition } from './desktop-icon-position';
+import {
+  DEFAULT_DESKTOP_SURFACE_SIZE,
+  desktopCleanupItemPosition,
+  desktopCleanupSpecialIconPositions,
+  type DesktopSurfaceSize,
+} from './desktop-layout';
 import { sanitizeDocumentPayload, type DocumentPayload } from './write';
 
 export const STATE_SCHEMA_VERSION = 4 as const;
@@ -21,6 +27,10 @@ const CANONICAL_CREATED_AT_BY_NODE_ID = new Map<string, string>([
   ['finder-notes', BUILT_IN_ITEM_CREATED_AT],
   ['read-me', BUILT_IN_ITEM_CREATED_AT],
   ['write', BUILT_IN_ITEM_CREATED_AT],
+  ['trash-untitled-folder', BUILT_IN_ITEM_CREATED_AT],
+  ['trash-all-work', BUILT_IN_ITEM_CREATED_AT],
+  ['trash-untitled-folder-2', BUILT_IN_ITEM_CREATED_AT],
+  ['trash-untitled-folder-3', BUILT_IN_ITEM_CREATED_AT],
 ]);
 
 export const canonicalCreatedAtForNodeId = (nodeId: string): string | null =>
@@ -80,6 +90,7 @@ const seedNode = (
   kind: VfsNodeKind,
   payload?: DocumentPayload,
   applicationId?: ApplicationId,
+  iconPosition?: Point,
 ): VfsNode => ({
   id,
   parentId,
@@ -87,51 +98,128 @@ const seedNode = (
   kind,
   ...(payload ? { payload } : {}),
   ...(applicationId ? { applicationId } : {}),
+  ...(iconPosition ? { iconPosition } : {}),
   createdAt: canonicalCreatedAtForNodeId(id) ?? seedTimestamp,
   modifiedAt: seedTimestamp,
 });
 
-export const createDefaultState = (): MacintoshState => ({
-  schemaVersion: STATE_SCHEMA_VERSION,
-  desktop: {
-    diskPosition: { x: 1036, y: 52 },
-    trashPosition: { x: 1040, y: 626 },
-    windows: [
-      {
-        id: 'window-system-disk',
-        nodeId: 'system-disk',
-        x: 238,
-        y: 106,
-        width: 676,
-        height: 442,
-      },
+export const createDefaultState = (
+  surface: DesktopSurfaceSize = DEFAULT_DESKTOP_SURFACE_SIZE,
+): MacintoshState => {
+  const { diskPosition, trashPosition } = desktopCleanupSpecialIconPositions(surface);
+  const readMePosition = desktopCleanupItemPosition(surface, 0);
+
+  return {
+    schemaVersion: STATE_SCHEMA_VERSION,
+    desktop: {
+      diskPosition,
+      trashPosition,
+      windows: [],
+      viewMode: 'icons',
+      lastEjectAt: null,
+    },
+    nodes: [
+      seedNode('system-disk', null, 'System Disk', 'disk'),
+      seedNode('trash', null, 'Trash', 'trash'),
+      seedNode('desktop', null, 'Desktop', 'desktop'),
+      seedNode('system-folder', 'system-disk', 'System Folder', 'folder', undefined, undefined, {
+        x: 265,
+        y: 43,
+      }),
+      seedNode('applications', 'system-disk', 'Applications', 'folder', undefined, undefined, {
+        x: 118,
+        y: 67,
+      }),
+      seedNode('documents', 'system-disk', 'Documents', 'folder', undefined, undefined, {
+        x: 216,
+        y: 183,
+      }),
+      seedNode('write', 'applications', 'Write', 'application', undefined, 'write'),
+      seedNode(
+        'welcome',
+        'documents',
+        'Welcome',
+        'document',
+        {
+          format: 'plain-text',
+          text: 'Welcome to The Macintosh.\nThis clean-room desktop is built from original code and original bitmap artwork. Double-click folders, drag icons, open the menus, and drag System Disk to Trash when it is time to shut down.',
+        },
+        undefined,
+        { x: 24, y: 28 },
+      ),
+      seedNode(
+        'finder-notes',
+        'system-folder',
+        'Finder Notes',
+        'document',
+        {
+          format: 'plain-text',
+          text: 'The Finder keeps the desktop orderly, remembers your windows, and stores this virtual disk locally.',
+        },
+        undefined,
+        { x: 32, y: 84 },
+      ),
+      seedNode(
+        'read-me',
+        'desktop',
+        'Read Me',
+        'document',
+        {
+          format: 'plain-text',
+          text: 'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
+        },
+        undefined,
+        readMePosition,
+      ),
+      seedNode(
+        'trash-untitled-folder',
+        'trash',
+        'untitled folder',
+        'folder',
+        undefined,
+        undefined,
+        { x: 24, y: 28 },
+      ),
+      seedNode(
+        'trash-all-work',
+        'trash-untitled-folder',
+        'all work and no play makes jack a dull boy',
+        'document',
+        {
+          format: 'plain-text',
+          text: [
+            'All work and no play makes Jack a dull boy.',
+            'All work and no play makes Jack a dull boy.',
+            'All work and no play makes Jack a dull boy.',
+            'All work and no play makes Jack a dull boy.',
+            'All work and no play makes Jack a dull boy.',
+            'All work and no play makes Jack a dull boy.',
+          ].join('\n'),
+        },
+        undefined,
+        { x: 24, y: 28 },
+      ),
+      seedNode(
+        'trash-untitled-folder-2',
+        'trash-untitled-folder',
+        'untitled folder 2',
+        'folder',
+        undefined,
+        undefined,
+        { x: 168, y: 28 },
+      ),
+      seedNode(
+        'trash-untitled-folder-3',
+        'trash-untitled-folder',
+        'untitled folder 3',
+        'folder',
+        undefined,
+        undefined,
+        { x: 312, y: 28 },
+      ),
     ],
-    viewMode: 'icons',
-    lastEjectAt: null,
-  },
-  nodes: [
-    seedNode('system-disk', null, 'System Disk', 'disk'),
-    seedNode('trash', null, 'Trash', 'trash'),
-    seedNode('desktop', null, 'Desktop', 'desktop'),
-    seedNode('system-folder', 'system-disk', 'System Folder', 'folder'),
-    seedNode('applications', 'system-disk', 'Applications', 'folder'),
-    seedNode('documents', 'system-disk', 'Documents', 'folder'),
-    seedNode('utilities', 'system-disk', 'Utilities', 'folder'),
-    seedNode('write', 'applications', 'Write', 'application', undefined, 'write'),
-    seedNode('welcome', 'system-disk', 'Welcome', 'document', {
-      format: 'plain-text',
-      text: 'Welcome to The Macintosh.\n\nThis clean-room desktop is built from original code and original bitmap artwork. Double-click folders, drag icons, open the menus, and drag System Disk to Trash when it is time to shut down.',
-    }),
-    seedNode('finder-notes', 'system-folder', 'Finder Notes', 'document', {
-      format: 'plain-text',
-      text: 'The Finder keeps the desktop orderly, remembers your windows, and stores this virtual disk locally.',
-    }),
-    seedNode('read-me', 'documents', 'Read Me', 'document', {
-      format: 'plain-text',
-      text: 'No ROMs, copied system files, or extracted proprietary artwork are used by this application.',
-    }),
-  ],
-});
+  };
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);

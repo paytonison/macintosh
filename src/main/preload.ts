@@ -5,6 +5,7 @@ import type {
   ImportFilesOptions,
   IpcChannels,
   MacintoshAPI,
+  ResetStateRequest,
   VfsMutationRequest,
 } from '../shared/contracts';
 import type { PresentationPatch } from '../shared/presentation';
@@ -14,6 +15,7 @@ import type { MacintoshState } from '../shared/state';
 // Keep these values aligned with the typed main-process contract.
 const IPC_CHANNELS = {
   loadState: 'macintosh:state:load',
+  resetState: 'macintosh:state:reset',
   savePresentation: 'macintosh:presentation:save',
   mutateVfs: 'macintosh:vfs:mutate',
   importFiles: 'macintosh:files:import',
@@ -28,6 +30,7 @@ const IPC_CHANNELS = {
 
 const api: MacintoshAPI = Object.freeze({
   loadState: () => ipcRenderer.invoke(IPC_CHANNELS.loadState) as Promise<MacintoshState>,
+  resetState: (request: ResetStateRequest) => ipcRenderer.invoke(IPC_CHANNELS.resetState, request),
   savePresentation: (presentation: PresentationPatch) =>
     ipcRenderer.invoke(IPC_CHANNELS.savePresentation, presentation),
   mutateVfs: (request: VfsMutationRequest) => ipcRenderer.invoke(IPC_CHANNELS.mutateVfs, request),

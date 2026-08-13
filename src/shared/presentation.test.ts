@@ -8,6 +8,7 @@ describe('presentation persistence boundary', () => {
     const state = createDefaultState();
     const applications = state.nodes.find((node) => node.id === 'applications');
     if (!applications) throw new Error('Missing Applications fixture.');
+    for (const node of state.nodes) delete node.iconPosition;
     applications.iconPosition = { x: 173, y: 119 };
 
     expect(projectPresentation(state)).toEqual({
@@ -40,7 +41,7 @@ describe('presentation persistence boundary', () => {
       iconPositions: [
         {
           nodeId: 'welcome',
-          parentId: 'system-disk',
+          parentId: 'documents',
           position: { x: 173, y: 119 },
         },
       ],

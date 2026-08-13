@@ -70,6 +70,38 @@ describe('authoritative state controller', () => {
     );
   });
 
+  it('atomically replaces the complete canonical state during reset', async () => {
+    const changed = createDefaultState();
+    changed.nodes = changed.nodes.filter((node) => node.id !== 'welcome');
+    changed.desktop.diskPosition = { x: 111, y: 222 };
+    const writes: MacintoshState[] = [];
+    const controller = createAuthoritativeStateController({
+      load: async () => changed,
+      write: async (state) => {
+        writes.push(structuredClone(state));
+      },
+    });
+    const replacement = createDefaultState({ width: 800, height: 538 });
+
+    await expect(controller.reset(replacement)).resolves.toEqual(replacement);
+    await expect(controller.load()).resolves.toEqual(replacement);
+    expect(writes).toEqual([replacement]);
+  });
+
+  it('keeps the previous canonical state when a reset write fails', async () => {
+    const previous = createDefaultState();
+    previous.desktop.diskPosition = { x: 111, y: 222 };
+    const controller = createAuthoritativeStateController({
+      load: async () => previous,
+      write: async () => {
+        throw new Error('disk full');
+      },
+    });
+
+    await expect(controller.reset(createDefaultState())).rejects.toThrow('disk full');
+    expect((await controller.load()).desktop.diskPosition).toEqual({ x: 111, y: 222 });
+  });
+
   it('merges a presentation patch without allowing it to replace VFS contents', async () => {
     let written: MacintoshState | null = null;
     const original = createDefaultState();

@@ -1094,6 +1094,29 @@ html.is-item-dragging *,
   padding: 12px 24px 20px;
 }
 
+.reset-message-content {
+  align-items: flex-start;
+}
+
+.reset-dialog-actions {
+  gap: 10px;
+}
+
+.reset-dialog-actions > button:not(.classic-default-button) {
+  min-width: 80px;
+  height: 28px;
+  padding: 0 16px;
+  border: 1px solid #000;
+  background: #fff;
+  box-shadow: 2px 2px 0 #000;
+  font-size: 12px;
+}
+
+.reset-dialog-actions > button:disabled {
+  color: #777;
+  box-shadow: none;
+}
+
 .classic-default-button,
 .save-error button {
   min-width: 80px;

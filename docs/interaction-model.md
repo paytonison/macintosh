@@ -168,6 +168,27 @@ Current Finder command context is:
   the shared column origin is `x = 1070`: System Disk uses `y = 7`, ordinary rows begin at `y = 77`
   with an `83`-pixel step, and Trash uses `y = 653`.
 - **Eject System Disk…** explains the drag-to-Trash shutdown gesture; it does not eject by itself.
+- **Reset Macintosh…** opens a destructive confirmation with Cancel as the initial action. Cancel
+  changes nothing. Confirming discards the complete working VFS, saved presentation, transient
+  windows, and unsaved Write drafts; the main process atomically commits the canonical snapshot at
+  the current Desktop size before reloading the renderer. If that write fails, the current durable
+  workspace remains authoritative and a visible error leaves the application usable.
+
+## Canonical reset state
+
+First launch and a confirmed Reset Macintosh use the same authored snapshot. The renderer begins on
+a clean Desktop with no Finder windows open. On the default `1152 x 746` Desktop surface, System
+Disk is at `(1070, 7)`, Read Me is directly beneath it at `(1070, 77)`, and Trash is at
+`(1070, 653)`. These three positions are recomputed from live Desktop bounds during reset.
+
+System Disk contains exactly System Folder, Applications, and Documents. Applications contains
+Write. Documents contains Welcome. Read Me is a Desktop document. Opening those containers creates
+the normal cascaded Finder windows; open-window geometry is not part of the canonical snapshot.
+
+Trash is intentionally non-empty. Its direct child is `untitled folder`, which contains the
+`all work and no play makes jack a dull boy` document plus `untitled folder 2` and
+`untitled folder 3`. Empty Trash remains an ordinary destructive command after reset; the shipped
+Trash contents are restored only by another Reset Macintosh.
 
 ## Write
 
